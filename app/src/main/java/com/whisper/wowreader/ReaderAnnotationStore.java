@@ -8,6 +8,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 
+/** Shared annotation storage used by both the in-reader panel and the library Notes Hub. */
 public final class ReaderAnnotationStore {
     private ReaderAnnotationStore() {}
 
@@ -119,7 +120,7 @@ public final class ReaderAnnotationStore {
     private static void save(SharedPreferences prefs, String bookName, List<Annotation> items) {
         if (prefs == null) return;
         JSONArray arr = new JSONArray();
-        for (Annotation a : items) {
+        for (ReaderAnnotationStore.Annotation a : items) {
             try { arr.put(a.toJson()); } catch (Exception ignored) {}
         }
         prefs.edit()

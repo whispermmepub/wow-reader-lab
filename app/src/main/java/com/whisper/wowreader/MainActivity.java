@@ -74,6 +74,7 @@ public class MainActivity extends Activity {
     private ProfileAvatarView accountButton;
     private TextView themeButton;
     private TextView statsSummaryView;
+    private TextView notesSummaryView;
     private String appTheme = "white";
     private String sortMode = "added";
     private String authorFilter = "";
@@ -400,6 +401,7 @@ public class MainActivity extends Activity {
         if (authorButton != null) authorButton.setText(authorButtonLabel());
         updateLibraryFilterChips();
         updateReadingStatsSummary();
+        updateNotesHubSummary();
 
         warmSortMetadataIfNeeded(all);
     }
@@ -836,6 +838,51 @@ public class MainActivity extends Activity {
         hero.addView(readingStatsCard, statsLp);
         updateReadingStatsSummary();
 
+        LinearLayout notesHubCard = new LinearLayout(this);
+        notesHubCard.setOrientation(LinearLayout.HORIZONTAL);
+        notesHubCard.setGravity(Gravity.CENTER_VERTICAL);
+        notesHubCard.setPadding(dp(13), 0, dp(12), 0);
+        notesHubCard.setBackground(roundRect(themeControlSurface(), dp(19), dp(1), themeStroke()));
+        notesHubCard.setClickable(true);
+        notesHubCard.setElevation(dp(1));
+        notesHubCard.setContentDescription("Notes and highlights hub");
+        notesHubCard.setOnClickListener(v -> showNotesHighlightsHub());
+
+        TextView notesIcon = new TextView(this);
+        notesIcon.setText("✎");
+        notesIcon.setTextSize(18);
+        notesIcon.setTextColor(themeAccent());
+        notesIcon.setGravity(Gravity.CENTER);
+        notesHubCard.addView(notesIcon, new LinearLayout.LayoutParams(dp(34), dp(44)));
+
+        LinearLayout notesCopy = new LinearLayout(this);
+        notesCopy.setOrientation(LinearLayout.VERTICAL);
+        notesCopy.setGravity(Gravity.CENTER_VERTICAL);
+        TextView notesTitle = new TextView(this);
+        notesTitle.setText("Notes & highlights");
+        notesTitle.setTextSize(12.5f);
+        notesTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        notesTitle.setTextColor(themePrimaryText());
+        notesCopy.addView(notesTitle);
+        notesSummaryView = new TextView(this);
+        notesSummaryView.setTextSize(10.5f);
+        notesSummaryView.setTextColor(themeSecondaryText());
+        notesSummaryView.setSingleLine(true);
+        notesCopy.addView(notesSummaryView);
+        notesHubCard.addView(notesCopy, new LinearLayout.LayoutParams(0, dp(44), 1f));
+
+        TextView notesArrow = new TextView(this);
+        notesArrow.setText("›");
+        notesArrow.setTextSize(22);
+        notesArrow.setTextColor(themeSecondaryText());
+        notesArrow.setGravity(Gravity.CENTER);
+        notesHubCard.addView(notesArrow, new LinearLayout.LayoutParams(dp(28), dp(44)));
+
+        LinearLayout.LayoutParams notesLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        notesLp.topMargin = dp(7);
+        hero.addView(notesHubCard, notesLp);
+        updateNotesHubSummary();
+
         HorizontalScrollView smartFilters = new HorizontalScrollView(this);
         smartFilters.setHorizontalScrollBarEnabled(false);
         smartFilters.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -869,6 +916,67 @@ public class MainActivity extends Activity {
         outer.addView(hero, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         addDiscoverySection(outer);
         return outer;
+    }
+
+    private void updateNotesHubSummary() {
+        if (notesSummaryView == null || prefs == null || libraryDir == null) return;
+        File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
+        if (books == null || books.length == 0) {
+            notesSummaryView.setText("No saved notes yet");
+            return;
+        }
+        int itemCount = 0;
+        int bookCount = 0;
+        for (File book : books) {
+            int count = ReaderAnnotationStore.count(prefs, book.getName());
+            if (count <= 0) continue;
+            itemCount += count;
+            bookCount++;
+        }
+        if (itemCount <= 0) {
+            notesSummaryView.setText("No saved notes yet");
+            return;
+        }
+        String itemText = itemCount == 1 ? "1 item" : itemCount + " items";
+        String bookText = bookCount == 1 ? "1 book" : bookCount + " books";
+        notesSummaryView.setText(itemText + "  ·  " + bookText);
+    }
+
+    private void showNotesHighlightsHub() {
+        File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
+        if (books == null) books = new File[0];
+        sortLibraryFiles(books);
+        java.util.List<File> annotatedBooks = new java.util.ArrayList<>();
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        for (File book : books) {
+            int count = ReaderAnnotationStore.count(prefs, book.getName());
+            if (count <= 0) continue;
+            annotatedBooks.add(book);
+            labels.add(cachedLibraryTitle(book) + "  ·  " + count + (count == 1 ? " item" : " items"));
+        }
+        if (annotatedBooks.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Notes & highlights")
+                    .setMessage("Your saved highlights and notes will appear here. Select text while reading an EPUB and choose Highlight or Note.")
+                    .setPositiveButton("Done", null)
+                    .show();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Notes & highlights")
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> openBookAnnotations(annotatedBooks.get(which)))
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void openBookAnnotations(File file) {
+        if (file == null || !file.isFile()) return;
+        prefs.edit().putLong("last_opened_" + file.getName(), System.currentTimeMillis()).apply();
+        Intent i = new Intent(this, BookReaderActivity.class);
+        i.putExtra("path", file.getAbsolutePath());
+        i.putExtra("open_annotations", true);
+        startActivity(i);
+        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
     }
 
     private void updateReadingStatsSummary() {

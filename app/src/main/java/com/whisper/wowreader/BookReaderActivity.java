@@ -236,6 +236,11 @@ public class BookReaderActivity extends Activity {
         applyWindowPreferences();
         buildReaderUi();
         if (isPdf) openPdf(); else openEpub();
+        if (!isPdf && getIntent().getBooleanExtra("open_annotations", false)) {
+            root.postDelayed(() -> {
+                if (!isFinishing()) showAnnotations();
+            }, 700L);
+        }
     }
 
     private void buildReaderUi() {

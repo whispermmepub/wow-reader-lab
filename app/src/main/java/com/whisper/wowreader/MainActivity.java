@@ -93,6 +93,7 @@ public class MainActivity extends Activity {
     private long lastAutoSyncAttemptMs = 0L;
     private Runnable googleSyncRetryRunnable;
     private volatile boolean metadataWarmupRunning = false;
+    private boolean homeMode = true;
     private final Collator myanmarCollator = Collator.getInstance(new Locale("my", "MM"));
     private final Collator englishCollator = Collator.getInstance(Locale.ENGLISH);
 
@@ -135,7 +136,23 @@ public class MainActivity extends Activity {
         maybeAutoGoogleSync();
     }
 
+    @Override public void onBackPressed() {
+        if (!homeMode) {
+            switchToHome();
+            return;
+        }
+        finish();
+    }
+
     private void buildUi() {
+        // Rebuild only the presentation layer when switching Home/Library.
+        // Account/auth/sync state remains in the Activity and SharedPreferences.
+        countView = null;
+        sortButton = null;
+        authorButton = null;
+        searchInput = null;
+        floatingAdd = null;
+
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(themeBackground());
 
@@ -145,13 +162,13 @@ public class MainActivity extends Activity {
         libraryRecycler.setOverScrollMode(View.OVER_SCROLL_NEVER);
         androidx.recyclerview.widget.DefaultItemAnimator itemAnimator = new androidx.recyclerview.widget.DefaultItemAnimator();
         itemAnimator.setSupportsChangeAnimations(false);
-        itemAnimator.setAddDuration(135L);
-        itemAnimator.setRemoveDuration(110L);
-        itemAnimator.setMoveDuration(170L);
+        itemAnimator.setAddDuration(120L);
+        itemAnimator.setRemoveDuration(100L);
+        itemAnimator.setMoveDuration(150L);
         libraryRecycler.setItemAnimator(itemAnimator);
         libraryRecycler.setItemViewCacheSize(20);
         libraryRecycler.setHasFixedSize(false);
-        libraryRecycler.setPadding(0, 0, 0, dp(138));
+        libraryRecycler.setPadding(0, 0, 0, dp(86));
 
         libraryAdapter = new LibraryAdapter();
         configureLibraryLayout();
@@ -165,53 +182,6 @@ public class MainActivity extends Activity {
         root.addView(libraryRecycler, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        floatingAdd = new TextView(this);
-        floatingAdd.setText("＋  Add book");
-        floatingAdd.setTextSize(14.5f);
-        floatingAdd.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        floatingAdd.setTextColor(Color.WHITE);
-        floatingAdd.setGravity(Gravity.CENTER);
-        floatingAdd.setPadding(dp(14), 0, dp(16), 0);
-        floatingAdd.setContentDescription("Add book");
-        floatingAdd.setBackground(gradientRoundRect(themeFabColors(), dp(29)));
-        floatingAdd.setElevation(dp(11));
-        floatingAdd.setOnClickListener(v -> {
-            try { v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP); } catch (Exception ignored) {}
-            chooseBook();
-        });
-        floatingAdd.setOnTouchListener((v, e) -> {
-            int action = e.getActionMasked();
-            if (action == android.view.MotionEvent.ACTION_DOWN) {
-                v.animate().cancel();
-                v.animate().scaleX(0.955f).scaleY(0.955f).translationY(dp(1)).setDuration(72L).start();
-                v.setElevation(dp(7));
-            } else if (action == android.view.MotionEvent.ACTION_UP || action == android.view.MotionEvent.ACTION_CANCEL) {
-                v.animate().cancel();
-                v.animate().scaleX(1f).scaleY(1f).translationY(0f).setDuration(185L)
-                        .setInterpolator(new android.view.animation.OvershootInterpolator(1.18f)).start();
-                v.setElevation(dp(11));
-            }
-            return false;
-        });
-        FrameLayout.LayoutParams fabLp = new FrameLayout.LayoutParams(dp(116), dp(48), Gravity.END | Gravity.BOTTOM);
-        fabLp.rightMargin = dp(16);
-        fabLp.bottomMargin = dp(74);
-        root.addView(floatingAdd, fabLp);
-
-        libraryRecycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
-            @Override public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
-                if (floatingAdd == null) return;
-                floatingAdd.animate().cancel();
-                if (dy > dp(2) && recyclerView.canScrollVertically(-1)) {
-                    floatingAdd.animate().translationY(dp(88)).alpha(0f).setDuration(165L)
-                            .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
-                } else if (dy < -dp(2) || !recyclerView.canScrollVertically(-1)) {
-                    floatingAdd.animate().translationY(0f).alpha(1f).setDuration(210L)
-                            .setInterpolator(new android.view.animation.DecelerateInterpolator(1.35f)).start();
-                }
-            }
-        });
-
         View premiumBottomNav = buildBottomNavigation();
         FrameLayout.LayoutParams bottomNavLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(64), Gravity.BOTTOM);
@@ -223,7 +193,6 @@ public class MainActivity extends Activity {
         setContentView(root);
         refreshLibrary();
     }
-
 
     private TextView iconButton(String text) {
         TextView v = new TextView(this);
@@ -241,26 +210,40 @@ public class MainActivity extends Activity {
     private void addDiscoverySection(LinearLayout root) {
         TextView heading = new TextView(this);
         heading.setText("Explore");
-        heading.setTextSize(15.5f);
-        heading.setTextColor(themePrimaryText());
+        heading.setTextSize(14);
+        heading.setTextColor(themeSecondaryText());
         heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        heading.setPadding(dp(2), dp(15), dp(2), dp(8));
-        root.addView(heading);
+        heading.setPadding(dp(2), dp(12), dp(2), dp(8));
+        root.addView(heading, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        View telegram = discoveryCard("telegram", "Telegram Group", "Join discussion",
-                Color.rgb(239, 238, 255), "https://t.me/+rUiqzi2mdhNiNGZl");
-        View website = discoveryCard("website", "WoW Website", "Visit our site",
-                Color.rgb(235, 247, 239), "https://saroatsin.com");
-        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, dp(72), 1f);
-        left.rightMargin = dp(7);
-        row.addView(telegram, left);
-        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, dp(72), 1f);
-        right.leftMargin = dp(7);
-        row.addView(website, right);
-        root.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(74)));
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        scroller.setHorizontalScrollBarEnabled(false);
+        scroller.setFillViewport(false);
+        scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        strip.setPadding(dp(1), 0, dp(12), dp(2));
+        scroller.addView(strip, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        String[][] data = {
+                {"telegram", "Telegram", "New books", "https://t.me/TheBookR"},
+                {"discussion", "Discussion", "Reader community", "https://t.me/+rUiqzi2mdhNiNGZl"},
+                {"website", "Book Website", "saroatsin.com", "https://saroatsin.com"},
+                {"review", "Book Reviews", "အညွှန်း & review", "https://whispermmepub.github.io/Review/"}
+        };
+        int[] colors = {
+                Color.rgb(232, 245, 255), Color.rgb(239, 238, 255),
+                Color.rgb(235, 247, 239), Color.rgb(255, 241, 232)
+        };
+        for (int i = 0; i < data.length; i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(154), dp(74));
+            if (i > 0) lp.leftMargin = dp(10);
+            strip.addView(discoveryCard(data[i][0], data[i][1], data[i][2], colors[i], data[i][3]), lp);
+        }
+        root.addView(scroller, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(78)));
     }
 
     private View discoveryCard(String kind, String title, String subtitle, int background, String url) {
@@ -815,9 +798,7 @@ public class MainActivity extends Activity {
         all.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         all.setTextColor(themeAccent());
         all.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-        all.setOnClickListener(v -> {
-            if (libraryRecycler != null) libraryRecycler.smoothScrollToPosition(1);
-        });
+        all.setOnClickListener(v -> switchToLibrary());
         heading.addView(all, new LinearLayout.LayoutParams(dp(84), dp(38)));
         root.addView(heading);
 
@@ -1046,12 +1027,38 @@ public class MainActivity extends Activity {
         nav.setPadding(dp(8), dp(4), dp(8), dp(3));
         nav.setBackground(roundRect(themeCardSurface(), dp(24), dp(1), themeStroke()));
         nav.setElevation(dp(9));
-        nav.addView(bottomNavItem("⌂", "Home", true, () -> libraryRecycler.smoothScrollToPosition(0)), new LinearLayout.LayoutParams(0, dp(56), 1f));
-        nav.addView(bottomNavItem("▥", "Library", false, () -> libraryRecycler.smoothScrollToPosition(1)), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("⌂", "Home", homeMode, this::switchToHome), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("▥", "Library", !homeMode, this::switchToLibrary), new LinearLayout.LayoutParams(0, dp(56), 1f));
         nav.addView(bottomNavItem("✎", "Notes", false, this::showNotesHighlightsHub), new LinearLayout.LayoutParams(0, dp(56), 1f));
-        nav.addView(bottomNavItem("◈", "Explore", false, () -> libraryRecycler.smoothScrollToPosition(0)), new LinearLayout.LayoutParams(0, dp(56), 1f));
-        nav.addView(bottomNavItem("○", "Profile", false, this::showAccountMenu), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("◈", "Explore", false, this::showExploreHome), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("＋", "Add book", false, this::chooseBook), new LinearLayout.LayoutParams(0, dp(56), 1f));
         return nav;
+    }
+
+    private void switchToHome() {
+        if (homeMode && libraryRecycler != null) {
+            libraryRecycler.smoothScrollToPosition(0);
+            return;
+        }
+        homeMode = true;
+        buildUi();
+    }
+
+    private void switchToLibrary() {
+        if (!homeMode && libraryRecycler != null) {
+            libraryRecycler.smoothScrollToPosition(0);
+            return;
+        }
+        homeMode = false;
+        buildUi();
+    }
+
+    private void showExploreHome() {
+        if (!homeMode) {
+            homeMode = true;
+            buildUi();
+        }
+        if (libraryRecycler != null) libraryRecycler.smoothScrollToPosition(0);
     }
 
     private View bottomNavItem(String iconText, String label, boolean active, Runnable action) {
@@ -1744,6 +1751,132 @@ public class MainActivity extends Activity {
         presentBottomSheet(dialog, sheet, 0.84f);
     }
 
+    private View buildLibraryOnlyHeader() {
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setPadding(dp(14), dp(12), dp(14), dp(5));
+
+        LinearLayout brandRow = new LinearLayout(this);
+        brandRow.setOrientation(LinearLayout.HORIZONTAL);
+        brandRow.setGravity(Gravity.CENTER_VERTICAL);
+        brandRow.setPadding(dp(4), 0, dp(2), 0);
+
+        TextView brand = new TextView(this);
+        brand.setText("WoW");
+        brand.setTextSize(34);
+        brand.setTextColor(themePrimaryText());
+        brand.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
+        brand.setGravity(Gravity.CENTER_VERTICAL);
+        brandRow.addView(brand, new LinearLayout.LayoutParams(0, dp(58), 1f));
+
+        accountButton = new ProfileAvatarView(this);
+        accountButton.setContentDescription("Google account & cloud library");
+        accountButton.setOnClickListener(v -> showAccountMenu());
+        brandRow.addView(accountButton, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        updateAccountButton();
+
+        themeButton = iconButton("navy".equals(appTheme) ? "✦" : "◐");
+        themeButton.setTextSize(16);
+        themeButton.setContentDescription("App theme");
+        themeButton.setOnClickListener(v -> showAppThemeDialog());
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        themeLp.leftMargin = dp(8);
+        brandRow.addView(themeButton, themeLp);
+
+        viewModeButton = iconButton(gridMode ? "▦" : "☷");
+        viewModeButton.setTextSize(16);
+        viewModeButton.setContentDescription("Change library view");
+        viewModeButton.setOnClickListener(v -> {
+            gridMode = !gridMode;
+            prefs.edit().putBoolean("library_grid", gridMode).apply();
+            viewModeButton.setText(gridMode ? "▦" : "☷");
+            configureLibraryLayout();
+            if (libraryAdapter != null) libraryAdapter.notifyDataSetChanged();
+        });
+        LinearLayout.LayoutParams viewLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        viewLp.leftMargin = dp(8);
+        brandRow.addView(viewModeButton, viewLp);
+        outer.addView(brandRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("Library");
+        title.setTextSize(22);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        titleRow.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        TextView home = new TextView(this);
+        home.setText("Home  ›");
+        home.setTextSize(11.5f);
+        home.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        home.setTextColor(themeAccent());
+        home.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        home.setOnClickListener(v -> switchToHome());
+        titleRow.addView(home, new LinearLayout.LayoutParams(dp(78), dp(42)));
+        outer.addView(titleRow);
+
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setPadding(dp(2), 0, dp(2), 0);
+        searchInput = new EditText(this);
+        searchInput.setSingleLine(true);
+        searchInput.setHint("Search title or author");
+        searchInput.setTextSize(14.5f);
+        searchInput.setTextColor(themePrimaryText());
+        searchInput.setHintTextColor(themeSecondaryText());
+        searchInput.setPadding(dp(17), 0, dp(17), 0);
+        searchInput.setBackground(roundRect(themeSearchSurface(), dp(25), dp(1), themeStroke()));
+        if (!searchQuery.isEmpty()) {
+            searchInput.setText(searchQuery);
+            searchInput.setSelection(searchInput.length());
+        }
+        searchInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                searchQuery = s.toString().trim().toLowerCase(Locale.ROOT);
+                refreshLibrary();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        searchRow.addView(searchInput, new LinearLayout.LayoutParams(0, dp(50), 1f));
+        TextView filter = iconButton("⌁");
+        filter.setTextSize(19);
+        filter.setContentDescription("Filter and sort library");
+        filter.setOnClickListener(v -> showLibraryFilterSheet());
+        LinearLayout.LayoutParams filterLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        filterLp.leftMargin = dp(8);
+        searchRow.addView(filter, filterLp);
+        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        searchLp.topMargin = dp(4);
+        outer.addView(searchRow, searchLp);
+        return outer;
+    }
+
+    private View buildHomeBooksSectionHeader() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(20), dp(10), dp(18), dp(8));
+        TextView title = new TextView(this);
+        title.setText("Recent library");
+        title.setTextSize(17);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        row.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        TextView all = new TextView(this);
+        all.setText("View library  ›");
+        all.setTextSize(11.5f);
+        all.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        all.setTextColor(themeAccent());
+        all.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        all.setOnClickListener(v -> switchToLibrary());
+        row.addView(all, new LinearLayout.LayoutParams(dp(112), dp(42)));
+        return row;
+    }
+
     private View buildLibrarySectionHeader() {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -2106,10 +2239,12 @@ public class MainActivity extends Activity {
     }
 
     private final class LibraryAdapter extends RecyclerView.Adapter<LibraryHolder> {
-        private static final int HEADER = 0;
-        private static final int SECTION = 1;
+        private static final int HOME_HEADER = 0;
+        private static final int LIBRARY_SECTION = 1;
         private static final int BOOK = 2;
         private static final int EMPTY = 3;
+        private static final int LIBRARY_HEADER = 4;
+        private static final int HOME_SECTION = 5;
         private final List<File> items = new ArrayList<>();
 
         void submit(List<File> next) {
@@ -2118,20 +2253,27 @@ public class MainActivity extends Activity {
             notifyDataSetChanged();
         }
 
+        private int shownBookCount() {
+            return homeMode ? Math.min(4, items.size()) : items.size();
+        }
+
         @Override public int getItemCount() {
-            return 2 + (items.isEmpty() ? 1 : items.size());
+            int shown = shownBookCount();
+            return 2 + (shown == 0 ? 1 : shown);
         }
 
         @Override public int getItemViewType(int position) {
-            if (position == 0) return HEADER;
-            if (position == 1) return SECTION;
-            if (items.isEmpty()) return EMPTY;
+            if (position == 0) return homeMode ? HOME_HEADER : LIBRARY_HEADER;
+            if (position == 1) return homeMode ? HOME_SECTION : LIBRARY_SECTION;
+            if (shownBookCount() == 0) return EMPTY;
             return BOOK;
         }
 
         @Override public LibraryHolder onCreateViewHolder(ViewGroup parent, int viewType) {
-            if (viewType == HEADER) return new LibraryHolder(buildLibraryHeader());
-            if (viewType == SECTION) return new LibraryHolder(buildLibrarySectionHeader());
+            if (viewType == HOME_HEADER) return new LibraryHolder(buildLibraryHeader());
+            if (viewType == LIBRARY_HEADER) return new LibraryHolder(buildLibraryOnlyHeader());
+            if (viewType == HOME_SECTION) return new LibraryHolder(buildHomeBooksSectionHeader());
+            if (viewType == LIBRARY_SECTION) return new LibraryHolder(buildLibrarySectionHeader());
             if (viewType == EMPTY) return new LibraryHolder(buildEmptyState());
             FrameLayout shell = new FrameLayout(MainActivity.this);
             shell.setPadding(dp(7), 0, dp(7), dp(14));
@@ -2140,19 +2282,20 @@ public class MainActivity extends Activity {
 
         @Override public void onBindViewHolder(LibraryHolder holder, int position) {
             int type = getItemViewType(position);
-            if (type == SECTION) {
+            if (type == LIBRARY_SECTION) {
                 if (countView != null) countView.setText(items.size() + (items.size() == 1 ? " book" : " books"));
                 return;
             }
+            if (type == HOME_SECTION || type == HOME_HEADER || type == LIBRARY_HEADER) return;
             if (type == EMPTY) {
                 ((TextView) holder.itemView).setText(searchQuery.isEmpty()
-                        ? "Your library is ready.\nTap ＋ to add an EPUB or PDF."
+                        ? "Your library is ready.\nTap Add book to add an EPUB or PDF."
                         : "No books match your search.");
                 return;
             }
             if (type != BOOK) return;
             int index = position - 2;
-            if (index < 0 || index >= items.size()) return;
+            if (index < 0 || index >= shownBookCount()) return;
             File file = items.get(index);
             FrameLayout shell = (FrameLayout) holder.itemView;
             shell.removeAllViews();

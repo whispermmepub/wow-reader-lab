@@ -84,6 +84,8 @@ public class BookReaderActivity extends Activity {
     private View nightLightOverlay;
     private Runnable chromeAutoHideRunnable;
     private SelectionData currentSelection;
+    private ActionMode nativeSelectionActionMode;
+    private Runnable hideNativeSelectionRunnable;
     private static final int SEL_HIGHLIGHT = 9301;
     private static final int SEL_NOTE = 9302;
     private static final int SEL_TRANSLATE = 9303;
@@ -560,6 +562,7 @@ public class BookReaderActivity extends Activity {
         webView.setHorizontalScrollBarEnabled(false);
         webView.setVerticalScrollBarEnabled(false);
         webView.addJavascriptInterface(new ReaderBridge(), "WoW");
+        webView.setCustomSelectionActionModeCallback(createSelectionActionModeCallback());
 
         pageTouchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
 
@@ -608,10 +611,12 @@ public class BookReaderActivity extends Activity {
                     if (generation == chapterLoadGeneration) installSelectionWatcher();
                 }, 560L);
                 if ("scroll".equals(readingMode)) {
+                    // Scroll mode now reveals through WoW.onScrollReady after fonts and two animation frames.
+                    // Keep a guarded fallback for unusually broken EPUB scripts.
                     webView.postDelayed(() -> {
-                        if (generation != chapterLoadGeneration) return;
-                        revealStableChapter();
-                    }, 110L);
+                        if (generation == chapterLoadGeneration && chapterLoading && "scroll".equals(readingMode))
+                            completePageReady(generation);
+                    }, 1600L);
                 } else {
                     // Recheck if a device changes its edge-to-edge viewport just after navigation.
                     webView.postDelayed(() -> {
@@ -703,28 +708,47 @@ public class BookReaderActivity extends Activity {
         int end;
     }
 
+    private void keepNativeSelectionToolbarHidden() {
+        if (nativeSelectionActionMode != null) {
+            try { nativeSelectionActionMode.hide(3000L); } catch (Exception ignored) {}
+        }
+        if (root == null) return;
+        if (hideNativeSelectionRunnable != null) root.removeCallbacks(hideNativeSelectionRunnable);
+        if (currentSelection == null) {
+            hideNativeSelectionRunnable = null;
+            return;
+        }
+        hideNativeSelectionRunnable = () -> {
+            hideNativeSelectionRunnable = null;
+            if (currentSelection != null) keepNativeSelectionToolbarHidden();
+        };
+        root.postDelayed(hideNativeSelectionRunnable, 2200L);
+    }
+
     private ActionMode.Callback createSelectionActionModeCallback() {
         return new ActionMode.Callback() {
             @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                nativeSelectionActionMode = mode;
                 menu.clear();
-                menu.add(0, SEL_HIGHLIGHT, 0, "Highlight").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                menu.add(0, SEL_NOTE, 1, "Add note").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                menu.add(0, SEL_TRANSLATE, 2, "Translate").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                menu.add(0, SEL_COPY, 3, "Copy").setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+                try { mode.hide(3000L); } catch (Exception ignored) {}
                 return true;
             }
 
-            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) { return false; }
+            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                nativeSelectionActionMode = mode;
+                menu.clear();
+                try { mode.hide(3000L); } catch (Exception ignored) {}
+                return true;
+            }
 
             @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-                int id = item.getItemId();
-                if (id != SEL_HIGHLIGHT && id != SEL_NOTE && id != SEL_TRANSLATE && id != SEL_COPY)
-                    return false;
-                captureCurrentSelection(id, mode);
+                // WoW's compact toolbar owns Highlight / Note / Translate / Copy.
                 return true;
             }
 
-            @Override public void onDestroyActionMode(ActionMode mode) {}
+            @Override public void onDestroyActionMode(ActionMode mode) {
+                if (nativeSelectionActionMode == mode) nativeSelectionActionMode = null;
+            }
         };
     }
 
@@ -1237,6 +1261,7 @@ public class BookReaderActivity extends Activity {
         data.start = Math.max(0, start);
         data.end = Math.max(data.start, end);
         currentSelection = data;
+        keepNativeSelectionToolbarHidden();
         showSelectionBar();
     }
 
@@ -1336,6 +1361,8 @@ public class BookReaderActivity extends Activity {
     }
 
     private void hideSelectionBar() {
+        if (root != null && hideNativeSelectionRunnable != null) root.removeCallbacks(hideNativeSelectionRunnable);
+        hideNativeSelectionRunnable = null;
         if (selectionBar != null) {
             selectionBar.animate().cancel();
             selectionBar.setVisibility(View.GONE);
@@ -1500,8 +1527,12 @@ public class BookReaderActivity extends Activity {
                 readerLoadingOverlay.getVisibility() == View.VISIBLE &&
                 (chapterTransitionOverlay == null || chapterTransitionOverlay.getVisibility() != View.VISIBLE);
         webView.animate().cancel();
+        webView.setScaleX(1f);
+        webView.setScaleY(1f);
         webView.setTranslationX(0f);
-        webView.setAlpha(firstOpen ? 0f : 1f);
+        // Never expose a newly loaded chapter until fonts + pagination settle.
+        // The previous chapter snapshot (or the initial loading screen) stays visible.
+        webView.setAlpha(0f);
 
         try {
             webView.loadUrl(Uri.fromFile(spine.get(currentSpine)).toString());
@@ -1798,9 +1829,12 @@ public class BookReaderActivity extends Activity {
 
         String bg = readerTheme == 2 ? "#121212" :
                 readerTheme == 1 ? "#F4ECD8" : "#FFFFFF";
-        String fg = readerTheme == 2 ? "#E8EAED" : "#202124";
-        String headingFg = readerTheme == 2 ? "#F1F3F4" : fg;
-        String link = readerTheme == 2 ? "#AECBFA" : "#1967D2";
+        String fg = readerTheme == 2 ? "#E8EAED" :
+                readerTheme == 1 ? "#4A4033" : "#202124";
+        String headingFg = readerTheme == 2 ? "#F1F3F4" :
+                readerTheme == 1 ? "#3B3128" : fg;
+        String link = readerTheme == 2 ? "#AECBFA" :
+                readerTheme == 1 ? "#8A5A35" : "#1967D2";
 
         String familyCss = "";
         if ("pyidaungsu".equals(fontChoice))
@@ -1838,6 +1872,10 @@ public class BookReaderActivity extends Activity {
         String darkCss = readerTheme == 2
                 ? "body,body p,body div,body span,body section,body article,body li,body dd,body dt,body blockquote,body td,body th,body figcaption{color:" + fg + " !important;}" +
                   "h1,h2,h3,h4,h5,h6,strong,b{color:" + headingFg + " !important;}"
+                : readerTheme == 1
+                ? "body,body p,body div,body span,body section,body article,body li,body dd,body dt,body blockquote,body td,body th,body figcaption{color:" + fg + " !important;}" +
+                  "h1,h2,h3,h4,h5,h6,strong,b{color:" + headingFg + " !important;}" +
+                  "a{color:" + link + " !important;}"
                 : "";
 
         String commonCss =
@@ -1932,9 +1970,9 @@ public class BookReaderActivity extends Activity {
                     "var run=function(){if(epoch!==st.measureEpoch)return;st.layout();st.page=0;st.pageMap=[0];flow.style.transition='none';flow.style.transform='translate3d('+st.marginPx+'px,0,0)';st.applyTypography();st.preparePagination();" +
                     "requestAnimationFrame(function(){requestAnimationFrame(function(){if(epoch!==st.measureEpoch)return;st.layout();var map=st.collectPageMap();if(!map.length){st.count=0;st.locked=false;WoW.onEmptyChapter();return;}" +
                     "var sig=(viewport.clientWidth||0)+'x'+(viewport.clientHeight||0)+'|'+Math.round(flow.scrollWidth||0)+'|'+map.join(',');if(sig===lastSig)stableHits++;else{lastSig=sig;stableHits=0;}attempt++;" +
-                    "if(stableHits<1&&attempt<7){setTimeout(run,76);return;}st.pageMap=map;st.count=map.length;st.page=st.clamp(Math.round((st.count-1)*ratio),0,st.count-1);st.apply(false);" +
+                    "if(stableHits<2&&attempt<9){setTimeout(run,76);return;}st.pageMap=map;st.count=map.length;st.page=st.clamp(Math.round((st.count-1)*ratio),0,st.count-1);st.apply(false);" +
                     "requestAnimationFrame(function(){if(epoch!==st.measureEpoch)return;var verify=st.collectPageMap();var sig2=(viewport.clientWidth||0)+'x'+(viewport.clientHeight||0)+'|'+Math.round(flow.scrollWidth||0)+'|'+verify.join(',');" +
-                    "if(sig2!==sig&&attempt<9){lastSig=sig2;stableHits=0;setTimeout(run,64);return;}st.locked=false;st.report();WoW.onPageReady(" + styleGeneration + ",st.page+1,st.count,st.progress());" +
+                    "if(sig2!==sig&&attempt<11){lastSig=sig2;stableHits=0;setTimeout(run,64);return;}st.locked=false;st.report();WoW.onPageReady(" + styleGeneration + ",st.page+1,st.count,st.progress());" +
                     (styleToken > 0 ? "WoW.onStyleReady(" + styleToken + ");" : "") +
                     "});});});};run();};" +
                     "st.turn=function(d){if(st.mode!=='page'||st.locked)return 'locked';if(d<0&&(st.page||0)<=0){st.locked=true;WoW.requestChapter(-1);return 'chapter';}if(d>0&&(st.page||0)>=(st.count||1)-1){st.locked=true;WoW.requestChapter(1);return 'chapter';}st.locked=true;st.page=st.clamp((st.page||0)+d,0,(st.count||1)-1);st.paperTurn(d,function(){st.report();st.locked=false;WoW.onPageTurnComplete(st.page+1,st.count,st.progress());});return 'page';};" +
@@ -1963,6 +2001,7 @@ public class BookReaderActivity extends Activity {
                     "if(!window.__wowScrollBound){window.__wowScrollBound=true;var t=0;window.addEventListener('scroll',function(){if(window.__wowPageEngine&&window.__wowPageEngine.mode==='page')return;clearTimeout(t);t=setTimeout(function(){var h=Math.max(1,document.documentElement.scrollHeight-window.innerHeight);WoW.onScroll(Math.round((window.scrollY/h)*1000));},90);},{passive:true});}" +
                     "var finishWowStyle=function(){requestAnimationFrame(function(){requestAnimationFrame(function(){" +
                     (restore >= 0 ? "var h=Math.max(0,document.documentElement.scrollHeight-window.innerHeight);window.scrollTo(0,h*" + ratio + ");" : "") +
+                    "WoW.onScrollReady(" + styleGeneration + ");" +
                     (styleToken > 0 ? "WoW.onStyleReady(" + styleToken + ");" : "") +
                     "});});};if(document.fonts&&document.fonts.ready)document.fonts.ready.then(finishWowStyle);else finishWowStyle();" +
                     "}catch(e){}})();";
@@ -2041,6 +2080,8 @@ public class BookReaderActivity extends Activity {
     private void revealStableChapter() {
         if (webView != null) {
             webView.animate().cancel();
+            webView.setScaleX(1f);
+            webView.setScaleY(1f);
             webView.setAlpha(1f);
             if (pendingChapterFade && "slide".equals(pageAnimation) && "page".equals(readingMode)) {
                 float offset = (pendingChapterDirection < 0 ? -1f : 1f) * dp(18);
@@ -4015,7 +4056,7 @@ public class BookReaderActivity extends Activity {
             stroke = Color.argb(56, 255, 255, 255);
         } else if (readerTheme == 1) {
             solid = Color.rgb(244, 236, 216);
-            fg = Color.rgb(32, 33, 36);
+            fg = Color.rgb(74, 64, 51);
             glass = Color.argb(238, 250, 244, 228);
             stroke = Color.argb(92, 168, 153, 126);
         } else {
@@ -4259,6 +4300,14 @@ public class BookReaderActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void onScrollReady(int generation) {
+            runOnUiThread(() -> {
+                if (!"scroll".equals(readingMode) || generation != chapterLoadGeneration) return;
+                completePageReady(generation);
+            });
+        }
+
+        @JavascriptInterface
         public void onPage(int page, int count, int p) {
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
@@ -4303,10 +4352,9 @@ public class BookReaderActivity extends Activity {
                 if (!"page".equals(readingMode)) return;
                 readingMode = "scroll";
                 pageTurnLocked = false;
-                chapterLoading = false;
+                chapterLoading = true;
                 pendingChapterCurlDirection = 0;
                 if (pageCurlView != null) pageCurlView.release();
-                finishChapterFade();
                 prefs.edit().putString("epub_reading_mode", "scroll").apply();
                 applyReaderStyle(true);
                 Toast.makeText(BookReaderActivity.this, "Page layout adjusted to Scroll for this book", Toast.LENGTH_SHORT).show();
@@ -4346,10 +4394,9 @@ public class BookReaderActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // Back gestures never leave a book accidentally. Use the visible ‹ button to exit.
-        if (!controlsVisible) showControls();
-        else hideControls();
-        enterImmersive();
+        if (!isPdf) saveEpubState();
+        finish();
+        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
     }
 
     @Override

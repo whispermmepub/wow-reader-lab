@@ -1,0 +1,267 @@
+package com.whisper.wowreader;
+
+import android.app.Activity;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Bundle;
+import android.text.method.LinkMovementMethod;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
+public class ComingSoonDetailActivity extends Activity {
+    private SharedPreferences prefs;
+    private String appTheme = "white";
+    private LinearLayout bodyRoot;
+    private TextView status;
+    private String postUrl;
+    private String fallbackTitle;
+    private String fallbackSource;
+    private String fallbackDate;
+    private String fallbackImage;
+
+    @Override protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
+        appTheme = prefs.getString("app_theme", "white");
+        postUrl = getIntent().getStringExtra("url");
+        fallbackTitle = safe(getIntent().getStringExtra("title"));
+        fallbackSource = safe(getIntent().getStringExtra("source"));
+        fallbackDate = safe(getIntent().getStringExtra("date"));
+        fallbackImage = safe(getIntent().getStringExtra("image"));
+        applyBars();
+        buildUi();
+        loadPost();
+    }
+
+    private void buildUi() {
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(bg());
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
+        bodyRoot = new LinearLayout(this);
+        bodyRoot.setOrientation(LinearLayout.VERTICAL);
+        bodyRoot.setPadding(dp(16), dp(12), dp(16), dp(34));
+        scroll.addView(bodyRoot, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView back = smallButton("‹");
+        back.setTextSize(28);
+        back.setOnClickListener(v -> finish());
+        header.addView(back, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+        TextView label = text("Coming Soon", 15, primary(), true);
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        label.setPadding(dp(12), 0, 0, 0);
+        header.addView(label, new LinearLayout.LayoutParams(0, dp(48), 1f));
+
+        TextView web = smallButton("↗");
+        web.setContentDescription("Open original post");
+        web.setOnClickListener(v -> openOriginal());
+        header.addView(web, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        bodyRoot.addView(header, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+
+        status = text("Loading post…", 12.5f, secondary(), false);
+        status.setPadding(dp(2), dp(14), dp(2), dp(10));
+        bodyRoot.addView(status, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        if (!fallbackTitle.isEmpty()) renderSkeleton();
+        root.addView(scroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(root);
+    }
+
+    private void renderSkeleton() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(12), dp(12), dp(16));
+        card.setBackground(roundRect(card(), dp(22), dp(1), stroke()));
+
+        ImageView cover = new ImageView(this);
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.setBackground(roundRect(control(), dp(16), 0, 0));
+        cover.setClipToOutline(true);
+        card.addView(cover, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(270)));
+        loadImage(fallbackImage, cover);
+
+        TextView source = text(fallbackSource + (fallbackDate.isEmpty() ? "" : " · " + fallbackDate), 10.5f, accent(), true);
+        source.setPadding(dp(2), dp(14), dp(2), 0);
+        card.addView(source);
+        TextView title = text(fallbackTitle, 22, primary(), true);
+        title.setPadding(dp(2), dp(8), dp(2), dp(4));
+        card.addView(title);
+        bodyRoot.addView(card, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void loadPost() {
+        new Thread(() -> {
+            ComingSoonFeed.Post post = ComingSoonFeed.fetchPost(this, postUrl);
+            runOnUiThread(() -> {
+                if (post == null) {
+                    status.setText("Couldn't load the full post. You can open the original source with ↗.");
+                    return;
+                }
+                renderPost(post);
+            });
+        }, "wow-coming-soon-detail").start();
+    }
+
+    private void renderPost(ComingSoonFeed.Post post) {
+        status.setVisibility(View.GONE);
+        while (bodyRoot.getChildCount() > 1) bodyRoot.removeViewAt(1);
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(12), dp(12), dp(18));
+        card.setBackground(roundRect(card(), dp(22), dp(1), stroke()));
+        card.setElevation(dp(1));
+
+        if (post.imageUrl != null && !post.imageUrl.isEmpty()) {
+            ImageView cover = new ImageView(this);
+            cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            cover.setBackground(roundRect(control(), dp(16), 0, 0));
+            cover.setClipToOutline(true);
+            card.addView(cover, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(280)));
+            loadImage(post.imageUrl, cover);
+        }
+
+        TextView source = text(post.source + (post.published.isEmpty() ? "" : " · " + post.published), 10.5f, accent(), true);
+        source.setPadding(dp(2), dp(14), dp(2), 0);
+        card.addView(source);
+
+        TextView title = text(post.title, 22, primary(), true);
+        title.setLineSpacing(0f, 1.08f);
+        title.setPadding(dp(2), dp(8), dp(2), dp(6));
+        card.addView(title);
+
+        View divider = new View(this);
+        divider.setBackgroundColor(stroke());
+        LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
+        dividerLp.topMargin = dp(8);
+        dividerLp.bottomMargin = dp(14);
+        card.addView(divider, dividerLp);
+
+        TextView body = text("", 16, primary(), false);
+        body.setLineSpacing(dp(4), 1.18f);
+        body.setText(ComingSoonFeed.richText(post.contentHtml));
+        body.setMovementMethod(LinkMovementMethod.getInstance());
+        body.setLinkTextColor(accent());
+        body.setTextIsSelectable(true);
+        body.setPadding(dp(2), 0, dp(2), dp(6));
+        card.addView(body);
+
+        TextView original = text("Read original post  ↗", 12.5f, accent(), true);
+        original.setGravity(Gravity.CENTER);
+        original.setBackground(roundRect(control(), dp(18), dp(1), stroke()));
+        original.setOnClickListener(v -> openOriginal());
+        LinearLayout.LayoutParams originalLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        originalLp.topMargin = dp(16);
+        card.addView(original, originalLp);
+
+        bodyRoot.addView(card, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void openOriginal() {
+        if (postUrl == null || postUrl.trim().isEmpty()) return;
+        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(postUrl))); } catch (Exception ignored) {}
+    }
+
+    private void loadImage(String url, ImageView view) {
+        if (url == null || url.trim().isEmpty()) return;
+        new Thread(() -> {
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL(url).openConnection();
+                c.setConnectTimeout(7000);
+                c.setReadTimeout(9000);
+                c.setRequestProperty("User-Agent", "WoWReader/2.16 Android");
+                try (InputStream in = c.getInputStream()) {
+                    Bitmap bitmap = BitmapFactory.decodeStream(in);
+                    if (bitmap != null) runOnUiThread(() -> view.setImageBitmap(bitmap));
+                }
+            } catch (Exception ignored) {
+            } finally {
+                if (c != null) c.disconnect();
+            }
+        }, "wow-detail-cover").start();
+    }
+
+    private TextView smallButton(String value) {
+        TextView v = text(value, 18, primary(), false);
+        v.setGravity(Gravity.CENTER);
+        v.setBackground(roundRect(control(), dp(18), dp(1), stroke()));
+        v.setClickable(true);
+        return v;
+    }
+
+    private TextView text(String value, float size, int color, boolean bold) {
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextSize(size);
+        v.setTextColor(color);
+        if (bold) v.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return v;
+    }
+
+    private GradientDrawable roundRect(int fill, int radius, int strokeWidth, int strokeColor) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(fill);
+        d.setCornerRadius(radius);
+        if (strokeWidth > 0) d.setStroke(strokeWidth, strokeColor);
+        return d;
+    }
+
+    private void applyBars() {
+        getWindow().setStatusBarColor(bg());
+        getWindow().setNavigationBarColor(bg());
+        if (!"black".equals(appTheme) && !"navy".equals(appTheme))
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        else getWindow().getDecorView().setSystemUiVisibility(0);
+    }
+
+    private int bg() {
+        if ("black".equals(appTheme)) return Color.rgb(17, 18, 20);
+        if ("navy".equals(appTheme)) return Color.rgb(19, 25, 43);
+        return Color.rgb(247, 248, 251);
+    }
+    private int card() {
+        if ("black".equals(appTheme)) return Color.rgb(28, 29, 32);
+        if ("navy".equals(appTheme)) return Color.rgb(28, 36, 59);
+        return Color.WHITE;
+    }
+    private int control() {
+        if ("black".equals(appTheme)) return Color.rgb(38, 39, 43);
+        if ("navy".equals(appTheme)) return Color.rgb(38, 47, 73);
+        return Color.rgb(244, 245, 249);
+    }
+    private int primary() { return ("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(245, 246, 249) : Color.rgb(31, 33, 40); }
+    private int secondary() { return ("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(176, 181, 194) : Color.rgb(104, 109, 124); }
+    private int stroke() { return ("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(55, 60, 74) : Color.rgb(226, 228, 236); }
+    private int accent() { return Color.rgb(111, 78, 209); }
+    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private String safe(String value) { return value == null ? "" : value; }
+}

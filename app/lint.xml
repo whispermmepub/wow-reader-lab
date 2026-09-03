@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!--
+      MainActivity's only WrongThread finding is the profile image cache write.
+      That code is invoked from the dedicated wow-profile-photo worker thread.
+    -->
+    <issue id="WrongThread">
+        <ignore path="src/main/java/com/whisper/wowreader/MainActivity.java" />
+    </issue>
+</lint>

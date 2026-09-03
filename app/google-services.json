@@ -1,0 +1,92 @@
+{
+  "project_info": {
+    "project_number": "1027420568326",
+    "project_id": "wow-reader",
+    "storage_bucket": "wow-reader.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1027420568326:android:a0e7e4dc4cddb8b3d2fc87",
+        "android_client_info": {
+          "package_name": "com.whisper.wowreader"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1027420568326-m9f98kke24it1uvsfdlki6uanvrd2lna.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.whisper.wowreader",
+            "certificate_hash": "2117d31e01eb24eae3fe4a2688c8c712cd7671f1"
+          }
+        },
+        {
+          "client_id": "1027420568326-pdbi6ecrdvv6nhnhj00fskq715e1ugtq.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.whisper.wowreader",
+            "certificate_hash": "7be39561c705e5095a2eef4fa0bf80e732c71091"
+          }
+        },
+        {
+          "client_id": "1027420568326-3504abjnba1vjil1dgl590jctf3sr4pv.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVxrY43US5GrPy2n_kMpsdtRZirtqIKck"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1027420568326-3504abjnba1vjil1dgl590jctf3sr4pv.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1027420568326:android:e86fe163384ac8a5d2fc87",
+        "android_client_info": {
+          "package_name": "com.whisperwowreader"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1027420568326-e07nlvueqgkkqfk3qhkohn0lvppni4ke.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.whisperwowreader",
+            "certificate_hash": "7be39561c705e5095a2eef4fa0bf80e732c71091"
+          }
+        },
+        {
+          "client_id": "1027420568326-3504abjnba1vjil1dgl590jctf3sr4pv.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVxrY43US5GrPy2n_kMpsdtRZirtqIKck"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1027420568326-3504abjnba1vjil1dgl590jctf3sr4pv.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -120,7 +120,7 @@ final class GoogleAutoSync {
                 File fonts = new File(activity.getFilesDir(), "reader_fonts");
                 if (!library.exists()) library.mkdirs();
                 if (!fonts.exists()) fonts.mkdirs();
-                GoogleDriveSync.backup(activity, profile.accessToken, library, fonts, prefs,
+                GoogleDriveSync.smartBackup(activity, profile.accessToken, library, fonts, prefs,
                         new GoogleDriveSync.SyncCallback() {
                             @Override public void onSuccess(String message) {
                                 prefs.edit().putLong("google_last_synced_change_ms", requestedChangeMs).apply();

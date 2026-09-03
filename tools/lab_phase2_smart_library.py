@@ -34,18 +34,10 @@ text = replace_once(
     "smart library count",
 )
 
-text = replace_once(
-    text,
-    '        card.setOnLongClickListener(v -> { confirmDelete(file); return true; });',
-    '        card.setOnLongClickListener(v -> { showBookActions(file); return true; });',
-    "grid long press",
-)
-text = replace_once(
-    text,
-    '        card.setOnLongClickListener(v -> { confirmDelete(file); return true; });',
-    '        card.setOnLongClickListener(v -> { showBookActions(file); return true; });',
-    "list long press",
-)
+long_press_anchor = '        card.setOnLongClickListener(v -> { confirmDelete(file); return true; });'
+if text.count(long_press_anchor) != 2:
+    raise RuntimeError(f"book long press: expected exactly two anchors, found {text.count(long_press_anchor)}")
+text = text.replace(long_press_anchor, '        card.setOnLongClickListener(v -> { showBookActions(file); return true; });')
 
 text = replace_once(
     text,

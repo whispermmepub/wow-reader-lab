@@ -1,0 +1,139 @@
+name: Build WoW Reader v2.14 APK and AAB
+
+on:
+  push:
+    branches: [main, play-store-api36]
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android 16 SDK
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+
+      - name: Source checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/MainActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/EpubUtil.java
+          test -s app/src/main/java/com/whisper/wowreader/PageCurlView.java
+          test -s app/src/main/java/com/whisper/wowreader/ReaderAnnotationStore.java
+          test -s app/src/main/java/com/whisper/wowreader/ReaderFontStore.java
+          test -s app/src/main/java/com/whisper/wowreader/SplashActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
+          test -s app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          test -s app/google-services.json
+          test -s app/src/main/res/drawable/wow_logo.xml
+          test -s app/src/main/res/drawable/ic_launcher.xml
+          test -s app/src/main/assets/fonts/pyidaungsu.woff2
+          test -s app/src/main/assets/fonts/pyidaungsu_native.ttf
+          grep -q "compileSdk 36" app/build.gradle
+          grep -q "targetSdk 36" app/build.gradle
+          grep -q "versionCode 26" app/build.gradle
+          grep -q "versionName '2.14.0'" app/build.gradle
+          grep -q "androidx.recyclerview:recyclerview:1.3.2" app/build.gradle
+          MAIN=app/src/main/java/com/whisper/wowreader/MainActivity.java
+          READER=app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          SPLASH=app/src/main/java/com/whisper/wowreader/SplashActivity.java
+          grep -q "RecyclerView" "$MAIN"
+          grep -q "calculateLibraryColumns" "$MAIN"
+          grep -q "showAuthorsDialog" "$MAIN"
+          grep -q "showAppThemeDialog" "$MAIN"
+          grep -q 'Navy Premium' "$MAIN"
+          grep -q 'app_theme' "$MAIN"
+          grep -q 'library_owned_' "$MAIN"
+          grep -q 'local copy saved' "$MAIN"
+          grep -q 'original file you imported' "$MAIN"
+          grep -q 'accountButton = new ProfileAvatarView(this)' "$MAIN"
+          grep -q 'googleAccount = new GoogleAccountAuth(this)' "$MAIN"
+          grep -q 'googleDrive = new GoogleDriveSync(this)' "$MAIN"
+          grep -q 'GoogleAuthProvider.getCredential' app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
+          grep -q 'Scopes.DRIVE_APPFOLDER' app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          ! grep -q 'Scopes.EMAIL' app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          grep -q 'google_last_synced_change_ms' "$MAIN"
+          grep -q 'Opening book…' "$READER"
+          grep -q 'applyReaderStyleSmooth' "$READER"
+          grep -q 'wow-reader-block{line-height:' "$READER"
+          grep -q 'String\[\] animLabels = {"None", "Slide"}' "$READER"
+          ! grep -q '"3D page curl"' "$READER"
+          grep -q 'startNativeSlidePageTurn' "$READER"
+          grep -q 'pageSlideOverlay' "$READER"
+          grep -q 'prewarmAdjacentChapters' "$READER"
+          grep -q 'import java.io.InputStream;' "$READER"
+          grep -q 'pendingChapterDirection' "$READER"
+          grep -q 'long duration = "slide".equals(pageAnimation)' "$READER"
+          grep -q 'app_theme' "$SPLASH"
+          grep -q 'setDecorFitsSystemWindows(false)' "$READER"
+          grep -q 'BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE' "$READER"
+          grep -q 'ReaderAnnotationStore.add' "$READER"
+          git diff --check
+
+      - name: Build release APK and AAB
+        run: gradle :app:assembleRelease :app:bundleRelease --stacktrace
+
+      - name: Android lint
+        run: gradle :app:lintRelease --stacktrace
+
+      - name: APK smoke checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$APK"
+          test -s "$AAB"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='26'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.14.0'"
+          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+          unzip -l "$APK" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
+          unzip -l "$AAB" | grep -q 'base/assets/fonts/pyidaungsu_native.ttf'
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-v2.14.0-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-v2.14.0-unsigned.aab
+          APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
+          test -n "$APKSIGNER_JAR"
+          cp "$APKSIGNER_JAR" apksigner.jar
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-v2.14.0
+          path: |
+            WoW-Reader-v2.14.0-unsigned.apk
+            WoW-Reader-v2.14.0-unsigned.aab
+            apksigner.jar
+          if-no-files-found: error
+          retention-days: 14

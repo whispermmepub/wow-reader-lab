@@ -54,3 +54,4 @@ reader = replace_once(
 
 READER.write_text(reader, encoding="utf-8")
 print("Notes and Highlights Hub patch applied successfully.")
+# trigger

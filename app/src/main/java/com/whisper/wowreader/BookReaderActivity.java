@@ -544,8 +544,52 @@ public class BookReaderActivity extends Activity {
         return iconButton(text, 18);
     }
 
+    private final class ReaderWebView extends WebView {
+        ReaderWebView(android.content.Context context) {
+            super(context);
+        }
+
+        private ActionMode.Callback suppressNativeToolbar(ActionMode.Callback delegate) {
+            return new ActionMode.Callback() {
+                @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                    boolean created = delegate == null || delegate.onCreateActionMode(mode, menu);
+                    nativeSelectionActionMode = mode;
+                    menu.clear();
+                    try { mode.hide(3000L); } catch (Exception ignored) {}
+                    return created;
+                }
+
+                @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                    boolean changed = delegate != null && delegate.onPrepareActionMode(mode, menu);
+                    nativeSelectionActionMode = mode;
+                    menu.clear();
+                    try { mode.hide(3000L); } catch (Exception ignored) {}
+                    return changed || true;
+                }
+
+                @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                    // Native items are intentionally removed; WoW's compact bar owns actions.
+                    return true;
+                }
+
+                @Override public void onDestroyActionMode(ActionMode mode) {
+                    if (delegate != null) delegate.onDestroyActionMode(mode);
+                    if (nativeSelectionActionMode == mode) nativeSelectionActionMode = null;
+                }
+            };
+        }
+
+        @Override public ActionMode startActionMode(ActionMode.Callback callback) {
+            return super.startActionMode(suppressNativeToolbar(callback));
+        }
+
+        @Override public ActionMode startActionMode(ActionMode.Callback callback, int type) {
+            return super.startActionMode(suppressNativeToolbar(callback), type);
+        }
+    }
+
     private void setupWebView(FrameLayout content) {
-        webView = new WebView(this);
+        webView = new ReaderWebView(this);
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setAllowFileAccess(true);
@@ -562,7 +606,6 @@ public class BookReaderActivity extends Activity {
         webView.setHorizontalScrollBarEnabled(false);
         webView.setVerticalScrollBarEnabled(false);
         webView.addJavascriptInterface(new ReaderBridge(), "WoW");
-        webView.setCustomSelectionActionModeCallback(createSelectionActionModeCallback());
 
         pageTouchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
 

@@ -5,6 +5,7 @@ on:
     branches: [feature/notes-highlights-hub]
     paths:
       - 'tools/lab_phase3_notes_hub.py'
+      - '.github/workflows/lab-apply-notes-hub.yml'
 
 permissions:
   contents: write

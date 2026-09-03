@@ -1,0 +1,37 @@
+name: Fix Smart Library Patch Anchors
+
+on:
+  push:
+    branches: [feature/smart-library-shelves]
+    paths:
+      - '.github/workflows/fix-phase2-anchors.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/smart-library-shelves
+          fetch-depth: 0
+      - name: Fix duplicate long-press anchor handling
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/lab_phase2_smart_library.py')
+          s=p.read_text()
+          old='''text = replace_once(\n    text,\n    '        card.setOnLongClickListener(v -> { confirmDelete(file); return true; });',\n    '        card.setOnLongClickListener(v -> { showBookActions(file); return true; });',\n    "grid long press",\n)\ntext = replace_once(\n    text,\n    '        card.setOnLongClickListener(v -> { confirmDelete(file); return true; });',\n    '        card.setOnLongClickListener(v -> { showBookActions(file); return true; });',\n    "list long press",\n)\n'''
+          new='''long_press_anchor = '        card.setOnLongClickListener(v -> { confirmDelete(file); return true; });'\nif text.count(long_press_anchor) != 2:\n    raise RuntimeError(f"book long press: expected exactly two anchors, found {text.count(long_press_anchor)}")\ntext = text.replace(long_press_anchor, '        card.setOnLongClickListener(v -> { showBookActions(file); return true; });')\n'''
+          if s.count(old)!=1:
+              raise SystemExit('Expected phase2 anchor block not found exactly once')
+          p.write_text(s.replace(old,new,1))
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/lab_phase2_smart_library.py
+          git commit -m 'Fix smart library long-press patch guard'
+          git push origin HEAD:feature/smart-library-shelves

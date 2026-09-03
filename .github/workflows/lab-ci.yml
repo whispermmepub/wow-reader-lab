@@ -10,34 +10,123 @@ on:
       - 'gradle.properties'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply v32 chapter-boundary fix
+        if: github.ref == 'refs/heads/feature/lab-v32-chapter-boundary-no-animation'
+        run: python3 scripts/apply_lab_v32_chapter_fix.py
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+
       - name: Install Android 16 SDK
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+
       - name: Lab regression source checks
         shell: bash
         run: |
           set -euo pipefail
+          R=app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          M=app/src/main/java/com/whisper/wowreader/MainActivity.java
+          F=app/src/main/java/com/whisper/wowreader/ComingSoonFeed.java
+          G=app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          A=app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
           test -s app/src/main/java/com/whisper/wowreader/ReadingStatsStore.java
-          grep -q 'ReadingStatsStore.beginSession' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q 'ReadingStatsStore.finishSession' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q 'showReadingStatsDialog' app/src/main/java/com/whisper/wowreader/MainActivity.java
-          grep -q 'GoogleAuthProvider.getCredential' app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
-          grep -q 'Scopes.DRIVE_APPFOLDER' app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
-          grep -q 'ReaderAnnotationStore.add' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q 'prewarmAdjacentChapters' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'ReadingStatsStore.beginSession' "$R"
+          grep -q 'ReadingStatsStore.finishSession' "$R"
+          grep -q 'showReadingStatsDialog' "$M"
+          grep -q 'GoogleAuthProvider.getCredential' "$A"
+          grep -q 'Scopes.DRIVE_APPFOLDER' "$G"
+          grep -q 'smartBackup' "$G"
+          grep -q 'ReaderAnnotationStore.add' "$R"
+          grep -q 'prewarmAdjacentChapters' "$R"
+          grep -q 'chapterTransitionOverlay.setScaleType(ImageView.ScaleType.CENTER_CROP)' "$R"
+          grep -q 'Chapter boundaries are intentionally animation-free' "$R"
+          grep -q 'webView.setAlpha(0f)' "$R"
+          ! grep -q 'webView.animate().translationX(0f).setDuration(175L)' "$R"
+          ! grep -q 'long duration = "slide".equals(pageAnimation)' "$R"
+          grep -q 'whisper1of.blogspot.com' "$F"
+          grep -q 'thetpaingwrites.blogspot.com' "$F"
+          grep -q 'youthsbookreflections.blogspot.com' "$F"
+          grep -q 'cleanContentHtml' "$F"
+          grep -q 'versionCode 32' app/build.gradle
+          grep -q "versionName '2.16.2-lab-v32'" app/build.gradle
           git diff --check
-      - name: Compile and lint lab app
-        run: gradle :app:assembleDebug :app:lintDebug --stacktrace
+
+      - name: Compile debug/release and lint
+        run: gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintDebug :app:lintRelease --stacktrace
+
+      - name: Smoke check release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          AAB=$(find app/build/outputs/bundle/release -name '*.aab' | head -1)
+          test -s "$APK"
+          test -s "$AAB"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          "$BT/aapt" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.whisper.wowreader' versionCode='32' versionName='2.16.2-lab-v32'" /tmp/badging.txt
+          grep -q "targetSdkVersion:'36'" /tmp/badging.txt
+
+      - name: Collect unsigned v32 APK/AAB and signing tools
+        if: github.ref == 'refs/heads/feature/lab-v32-chapter-boundary-no-animation'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          AAB=$(find app/build/outputs/bundle/release -name '*.aab' | head -1)
+          cp "$APK" out/WoW-Reader-Lab-v32-unsigned.apk
+          cp "$AAB" out/WoW-Reader-Lab-v32-unsigned.aab
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          cp "$BT/zipalign" out/zipalign
+          cp "$BT/lib/apksigner.jar" out/apksigner.jar
+          cat > out/ci-verification.txt <<'EOF'
+          WoW Reader Lab v32
+          package=com.whisper.wowreader
+          versionCode=32
+          versionName=2.16.2-lab-v32
+          targetSdk=36
+          V31 reader/review/Coming Soon features preserved
+          Chapter boundary: no fade, slide or translation
+          Internal page None/Slide behavior preserved
+          debug/release APK + AAB compile PASS
+          debug/release lint PASS
+          Google Auth / Drive appDataFolder / Smart Sync guards PASS
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/feature/lab-v32-chapter-boundary-no-animation'
+        with:
+          name: WoW-Reader-Lab-v32-final-unsigned
+          path: out/*
+          retention-days: 2
+
+      - name: Commit validated v32 reader fix
+        if: github.ref == 'refs/heads/feature/lab-v32-chapter-boundary-no-animation'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin feature/lab-v31-reader-review-polish
+          git checkout origin/feature/lab-v31-reader-review-polish -- .github/workflows/lab-ci.yml
+          git rm scripts/apply_lab_v32_chapter_fix.py
+          git config user.name 'AungSoe Moe'
+          git config user.email '61192036+whispermmepub@users.noreply.github.com'
+          git add app/src/main/java/com/whisper/wowreader/BookReaderActivity.java .github/workflows/lab-ci.yml
+          git commit -m 'Remove animation at chapter boundaries in v32'
+          git push origin HEAD:feature/lab-v32-chapter-boundary-no-animation

@@ -16,7 +16,7 @@ import java.util.Locale;
  *
  * This class is original WoW Reader code inspired only by the general idea of
  * reader statistics. It deliberately uses the app's existing SharedPreferences
- * so the data is automatically included by the current backup/sync pipeline.
+ * so the data can travel with the existing reader-data backup pipeline.
  */
 public final class ReadingStatsStore {
     private ReadingStatsStore() {}
@@ -28,9 +28,7 @@ public final class ReadingStatsStore {
     private static final String KEY_LONGEST_STREAK = "reading_stats_longest_streak";
     private static final String KEY_LAST_DAY = "reading_stats_last_day";
 
-    // Tiny launches, permission interruptions, etc. should not count as reading.
     private static final long MIN_SESSION_MS = 5_000L;
-    // Guard against a stale lifecycle timestamp after process/device anomalies.
     private static final long MAX_SESSION_MS = 6L * 60L * 60L * 1000L;
 
     public static final class Snapshot {
@@ -62,7 +60,7 @@ public final class ReadingStatsStore {
             JSONObject books = object(prefs.getString(KEY_BOOKS, "{}"));
 
             days.put(today, safeAdd(days.optLong(today, 0L), durationMs));
-            String bookKey = Integer.toHexString((bookName == null ? "book" : bookName).hashCode());
+            String bookKey = bookKey(bookName);
             books.put(bookKey, safeAdd(books.optLong(bookKey, 0L), durationMs));
 
             int current = prefs.getInt(KEY_CURRENT_STREAK, 0);
@@ -70,7 +68,7 @@ public final class ReadingStatsStore {
             String lastDay = prefs.getString(KEY_LAST_DAY, "");
 
             if (!today.equals(lastDay)) {
-                if (lastDay != null && lastDay.equals(dayKey(wallClockMs - 24L * 60L * 60L * 1000L))) {
+                if (lastDay != null && lastDay.equals(previousDayKey(wallClockMs))) {
                     current = Math.max(1, current + 1);
                 } else {
                     current = 1;
@@ -100,8 +98,7 @@ public final class ReadingStatsStore {
             JSONObject books = object(prefs.getString(KEY_BOOKS, "{}"));
             s.todayMs = days.optLong(dayKey(System.currentTimeMillis()), 0L);
             s.totalMs = prefs.getLong(KEY_TOTAL_MS, 0L);
-            String bookKey = Integer.toHexString((bookName == null ? "book" : bookName).hashCode());
-            s.bookMs = books.optLong(bookKey, 0L);
+            s.bookMs = bookName == null ? 0L : books.optLong(bookKey(bookName), 0L);
             s.currentStreak = calculateCurrentStreak(days);
             s.longestStreak = Math.max(prefs.getInt(KEY_LONGEST_STREAK, 0), calculateLongestStreak(days));
             s.activeDays = countPositiveDays(days);
@@ -112,6 +109,10 @@ public final class ReadingStatsStore {
 
     public static Snapshot snapshot(SharedPreferences prefs) {
         return snapshot(prefs, null);
+    }
+
+    private static String bookKey(String bookName) {
+        return Integer.toHexString((bookName == null ? "book" : bookName).hashCode());
     }
 
     private static JSONObject object(String raw) {
@@ -143,9 +144,7 @@ public final class ReadingStatsStore {
 
     private static int calculateLongestStreak(JSONObject days) {
         if (days.length() == 0) return 0;
-        long now = System.currentTimeMillis();
         Calendar c = Calendar.getInstance();
-        c.setTimeInMillis(now);
         c.add(Calendar.DAY_OF_YEAR, -3650);
         int longest = 0;
         int running = 0;
@@ -159,6 +158,13 @@ public final class ReadingStatsStore {
             c.add(Calendar.DAY_OF_YEAR, 1);
         }
         return longest;
+    }
+
+    private static String previousDayKey(long wallClockMs) {
+        Calendar c = Calendar.getInstance();
+        c.setTimeInMillis(wallClockMs);
+        c.add(Calendar.DAY_OF_YEAR, -1);
+        return dayKey(c.getTimeInMillis());
     }
 
     private static String dayKey(long wallClockMs) {

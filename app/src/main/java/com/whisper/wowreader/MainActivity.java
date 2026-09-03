@@ -2029,7 +2029,7 @@ public class MainActivity extends Activity {
             @Override public void onReady(GoogleDriveSync.Profile driveProfile){
                 GoogleDriveSync.Profile profile=resolvedProfile(driveProfile);
                 rememberGoogleProfile(profile,true);
-                GoogleDriveSync.backup(MainActivity.this,driveProfile.accessToken,libraryDir,readerFontsDir(),prefs,new GoogleDriveSync.SyncCallback(){
+                GoogleDriveSync.smartBackup(MainActivity.this,driveProfile.accessToken,libraryDir,readerFontsDir(),prefs,new GoogleDriveSync.SyncCallback(){
                     @Override public void onSuccess(String message){prefs.edit().putLong("google_last_synced_change_ms",requestedChangeMs).apply();googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();maybeAutoGoogleSync();}
                     @Override public void onError(String message){googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
                 });

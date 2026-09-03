@@ -77,6 +77,13 @@ public class MainActivity extends Activity {
     private String appTheme = "white";
     private String sortMode = "added";
     private String authorFilter = "";
+    private String libraryStatusFilter = "all";
+    private String shelfFilter = "";
+    private TextView statusAllChip;
+    private TextView statusReadingChip;
+    private TextView statusUnreadChip;
+    private TextView statusFinishedChip;
+    private TextView shelfChip;
     private GoogleDriveSync googleDrive;
     private GoogleAccountAuth googleAccount;
     private GoogleDriveSync.Profile googleProfile;
@@ -377,16 +384,21 @@ public class MainActivity extends Activity {
             String author = cachedLibraryAuthor(f);
             String authorLower = author.toLowerCase(Locale.ROOT);
             if (!authorFilter.isEmpty() && !authorFilter.equals(author)) continue;
+            int progress = prefs.getInt("percent_" + f.getName(), 0);
+            if (!matchesLibraryStatus(progress)) continue;
+            if (!shelfFilter.isEmpty() && !LibraryShelfStore.contains(prefs, shelfFilter, f.getName())) continue;
             if (searchQuery.isEmpty() || cachedTitle.contains(searchQuery) || fileTitle.contains(searchQuery) || authorLower.contains(searchQuery))
                 visibleBooks.add(f);
         }
         if (libraryAdapter != null) libraryAdapter.submit(visibleBooks);
         if (countView != null) {
             String suffix = visibleBooks.size() == 1 ? " book" : " books";
-            countView.setText(visibleBooks.size() + suffix + (authorFilter.isEmpty() ? "" : " · " + authorFilter));
+            String filters = libraryFilterDescription();
+            countView.setText(visibleBooks.size() + suffix + (filters.isEmpty() ? "" : " · " + filters));
         }
         if (sortButton != null) sortButton.setText(sortButtonLabel());
         if (authorButton != null) authorButton.setText(authorButtonLabel());
+        updateLibraryFilterChips();
         updateReadingStatsSummary();
 
         warmSortMetadataIfNeeded(all);
@@ -527,7 +539,7 @@ public class MainActivity extends Activity {
         card.setElevation(dp(1));
         card.setClickable(true);
         card.setOnClickListener(v -> openBook(file));
-        card.setOnLongClickListener(v -> { confirmDelete(file); return true; });
+        card.setOnLongClickListener(v -> { showBookActions(file); return true; });
         card.setOnTouchListener((v, e) -> {
             if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN)
                 v.animate().scaleX(0.985f).scaleY(0.985f).setDuration(70L).start();
@@ -587,7 +599,7 @@ public class MainActivity extends Activity {
         card.setBackground(roundRect(themeCardSurface(), dp(18), dp(1), themeStroke()));
         card.setElevation(dp(1));
         card.setOnClickListener(v -> openBook(file));
-        card.setOnLongClickListener(v -> { confirmDelete(file); return true; });
+        card.setOnLongClickListener(v -> { showBookActions(file); return true; });
         card.setOnTouchListener((v, e) -> {
             int action = e.getActionMasked();
             if (action == android.view.MotionEvent.ACTION_DOWN) {
@@ -824,6 +836,36 @@ public class MainActivity extends Activity {
         hero.addView(readingStatsCard, statsLp);
         updateReadingStatsSummary();
 
+        HorizontalScrollView smartFilters = new HorizontalScrollView(this);
+        smartFilters.setHorizontalScrollBarEnabled(false);
+        smartFilters.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        LinearLayout filterStrip = new LinearLayout(this);
+        filterStrip.setOrientation(LinearLayout.HORIZONTAL);
+        filterStrip.setGravity(Gravity.CENTER_VERTICAL);
+        filterStrip.setPadding(0, 0, dp(8), 0);
+        smartFilters.addView(filterStrip, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        statusAllChip = libraryFilterChip("All");
+        statusReadingChip = libraryFilterChip("Reading");
+        statusUnreadChip = libraryFilterChip("Unread");
+        statusFinishedChip = libraryFilterChip("Finished");
+        shelfChip = libraryFilterChip("Shelves  ▾");
+        statusAllChip.setOnClickListener(v -> setLibraryStatusFilter("all"));
+        statusReadingChip.setOnClickListener(v -> setLibraryStatusFilter("reading"));
+        statusUnreadChip.setOnClickListener(v -> setLibraryStatusFilter("unread"));
+        statusFinishedChip.setOnClickListener(v -> setLibraryStatusFilter("finished"));
+        shelfChip.setOnClickListener(v -> showShelvesDialog());
+        addFilterChip(filterStrip, statusAllChip);
+        addFilterChip(filterStrip, statusReadingChip);
+        addFilterChip(filterStrip, statusUnreadChip);
+        addFilterChip(filterStrip, statusFinishedChip);
+        addFilterChip(filterStrip, shelfChip);
+        LinearLayout.LayoutParams filtersLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        filtersLp.topMargin = dp(7);
+        hero.addView(smartFilters, filtersLp);
+        updateLibraryFilterChips();
+
         outer.addView(hero, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         addDiscoverySection(outer);
         return outer;
@@ -867,6 +909,154 @@ public class MainActivity extends Activity {
         String result = hours + (hours == 1L ? " hour" : " hours");
         if (rest > 0L) result += " " + rest + (rest == 1L ? " minute" : " minutes");
         return result;
+    }
+
+    private TextView libraryFilterChip(String label) {
+        TextView chip = new TextView(this);
+        chip.setText(label);
+        chip.setTextSize(11.5f);
+        chip.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        chip.setGravity(Gravity.CENTER);
+        chip.setSingleLine(true);
+        chip.setPadding(dp(13), 0, dp(13), 0);
+        chip.setClickable(true);
+        return chip;
+    }
+
+    private void addFilterChip(LinearLayout strip, TextView chip) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34));
+        lp.rightMargin = dp(7);
+        strip.addView(chip, lp);
+    }
+
+    private void setLibraryStatusFilter(String value) {
+        libraryStatusFilter = value == null ? "all" : value;
+        updateLibraryFilterChips();
+        refreshLibrary();
+    }
+
+    private boolean matchesLibraryStatus(int progress) {
+        if ("reading".equals(libraryStatusFilter)) return progress > 0 && progress < 100;
+        if ("unread".equals(libraryStatusFilter)) return progress <= 0;
+        if ("finished".equals(libraryStatusFilter)) return progress >= 100;
+        return true;
+    }
+
+    private String libraryFilterDescription() {
+        java.util.List<String> parts = new java.util.ArrayList<>();
+        if (!authorFilter.isEmpty()) parts.add(authorFilter);
+        if ("reading".equals(libraryStatusFilter)) parts.add("Reading");
+        else if ("unread".equals(libraryStatusFilter)) parts.add("Unread");
+        else if ("finished".equals(libraryStatusFilter)) parts.add("Finished");
+        if (!shelfFilter.isEmpty()) parts.add(shelfFilter);
+        return android.text.TextUtils.join(" · ", parts);
+    }
+
+    private void updateLibraryFilterChips() {
+        styleLibraryFilterChip(statusAllChip, "all".equals(libraryStatusFilter));
+        styleLibraryFilterChip(statusReadingChip, "reading".equals(libraryStatusFilter));
+        styleLibraryFilterChip(statusUnreadChip, "unread".equals(libraryStatusFilter));
+        styleLibraryFilterChip(statusFinishedChip, "finished".equals(libraryStatusFilter));
+        if (shelfChip != null) shelfChip.setText(shelfFilter.isEmpty() ? "Shelves  ▾" : shelfFilter + "  ×");
+        styleLibraryFilterChip(shelfChip, !shelfFilter.isEmpty());
+    }
+
+    private void styleLibraryFilterChip(TextView chip, boolean active) {
+        if (chip == null) return;
+        int fill = active ? themeAccent() : themeControlSurface();
+        chip.setTextColor(active ? Color.WHITE : themeSecondaryText());
+        chip.setBackground(roundRect(fill, dp(17), dp(1), active ? themeAccent() : themeStroke()));
+        chip.setElevation(active ? dp(2) : 0);
+    }
+
+    private void showShelvesDialog() {
+        java.util.List<String> shelves = LibraryShelfStore.shelves(prefs);
+        String[] labels = new String[shelves.size() + 2];
+        labels[0] = "All shelves";
+        for (int i = 0; i < shelves.size(); i++) {
+            String name = shelves.get(i);
+            labels[i + 1] = name + " · " + LibraryShelfStore.count(prefs, name) + " books";
+        }
+        labels[labels.length - 1] = "＋ New shelf";
+        new AlertDialog.Builder(this)
+                .setTitle("Shelves")
+                .setItems(labels, (dialog, which) -> {
+                    if (which == 0) {
+                        shelfFilter = "";
+                        refreshLibrary();
+                    } else if (which == labels.length - 1) {
+                        showCreateShelfDialog(null);
+                    } else {
+                        shelfFilter = shelves.get(which - 1);
+                        refreshLibrary();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showCreateShelfDialog(File bookToAdd) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint("Shelf name");
+        input.setPadding(dp(14), 0, dp(14), 0);
+        new AlertDialog.Builder(this)
+                .setTitle("New shelf")
+                .setView(input)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Create", (dialog, which) -> {
+                    String name = input.getText().toString().trim();
+                    if (!LibraryShelfStore.createShelf(prefs, name)) {
+                        Toast.makeText(this, "Enter a shelf name", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    if (bookToAdd != null) LibraryShelfStore.setMembership(prefs, name, bookToAdd.getName(), true);
+                    shelfFilter = name;
+                    refreshLibrary();
+                    maybeAutoGoogleSync();
+                })
+                .show();
+    }
+
+    private void showBookActions(File file) {
+        if (file == null) return;
+        String[] actions = {"Manage shelves", "Remove from WoW Reader"};
+        new AlertDialog.Builder(this)
+                .setTitle(cachedLibraryTitle(file))
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0) showBookShelves(file);
+                    else confirmDelete(file);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showBookShelves(File file) {
+        java.util.List<String> shelves = LibraryShelfStore.shelves(prefs);
+        if (shelves.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("No shelves yet")
+                    .setMessage("Create a shelf and add this book to it.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Create shelf", (d, w) -> showCreateShelfDialog(file))
+                    .show();
+            return;
+        }
+        String[] labels = shelves.toArray(new String[0]);
+        boolean[] checked = new boolean[labels.length];
+        for (int i = 0; i < labels.length; i++) checked[i] = LibraryShelfStore.contains(prefs, labels[i], file.getName());
+        new AlertDialog.Builder(this)
+                .setTitle("Add to shelves")
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setNeutralButton("New shelf", (dialog, which) -> showCreateShelfDialog(file))
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Done", (dialog, which) -> {
+                    for (int i = 0; i < labels.length; i++)
+                        LibraryShelfStore.setMembership(prefs, labels[i], file.getName(), checked[i]);
+                    refreshLibrary();
+                    maybeAutoGoogleSync();
+                })
+                .show();
     }
 
     private View buildLibrarySectionHeader() {
@@ -1358,7 +1548,7 @@ public class MainActivity extends Activity {
     private String queryDisplayName(Uri uri){ if("file".equalsIgnoreCase(uri.getScheme()))return new File(uri.getPath()).getName(); Cursor c=null; try{c=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null);if(c!=null&&c.moveToFirst())return c.getString(0);}catch(Exception ignored){}finally{if(c!=null)c.close();}return null; }
     private File uniqueFile(String originalName){ String safe=originalName.replaceAll("[\\\\/:*?\"<>|]","_"); File f=new File(libraryDir,safe);if(!f.exists())return f;int dot=safe.lastIndexOf('.');String base=dot>0?safe.substring(0,dot):safe,ext=dot>0?safe.substring(dot):"";return new File(libraryDir,base+"_"+System.currentTimeMillis()+ext); }
     private void openBook(File file){prefs.edit().putLong("last_opened_"+file.getName(),System.currentTimeMillis()).apply();Intent i=new Intent(this,BookReaderActivity.class);i.putExtra("path",file.getAbsolutePath());startActivity(i);overridePendingTransition(android.R.anim.fade_in,android.R.anim.fade_out);}
-    private void confirmDelete(File file){new AlertDialog.Builder(this).setTitle("Remove from WoW Reader?").setMessage(stripExtension(file.getName())+"\n\nThis deletes WoW Reader's saved local copy. The original file you imported from Downloads or another folder is not changed.").setNegativeButton("Cancel",null).setPositiveButton("Remove",(d,w)->{if(file.delete()){prefs.edit().remove("percent_"+file.getName()).remove("library_title_"+file.getName()).remove("library_author_"+file.getName()).remove("library_owned_"+file.getName()).remove("added_at_"+file.getName()).remove("last_opened_"+file.getName()).putLong("sync_updated_ms",System.currentTimeMillis()).apply();refreshLibrary();maybeAutoGoogleSync();}}).show();}
+    private void confirmDelete(File file){new AlertDialog.Builder(this).setTitle("Remove from WoW Reader?").setMessage(stripExtension(file.getName())+"\n\nThis deletes WoW Reader's saved local copy. The original file you imported from Downloads or another folder is not changed.").setNegativeButton("Cancel",null).setPositiveButton("Remove",(d,w)->{if(file.delete()){LibraryShelfStore.removeBookFromAll(prefs,file.getName());prefs.edit().remove("percent_"+file.getName()).remove("library_title_"+file.getName()).remove("library_author_"+file.getName()).remove("library_owned_"+file.getName()).remove("added_at_"+file.getName()).remove("last_opened_"+file.getName()).putLong("sync_updated_ms",System.currentTimeMillis()).apply();refreshLibrary();maybeAutoGoogleSync();}}).show();}
 
     private void restoreStoredGoogleProfile(){
         GoogleDriveSync.Profile signedIn=googleAccount==null?null:googleAccount.currentProfile();

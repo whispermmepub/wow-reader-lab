@@ -3,6 +3,7 @@ package com.whisper.wowreader;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.text.Html;
+import android.text.SpannableStringBuilder;
 import android.text.format.Time;
 
 import org.json.JSONArray;
@@ -227,9 +228,39 @@ final class ComingSoonFeed {
 
     static CharSequence richText(String html) {
         if (html == null) return "";
+        String cleaned = cleanContentHtml(html);
+        CharSequence parsed;
         if (android.os.Build.VERSION.SDK_INT >= 24)
-            return Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY);
-        return Html.fromHtml(html);
+            parsed = Html.fromHtml(cleaned, Html.FROM_HTML_MODE_COMPACT);
+        else
+            parsed = Html.fromHtml(cleaned);
+        SpannableStringBuilder compact = new SpannableStringBuilder(parsed);
+        for (int i = compact.length() - 1; i > 0; i--) {
+            if (compact.charAt(i) == '\n' && compact.charAt(i - 1) == '\n' &&
+                    i > 1 && compact.charAt(i - 2) == '\n') compact.delete(i, i + 1);
+        }
+        for (int i = compact.length() - 1; i >= 0; i--) {
+            char c = compact.charAt(i);
+            if (c == '\uFFFC') compact.delete(i, i + 1);
+        }
+        return compact;
+    }
+
+    private static String cleanContentHtml(String html) {
+        String out = html == null ? "" : html;
+        out = out.replaceAll("(?is)<script\\b[^>]*>.*?</script>", "")
+                 .replaceAll("(?is)<style\\b[^>]*>.*?</style>", "")
+                 .replaceAll("(?is)<iframe\\b[^>]*>.*?</iframe>", "")
+                 .replaceAll("(?is)<object\\b[^>]*>.*?</object>", "")
+                 .replaceAll("(?is)<svg\\b[^>]*>.*?</svg>", "")
+                 .replaceAll("(?is)<canvas\\b[^>]*>.*?</canvas>", "")
+                 .replaceAll("(?is)<embed\\b[^>]*?/?>", "")
+                 .replaceAll("(?is)<img\\b[^>]*>", "")
+                 .replaceAll("(?is)<(?:p|div)\\b[^>]*>\\s*(?:&nbsp;|&#160;|<br\\s*/?>|\\s)*</(?:p|div)>", "")
+                 .replaceAll("(?is)(<br\\s*/?>\\s*){3,}", "<br><br>")
+                 .replace("[OBJ]", "")
+                 .replace("\uFFFC", "");
+        return out;
     }
 
     private static String plainExcerpt(String html, int limit) {

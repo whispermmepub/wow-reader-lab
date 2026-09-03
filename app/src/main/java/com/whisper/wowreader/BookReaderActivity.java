@@ -679,7 +679,7 @@ public class BookReaderActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         chapterTransitionOverlay = new ImageView(this);
-        chapterTransitionOverlay.setScaleType(ImageView.ScaleType.FIT_XY);
+        chapterTransitionOverlay.setScaleType(ImageView.ScaleType.CENTER_CROP);
         chapterTransitionOverlay.setVisibility(View.GONE);
         chapterTransitionOverlay.setClickable(false);
         content.addView(chapterTransitionOverlay, new FrameLayout.LayoutParams(
@@ -1945,6 +1945,12 @@ public class BookReaderActivity extends Activity {
                 "st.applyTypography=function(){try{" +
                 "var align=" + jsQuote(textAlignment) + ",smart=" + (autoSpacingAdjustment ? "true" : "false") + ";" +
                 "var rx=/[\\u1000-\\u109F\\uA9E0-\\uA9FF\\uAA60-\\uAA7F]/g;" +
+                "var baseW=Math.max(1,(st.pageWidth||flow.clientWidth||window.innerWidth||1));" +
+                "var wraps=flow.querySelectorAll('div,section,article,main');" +
+                "for(var wi=0;wi<wraps.length;wi++){var wn=wraps[wi],wt=(wn.textContent||'').replace(/\\s+/g,' ').trim();if(wt.length<180)continue;" +
+                "var wcs=getComputedStyle(wn);if(wcs.display!=='block')continue;var wr=wn.getBoundingClientRect();" +
+                "if(wr.width>0&&wr.width<baseW*0.84){wn.style.setProperty('width','auto','important');wn.style.setProperty('max-width','none','important');" +
+                "wn.style.setProperty('min-width','0','important');wn.style.setProperty('margin-left','0','important');wn.style.setProperty('margin-right','0','important');}}" +
                 "var blocks=flow.querySelectorAll('p,li,blockquote,dd,dt,div');" +
                 "for(var i=0;i<blocks.length;i++){var n=blocks[i],txt=(n.textContent||'').trim();if(txt.length<8)continue;" +
                 "if(n.tagName==='DIV'&&n.querySelector('p,div,li,blockquote,dd,dt'))continue;" +
@@ -2762,6 +2768,10 @@ public class BookReaderActivity extends Activity {
         chapterTransitionOverlay.setTranslationX(0f);
         chapterTransitionOverlay.setVisibility(View.VISIBLE);
         chapterTransitionOverlay.bringToFront();
+        if (webView != null) {
+            webView.animate().cancel();
+            webView.setAlpha(0f);
+        }
         pendingChapterFade = true;
     }
 

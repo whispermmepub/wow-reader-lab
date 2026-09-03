@@ -56,12 +56,12 @@ public class ComingSoonActivity extends Activity {
 
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
-        titles.setPadding(dp(10), 0, 0, 0);
-        TextView title = text("Coming Soon", 24, primary(), true);
+        titles.setPadding(dp(10), dp(2), 0, dp(2));
+        TextView title = text("Coming Soon", 22, primary(), true);
         TextView sub = text("Latest book notes from WoW sources", 11.5f, secondary(), false);
         titles.addView(title);
         titles.addView(sub);
-        header.addView(titles, new LinearLayout.LayoutParams(0, dp(52), 1f));
+        header.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView reload = smallButton("↻");
         reload.setTextSize(20);
@@ -69,13 +69,13 @@ public class ComingSoonActivity extends Activity {
         reload.setOnClickListener(v -> loadFeed());
         header.addView(reload, new LinearLayout.LayoutParams(dp(44), dp(44)));
         content.addView(header, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(68)));
 
         status = text("Loading latest posts…", 12.5f, secondary(), false);
         status.setGravity(Gravity.CENTER_VERTICAL);
-        status.setPadding(dp(4), dp(14), dp(4), dp(10));
+        status.setPadding(dp(4), dp(4), dp(4), dp(8));
         content.addView(status, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
 
         feedContainer = new LinearLayout(this);
         feedContainer.setOrientation(LinearLayout.VERTICAL);

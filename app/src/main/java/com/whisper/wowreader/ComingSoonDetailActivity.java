@@ -149,11 +149,11 @@ public class ComingSoonDetailActivity extends Activity {
         divider.setBackgroundColor(stroke());
         LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
         dividerLp.topMargin = dp(8);
-        dividerLp.bottomMargin = dp(14);
+        dividerLp.bottomMargin = dp(9);
         card.addView(divider, dividerLp);
 
         TextView body = text("", 16, primary(), false);
-        body.setLineSpacing(dp(4), 1.18f);
+        body.setLineSpacing(dp(2), 1.10f);
         body.setText(ComingSoonFeed.richText(post.contentHtml));
         body.setMovementMethod(null);
         body.setLinksClickable(false);

@@ -2,7 +2,7 @@ package com.whisper.wowreader;
 
 import android.content.SharedPreferences;
 
-/** Local-first typography overrides for one library book. */
+/** Local-first typography overrides for one library book, stored in the existing synced reader preferences. */
 public final class BookTypographyStore {
     private BookTypographyStore() {}
 

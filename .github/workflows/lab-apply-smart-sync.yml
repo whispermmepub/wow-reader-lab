@@ -5,6 +5,7 @@ on:
     branches: [feature/smart-sync-merge]
     paths:
       - 'tools/lab_phase5_smart_sync.py'
+      - '.github/workflows/lab-apply-smart-sync.yml'
 
 permissions:
   contents: write

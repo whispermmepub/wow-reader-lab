@@ -4,7 +4,7 @@ on:
   push:
     branches: [feature/smart-sync-merge]
     paths:
-      - 'tools/lab_phase5_smart_sync.py'
+      - 'tools/lab_phase5b_manual_smart_sync.py'
       - '.github/workflows/lab-apply-smart-sync.yml'
 
 permissions:
@@ -18,18 +18,18 @@ jobs:
         with:
           ref: feature/smart-sync-merge
           fetch-depth: 0
-      - name: Apply guarded source patch
-        run: python3 tools/lab_phase5_smart_sync.py
+      - name: Route manual backup through Smart Sync
+        run: python3 tools/lab_phase5b_manual_smart_sync.py
       - name: Commit generated source changes
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java app/src/main/java/com/whisper/wowreader/GoogleAutoSync.java
+          git add app/src/main/java/com/whisper/wowreader/MainActivity.java
           if git diff --cached --quiet; then
             echo 'No generated changes.'
             exit 0
           fi
-          git commit -m 'Merge cloud state before automatic backup'
+          git commit -m 'Route manual cloud backup through Smart Sync'
           git push origin HEAD:feature/smart-sync-merge

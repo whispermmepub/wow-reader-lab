@@ -154,6 +154,7 @@ public class BookReaderActivity extends Activity {
     private boolean chapterLoading = false;
     private long lastChapterNavMs = 0L;
     private int chapterLoadGeneration = 0;
+    private long readingSessionStartedElapsedMs = 0L;
 
     private ParcelFileDescriptor pdfDescriptor;
     private PdfRenderer pdfRenderer;
@@ -4131,6 +4132,8 @@ public class BookReaderActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (readingSessionStartedElapsedMs <= 0L)
+            readingSessionStartedElapsedMs = ReadingStatsStore.beginSession();
         applyWindowPreferences();
         updateNightLightOverlay();
         GoogleAutoSync.schedule(this);
@@ -4139,6 +4142,8 @@ public class BookReaderActivity extends Activity {
 
     @Override
     protected void onPause() {
+        ReadingStatsStore.finishSession(prefs, bookFile == null ? null : bookFile.getName(), readingSessionStartedElapsedMs);
+        readingSessionStartedElapsedMs = 0L;
         if (!isPdf) saveEpubState();
         GoogleAutoSync.flush(this);
         super.onPause();

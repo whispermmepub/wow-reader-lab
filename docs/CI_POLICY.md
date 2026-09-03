@@ -1,0 +1,1 @@
+Lab feature app-code changes must compile and lint successfully before merge.

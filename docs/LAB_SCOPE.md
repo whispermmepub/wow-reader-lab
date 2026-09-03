@@ -1,0 +1,1 @@
+Scope: test new WoW Reader features safely in the lab repository before considering any production-port work.

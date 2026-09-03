@@ -62,3 +62,5 @@ text = replace_once(
 
 MAIN.write_text(text, encoding="utf-8")
 print("Smart library filters and shelves patch applied successfully.")
+
+# Trigger corrected guarded apply after the long-press anchor fix.

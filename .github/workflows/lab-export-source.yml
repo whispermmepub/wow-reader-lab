@@ -1,0 +1,30 @@
+name: Export WoW Reader Lab source
+
+on:
+  push:
+    branches: [feature/smart-sync-merge]
+    paths:
+      - '.github/workflows/lab-export-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/smart-sync-merge
+      - name: Package source
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip -qr wow-reader-lab-source.zip . -x '.git/*' 'app/build/*' '.gradle/*'
+      - name: Upload source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-reader-lab-source
+          path: wow-reader-lab-source.zip
+          if-no-files-found: error
+          retention-days: 1

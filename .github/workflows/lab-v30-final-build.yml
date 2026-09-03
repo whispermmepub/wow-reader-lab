@@ -1,0 +1,121 @@
+name: WoW Reader Lab v30 Final Build
+
+on:
+  push:
+    branches:
+      - feature/lab-v30-coming-soon
+    paths:
+      - 'app/src/main/java/com/whisper/wowreader/ComingSoonFeed.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/lab-v30-coming-soon
+
+      - name: Verify integrated v30 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          M=app/src/main/java/com/whisper/wowreader/MainActivity.java
+          F=app/src/main/java/com/whisper/wowreader/ComingSoonFeed.java
+          L=app/src/main/java/com/whisper/wowreader/ComingSoonActivity.java
+          D=app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
+          I=app/src/main/java/com/whisper/wowreader/ComingSoonImageLoader.java
+          G=app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          A=app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
+          R=app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'addComingSoonSection(outer)' "$M"
+          grep -q 'ComingSoonActivity.class' "$M"
+          grep -q 'ComingSoonDetailActivity.class' "$M"
+          grep -q 'wow://coming-soon' "$M"
+          grep -q 'whisper1of.blogspot.com' "$F"
+          grep -q 'thetpaingwrites.blogspot.com' "$F"
+          grep -q 'youthsbookreflections.blogspot.com' "$F"
+          grep -q 'Collections.sort(merged' "$F"
+          grep -q 'wow_coming_soon_cache' "$F"
+          grep -q 'ComingSoonImageLoader.load' "$L"
+          grep -q 'ComingSoonImageLoader.load' "$D"
+          grep -q 'setLinksClickable(false)' "$D"
+          ! grep -q 'Read original post' "$D"
+          ! grep -q 'openOriginal' "$D"
+          grep -q 'coming_soon_images' "$I"
+          grep -q 'GoogleAuthProvider.getCredential' "$A"
+          grep -q 'Scopes.DRIVE_APPFOLDER' "$G"
+          grep -q 'smartBackup' "$G"
+          grep -q 'onScrollReady' "$R"
+          grep -q '#4A4033' "$R"
+          grep -q "versionCode 30" app/build.gradle
+          grep -q "versionName '2.16.0-lab-v30'" app/build.gradle
+          git diff --check
+
+      - name: Verify Blogger feeds live
+        shell: bash
+        run: |
+          set -euo pipefail
+          for host in whisper1of.blogspot.com thetpaingwrites.blogspot.com youthsbookreflections.blogspot.com; do
+            curl --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 30 -fsSL \
+              "https://${host}/feeds/posts/default?alt=json&max-results=1" \
+              | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x.get("feed",{}).get("entry")'
+          done
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+
+      - name: Compile debug/release and lint
+        run: gradle :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease --stacktrace
+
+      - name: Smoke check release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -s "$APK"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          "$BT/aapt" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.whisper.wowreader' versionCode='30' versionName='2.16.0-lab-v30'" /tmp/badging.txt
+          grep -q "targetSdkVersion:'36'" /tmp/badging.txt
+
+      - name: Collect unsigned APK and signing tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          cp "$APK" out/WoW-Reader-Lab-v30-unsigned.apk
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          cp "$BT/zipalign" out/zipalign
+          cp "$BT/lib/apksigner.jar" out/apksigner.jar
+          cat > out/ci-verification.txt <<'EOF'
+          WoW Reader Lab v30
+          package=com.whisper.wowreader
+          versionCode=30
+          versionName=2.16.0-lab-v30
+          targetSdk=36
+          Blogger sources: whisper1of, thetpaingwrites, youthsbookreflections
+          Feed cache + image disk cache enabled
+          Blog post detail stays inside WoW Reader
+          debug/release compile + lint PASS
+          Google auth / Drive appDataFolder / Smart Sync source guards PASS
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v30-final-unsigned
+          path: out/*
+          retention-days: 1

@@ -1,0 +1,34 @@
+name: Apply Smart Library Lab Patch
+
+on:
+  push:
+    branches: [feature/smart-library-shelves]
+    paths:
+      - 'tools/lab_phase2_smart_library.py'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/smart-library-shelves
+          fetch-depth: 0
+      - name: Apply guarded source patch
+        run: python3 tools/lab_phase2_smart_library.py
+      - name: Commit generated source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/whisper/wowreader/MainActivity.java
+          if git diff --cached --quiet; then
+            echo 'No generated changes.'
+            exit 0
+          fi
+          git commit -m 'Add smart library filters and shelves UI'
+          git push origin HEAD:feature/smart-library-shelves

@@ -73,6 +73,7 @@ public class MainActivity extends Activity {
     private TextView authorButton;
     private ProfileAvatarView accountButton;
     private TextView themeButton;
+    private TextView statsSummaryView;
     private String appTheme = "white";
     private String sortMode = "added";
     private String authorFilter = "";
@@ -386,6 +387,7 @@ public class MainActivity extends Activity {
         }
         if (sortButton != null) sortButton.setText(sortButtonLabel());
         if (authorButton != null) authorButton.setText(authorButtonLabel());
+        updateReadingStatsSummary();
 
         warmSortMetadataIfNeeded(all);
     }
@@ -776,9 +778,95 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
         searchLp.topMargin = dp(8);
         hero.addView(searchInput, searchLp);
+
+        LinearLayout readingStatsCard = new LinearLayout(this);
+        readingStatsCard.setOrientation(LinearLayout.HORIZONTAL);
+        readingStatsCard.setGravity(Gravity.CENTER_VERTICAL);
+        readingStatsCard.setPadding(dp(13), 0, dp(12), 0);
+        readingStatsCard.setBackground(roundRect(themeControlSurface(), dp(19), dp(1), themeStroke()));
+        readingStatsCard.setClickable(true);
+        readingStatsCard.setElevation(dp(1));
+        readingStatsCard.setContentDescription("Reading statistics");
+        readingStatsCard.setOnClickListener(v -> showReadingStatsDialog());
+
+        TextView statsIcon = new TextView(this);
+        statsIcon.setText("◷");
+        statsIcon.setTextSize(20);
+        statsIcon.setTextColor(themeAccent());
+        statsIcon.setGravity(Gravity.CENTER);
+        readingStatsCard.addView(statsIcon, new LinearLayout.LayoutParams(dp(34), dp(44)));
+
+        LinearLayout statsCopy = new LinearLayout(this);
+        statsCopy.setOrientation(LinearLayout.VERTICAL);
+        statsCopy.setGravity(Gravity.CENTER_VERTICAL);
+        TextView statsTitle = new TextView(this);
+        statsTitle.setText("Reading");
+        statsTitle.setTextSize(12.5f);
+        statsTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        statsTitle.setTextColor(themePrimaryText());
+        statsCopy.addView(statsTitle);
+        statsSummaryView = new TextView(this);
+        statsSummaryView.setTextSize(10.5f);
+        statsSummaryView.setTextColor(themeSecondaryText());
+        statsSummaryView.setSingleLine(true);
+        statsCopy.addView(statsSummaryView);
+        readingStatsCard.addView(statsCopy, new LinearLayout.LayoutParams(0, dp(44), 1f));
+
+        TextView statsArrow = new TextView(this);
+        statsArrow.setText("›");
+        statsArrow.setTextSize(22);
+        statsArrow.setTextColor(themeSecondaryText());
+        statsArrow.setGravity(Gravity.CENTER);
+        readingStatsCard.addView(statsArrow, new LinearLayout.LayoutParams(dp(28), dp(44)));
+
+        LinearLayout.LayoutParams statsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        statsLp.topMargin = dp(8);
+        hero.addView(readingStatsCard, statsLp);
+        updateReadingStatsSummary();
+
         outer.addView(hero, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         addDiscoverySection(outer);
         return outer;
+    }
+
+    private void updateReadingStatsSummary() {
+        if (statsSummaryView == null || prefs == null) return;
+        ReadingStatsStore.Snapshot stats = ReadingStatsStore.snapshot(prefs);
+        String streak = stats.currentStreak == 1 ? "1 day streak" : stats.currentStreak + " day streak";
+        statsSummaryView.setText("Today " + formatReadingTime(stats.todayMs) + "  ·  " + streak + "  ·  Total " + formatReadingTime(stats.totalMs));
+    }
+
+    private void showReadingStatsDialog() {
+        ReadingStatsStore.Snapshot stats = ReadingStatsStore.snapshot(prefs);
+        String message = "Today\n" + formatReadingTimeLong(stats.todayMs) +
+                "\n\nCurrent streak\n" + stats.currentStreak + (stats.currentStreak == 1 ? " day" : " days") +
+                "\n\nLongest streak\n" + stats.longestStreak + (stats.longestStreak == 1 ? " day" : " days") +
+                "\n\nActive reading days\n" + stats.activeDays +
+                "\n\nTotal reading time\n" + formatReadingTimeLong(stats.totalMs);
+        new AlertDialog.Builder(this)
+                .setTitle("Reading statistics")
+                .setMessage(message)
+                .setPositiveButton("Done", null)
+                .show();
+    }
+
+    private String formatReadingTime(long milliseconds) {
+        long minutes = Math.max(0L, milliseconds) / 60_000L;
+        if (minutes < 60L) return minutes + "m";
+        long hours = minutes / 60L;
+        long rest = minutes % 60L;
+        return rest == 0L ? hours + "h" : hours + "h " + rest + "m";
+    }
+
+    private String formatReadingTimeLong(long milliseconds) {
+        long minutes = Math.max(0L, milliseconds) / 60_000L;
+        if (minutes == 0L) return "Less than a minute";
+        if (minutes < 60L) return minutes + (minutes == 1L ? " minute" : " minutes");
+        long hours = minutes / 60L;
+        long rest = minutes % 60L;
+        String result = hours + (hours == 1L ? " hour" : " hours");
+        if (rest > 0L) result += " " + rest + (rest == 1L ? " minute" : " minutes");
+        return result;
     }
 
     private View buildLibrarySectionHeader() {

@@ -233,6 +233,17 @@ public class BookReaderActivity extends Activity {
                     .apply();
         }
 
+        if (!isPdf) {
+            BookTypographyStore.Values bookStyle = BookTypographyStore.load(
+                    prefs, bookFile.getName(), fontPercent, fontChoice, lineSpacing,
+                    marginPercent, textAlignment, autoSpacingAdjustment);
+            fontPercent = bookStyle.fontPercent;
+            fontChoice = bookStyle.fontChoice;
+            lineSpacing = bookStyle.lineSpacing;
+            marginPercent = bookStyle.marginPercent;
+            textAlignment = bookStyle.textAlignment;
+            autoSpacingAdjustment = bookStyle.autoSpacing;
+        }
         applyWindowPreferences();
         buildReaderUi();
         if (isPdf) openPdf(); else openEpub();
@@ -3273,6 +3284,10 @@ public class BookReaderActivity extends Activity {
     }
 
     private void saveReaderPreferences() {
+        if (!isPdf && bookFile != null) {
+            BookTypographyStore.save(prefs, bookFile.getName(), fontPercent, fontChoice, lineSpacing,
+                    marginPercent, textAlignment, autoSpacingAdjustment);
+        }
         prefs.edit()
                 .putInt("epub_font", fontPercent)
                 .putString("epub_font_choice", fontChoice)

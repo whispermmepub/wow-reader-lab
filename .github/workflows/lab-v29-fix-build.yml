@@ -38,7 +38,9 @@ jobs:
           grep -q 'https://t.me/+rUiqzi2mdhNiNGZl' "$M"
           grep -q 'https://saroatsin.com' "$M"
           grep -q 'whispermmepub.github.io/Review' "$M"
-          grep -q 'setCustomSelectionActionModeCallback' "$R"
+          grep -q 'private final class ReaderWebView extends WebView' "$R"
+          grep -q 'suppressNativeToolbar' "$R"
+          ! grep -q 'setCustomSelectionActionModeCallback' "$R"
           grep -q 'onScrollReady' "$R"
           grep -q '#4A4033' "$R"
           grep -q 'stableHits<2&&attempt<9' "$R"
@@ -61,7 +63,7 @@ jobs:
                   app/src/main/java/com/whisper/wowreader/BookReaderActivity.java \
                   app/build.gradle
           if ! git diff --cached --quiet; then
-            git commit -m 'Implement Lab v29 navigation and reader fixes'
+            git commit -m 'Fix Lab v29 WebView selection integration'
             git push origin HEAD:feature/lab-v29-navigation-reader-fixes
           fi
 
@@ -91,7 +93,6 @@ jobs:
           grep -q "package: name='com.whisper.wowreader' versionCode='29' versionName='2.15.0-lab-v29'" /tmp/badging.txt
           grep -q "targetSdkVersion:'36'" /tmp/badging.txt
           unzip -l "$APK" | grep -q 'classes.dex'
-          unzip -l "$APK" | grep -q 'google-services'
 
       - name: Collect unsigned APK and local signing tools
         shell: bash

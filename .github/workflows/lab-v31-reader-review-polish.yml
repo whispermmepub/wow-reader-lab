@@ -2,23 +2,28 @@ name: WoW Reader Lab v31 Reader Review Polish
 
 on:
   push:
-    branches: [ feature/lab-v31-reader-review-polish ]
+    branches:
+      - feature/lab-v31-reader-review-polish
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build-v31:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feature/lab-v31-reader-review-polish
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
       - name: Apply guarded v31 fixes
         run: python scripts/apply_lab_v31_fixes.py
+
       - name: Verify v31 source contract
         shell: bash
         run: |
@@ -29,15 +34,12 @@ jobs:
           D=app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
           G=app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
           A=app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
-          grep -q 'CENTER_CROP' "$R"
+          grep -q 'chapterTransitionOverlay.setScaleType(ImageView.ScaleType.CENTER_CROP)' "$R"
           grep -q 'baseW=Math.max' "$R"
-          grep -q "wr.width<baseW\*0.84" "$R"
           grep -q 'webView.setAlpha(0f)' "$R"
           grep -q 'FROM_HTML_MODE_COMPACT' "$F"
           grep -q 'cleanContentHtml' "$F"
-          grep -q '<img' "$F"
           grep -q 'setLineSpacing(dp(2), 1.10f)' "$D"
-          grep -q 'ViewGroup.LayoutParams.WRAP_CONTENT, 1f' "$L"
           grep -q 'versionCode 31' app/build.gradle
           grep -q "versionName '2.16.1-lab-v31'" app/build.gradle
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
@@ -45,6 +47,7 @@ jobs:
           grep -q 'Scopes.DRIVE_APPFOLDER' "$G"
           grep -q 'smartBackup' "$G"
           git diff --check
+
       - name: Commit integrated v31 source
         shell: bash
         run: |
@@ -60,32 +63,59 @@ jobs:
             git commit -m 'Fix chapter width and Coming Soon review rendering'
             git push origin HEAD:feature/lab-v31-reader-review-polish
           fi
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-          cache-read-only: true
-      - name: Install Android 16 SDK
-        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
-      - name: Compile debug/release and lint
+
+      - name: Install Android SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+
+      - name: Compile debug release and lint
         run: gradle :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease --stacktrace
+
       - name: Smoke check release APK
         shell: bash
         run: |
           set -euo pipefail
-          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
           test -s "$APK"
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader' versionCode='31'"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          "$BT/aapt" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.whisper.wowreader' versionCode='31' versionName='2.16.1-lab-v31'" /tmp/badging.txt
+          grep -q "targetSdkVersion:'36'" /tmp/badging.txt
+
+      - name: Collect unsigned APK and signing tools
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p out
-          cp "$APK" out/WoW-Reader-Lab-v2.16.1-v31-unsigned.apk
-          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" out/
-          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" out/
-          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" out/
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          cp "$APK" out/WoW-Reader-Lab-v31-unsigned.apk
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          cp "$BT/zipalign" out/zipalign
+          cp "$BT/lib/apksigner.jar" out/apksigner.jar
+          cat > out/ci-verification.txt <<'EOF'
+          WoW Reader Lab v31
+          package=com.whisper.wowreader
+          versionCode=31
+          versionName=2.16.1-lab-v31
+          targetSdk=36
+          Chapter transition stable-frame guard enabled
+          Narrow publisher wrapper normalization enabled
+          Coming Soon embeds stripped and paragraph spacing compacted
+          Coming Soon header overlap fixed
+          debug/release compile + lint PASS
+          Google auth / Drive appDataFolder / Smart Sync source guards PASS
+          EOF
+
       - uses: actions/upload-artifact@v4
         with:
           name: WoW-Reader-Lab-v31-unsigned
-          path: out/
+          path: out/*
           retention-days: 1

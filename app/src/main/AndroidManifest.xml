@@ -12,6 +12,14 @@
         android:theme="@style/AppTheme">
 
         <activity
+            android:name=".ComingSoonDetailActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ComingSoonActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".BookReaderActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:enableOnBackInvokedCallback="false"

@@ -1,0 +1,34 @@
+name: Apply Notes Hub Patch
+
+on:
+  push:
+    branches: [feature/notes-highlights-hub]
+    paths:
+      - 'tools/lab_phase3_notes_hub.py'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/notes-highlights-hub
+          fetch-depth: 0
+      - name: Apply guarded source patch
+        run: python3 tools/lab_phase3_notes_hub.py
+      - name: Commit generated source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/whisper/wowreader/MainActivity.java app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          if git diff --cached --quiet; then
+            echo 'No generated changes.'
+            exit 0
+          fi
+          git commit -m 'Add Notes and Highlights Hub to library home'
+          git push origin HEAD:feature/notes-highlights-hub

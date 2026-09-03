@@ -14,7 +14,8 @@ import java.util.Set;
  * Conservative merge rules for combining a remote reader snapshot with local state.
  * Local scalar preferences win during a true conflict, while additive/library data
  * is merged so another device's books, annotations, shelves and progress are not
- * silently discarded by the next automatic upload.
+ * silently discarded by the next automatic upload. Google operational keys and
+ * sync timestamps are intentionally never imported from the other device.
  */
 final class CloudMergePolicy {
     private CloudMergePolicy() {}

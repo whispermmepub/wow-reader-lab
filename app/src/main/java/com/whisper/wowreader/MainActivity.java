@@ -207,9 +207,155 @@ public class MainActivity extends Activity {
     }
 
 
+
+    private void addComingSoonSection(LinearLayout root) {
+        LinearLayout heading = new LinearLayout(this);
+        heading.setOrientation(LinearLayout.HORIZONTAL);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        heading.setPadding(dp(2), dp(14), dp(2), dp(8));
+
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("Coming Soon");
+        title.setTextSize(17.5f);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        TextView sub = new TextView(this);
+        sub.setText("Latest book notes from 3 WoW sources");
+        sub.setTextSize(10.5f);
+        sub.setTextColor(themeSecondaryText());
+        titles.addView(title);
+        titles.addView(sub);
+        heading.addView(titles, new LinearLayout.LayoutParams(0, dp(48), 1f));
+
+        TextView all = new TextView(this);
+        all.setText("View all  ›");
+        all.setTextSize(12.5f);
+        all.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        all.setTextColor(themeAccent());
+        all.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        all.setOnClickListener(v -> showExploreHome());
+        heading.addView(all, new LinearLayout.LayoutParams(dp(84), dp(48)));
+        root.addView(heading);
+
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        scroller.setHorizontalScrollBarEnabled(false);
+        scroller.setFillViewport(false);
+        scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        strip.setPadding(0, 0, dp(12), dp(2));
+        scroller.addView(strip, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView loading = new TextView(this);
+        loading.setText("Loading latest posts…");
+        loading.setTextSize(12.5f);
+        loading.setTextColor(themeSecondaryText());
+        loading.setGravity(Gravity.CENTER_VERTICAL);
+        loading.setPadding(dp(18), 0, dp(18), 0);
+        loading.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+        strip.addView(loading, new LinearLayout.LayoutParams(dp(260), dp(132)));
+
+        root.addView(scroller, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(138)));
+
+        new Thread(() -> {
+            List<ComingSoonFeed.Post> posts = ComingSoonFeed.fetchLatest(this, 6, 6);
+            runOnUiThread(() -> {
+                if (isFinishing() || !homeMode) return;
+                strip.removeAllViews();
+                if (posts == null || posts.isEmpty()) {
+                    TextView empty = new TextView(this);
+                    empty.setText("Coming Soon posts are unavailable right now");
+                    empty.setTextSize(12.5f);
+                    empty.setTextColor(themeSecondaryText());
+                    empty.setGravity(Gravity.CENTER_VERTICAL);
+                    empty.setPadding(dp(18), 0, dp(18), 0);
+                    empty.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+                    empty.setOnClickListener(v -> showExploreHome());
+                    strip.addView(empty, new LinearLayout.LayoutParams(dp(280), dp(132)));
+                    return;
+                }
+                for (int i = 0; i < posts.size(); i++) {
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(286), dp(132));
+                    if (i > 0) lp.leftMargin = dp(10);
+                    strip.addView(buildComingSoonPreviewCard(posts.get(i)), lp);
+                }
+            });
+        }, "wow-home-coming-soon").start();
+    }
+
+    private View buildComingSoonPreviewCard(ComingSoonFeed.Post post) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(9), dp(9), dp(11), dp(9));
+        card.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+        card.setElevation(dp(1));
+        card.setClickable(true);
+        card.setOnClickListener(v -> openComingSoonPost(post));
+
+        ImageView cover = new ImageView(this);
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.setBackground(roundRect(themeControlSurface(), dp(13), 0, 0));
+        cover.setClipToOutline(true);
+        card.addView(cover, new LinearLayout.LayoutParams(dp(78), dp(114)));
+        ComingSoonImageLoader.load(this, post.imageUrl, cover);
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
+        copy.setPadding(dp(12), dp(1), 0, dp(1));
+
+        TextView source = new TextView(this);
+        source.setText(post.source + (post.published.isEmpty() ? "" : " · " + post.published));
+        source.setTextSize(9.5f);
+        source.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        source.setTextColor(themeAccent());
+        source.setSingleLine(true);
+        source.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        copy.addView(source);
+
+        TextView title = new TextView(this);
+        title.setText(post.title);
+        title.setTextSize(14.5f);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        title.setMaxLines(2);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        title.setPadding(0, dp(4), 0, 0);
+        applyBookTitleTypeface(title);
+        copy.addView(title);
+
+        TextView excerpt = new TextView(this);
+        excerpt.setText(post.excerpt);
+        excerpt.setTextSize(10.5f);
+        excerpt.setTextColor(themeSecondaryText());
+        excerpt.setMaxLines(3);
+        excerpt.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        excerpt.setPadding(0, dp(5), 0, 0);
+        copy.addView(excerpt);
+
+        card.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        return card;
+    }
+
+    private void openComingSoonPost(ComingSoonFeed.Post post) {
+        if (post == null) return;
+        Intent intent = new Intent(this, ComingSoonDetailActivity.class);
+        intent.putExtra("url", post.url);
+        intent.putExtra("title", post.title);
+        intent.putExtra("source", post.source);
+        intent.putExtra("date", post.published);
+        intent.putExtra("image", post.imageUrl);
+        startActivity(intent);
+    }
+
     private void addDiscoverySection(LinearLayout root) {
         TextView heading = new TextView(this);
-        heading.setText("Explore");
+        heading.setText("Quick links");
         heading.setTextSize(14);
         heading.setTextColor(themeSecondaryText());
         heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -231,7 +377,7 @@ public class MainActivity extends Activity {
                 {"telegram", "Telegram", "New books", "https://t.me/TheBookR"},
                 {"discussion", "Discussion", "Reader community", "https://t.me/+rUiqzi2mdhNiNGZl"},
                 {"website", "Book Website", "saroatsin.com", "https://saroatsin.com"},
-                {"review", "Book Reviews", "အညွှန်း & review", "https://whispermmepub.github.io/Review/"}
+                {"review", "Book Reviews", "Coming Soon feed", "wow://coming-soon"}
         };
         int[] colors = {
                 Color.rgb(232, 245, 255), Color.rgb(239, 238, 255),
@@ -254,7 +400,10 @@ public class MainActivity extends Activity {
         card.setBackground(roundRect(themeDiscoverySurface(background), dp(18), dp(1), themeStroke()));
         card.setClickable(true);
         card.setElevation(dp(1));
-        card.setOnClickListener(v -> openExternal(url));
+        card.setOnClickListener(v -> {
+            if ("wow://coming-soon".equals(url)) showExploreHome();
+            else openExternal(url);
+        });
         card.setOnTouchListener((v, e) -> {
             if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN)
                 v.animate().scaleX(0.975f).scaleY(0.975f).setDuration(80L).start();
@@ -777,6 +926,7 @@ public class MainActivity extends Activity {
 
         addContinueReadingSection(outer);
         addPremiumReadingStrip(outer);
+        addComingSoonSection(outer);
         addDiscoverySection(outer);
         return outer;
     }
@@ -1054,11 +1204,7 @@ public class MainActivity extends Activity {
     }
 
     private void showExploreHome() {
-        if (!homeMode) {
-            homeMode = true;
-            buildUi();
-        }
-        if (libraryRecycler != null) libraryRecycler.smoothScrollToPosition(0);
+        startActivity(new Intent(this, ComingSoonActivity.class));
     }
 
     private View bottomNavItem(String iconText, String label, boolean active, Runnable action) {

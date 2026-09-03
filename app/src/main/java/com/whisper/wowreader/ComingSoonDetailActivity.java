@@ -1,16 +1,11 @@
 package com.whisper.wowreader;
 
 import android.app.Activity;
-import android.content.Intent;
 import android.content.SharedPreferences;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.net.Uri;
 import android.os.Bundle;
-import android.text.method.LinkMovementMethod;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -20,9 +15,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 
 public class ComingSoonDetailActivity extends Activity {
     private SharedPreferences prefs;
@@ -75,10 +67,6 @@ public class ComingSoonDetailActivity extends Activity {
         label.setPadding(dp(12), 0, 0, 0);
         header.addView(label, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
-        TextView web = smallButton("↗");
-        web.setContentDescription("Open original post");
-        web.setOnClickListener(v -> openOriginal());
-        header.addView(web, new LinearLayout.LayoutParams(dp(44), dp(44)));
         bodyRoot.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
 
@@ -104,7 +92,7 @@ public class ComingSoonDetailActivity extends Activity {
         cover.setBackground(roundRect(control(), dp(16), 0, 0));
         cover.setClipToOutline(true);
         card.addView(cover, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(270)));
-        loadImage(fallbackImage, cover);
+        ComingSoonImageLoader.load(this, fallbackImage, cover);
 
         TextView source = text(fallbackSource + (fallbackDate.isEmpty() ? "" : " · " + fallbackDate), 10.5f, accent(), true);
         source.setPadding(dp(2), dp(14), dp(2), 0);
@@ -121,7 +109,7 @@ public class ComingSoonDetailActivity extends Activity {
             ComingSoonFeed.Post post = ComingSoonFeed.fetchPost(this, postUrl);
             runOnUiThread(() -> {
                 if (post == null) {
-                    status.setText("Couldn't load the full post. You can open the original source with ↗.");
+                    status.setText("Full post is not available right now. Showing the cached preview when available.");
                     return;
                 }
                 renderPost(post);
@@ -145,7 +133,7 @@ public class ComingSoonDetailActivity extends Activity {
             cover.setBackground(roundRect(control(), dp(16), 0, 0));
             cover.setClipToOutline(true);
             card.addView(cover, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(280)));
-            loadImage(post.imageUrl, cover);
+            ComingSoonImageLoader.load(this, post.imageUrl, cover);
         }
 
         TextView source = text(post.source + (post.published.isEmpty() ? "" : " · " + post.published), 10.5f, accent(), true);
@@ -167,47 +155,15 @@ public class ComingSoonDetailActivity extends Activity {
         TextView body = text("", 16, primary(), false);
         body.setLineSpacing(dp(4), 1.18f);
         body.setText(ComingSoonFeed.richText(post.contentHtml));
-        body.setMovementMethod(LinkMovementMethod.getInstance());
-        body.setLinkTextColor(accent());
+        body.setMovementMethod(null);
+        body.setLinksClickable(false);
+        body.setLinkTextColor(primary());
         body.setTextIsSelectable(true);
         body.setPadding(dp(2), 0, dp(2), dp(6));
         card.addView(body);
 
-        TextView original = text("Read original post  ↗", 12.5f, accent(), true);
-        original.setGravity(Gravity.CENTER);
-        original.setBackground(roundRect(control(), dp(18), dp(1), stroke()));
-        original.setOnClickListener(v -> openOriginal());
-        LinearLayout.LayoutParams originalLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
-        originalLp.topMargin = dp(16);
-        card.addView(original, originalLp);
-
         bodyRoot.addView(card, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-    }
-
-    private void openOriginal() {
-        if (postUrl == null || postUrl.trim().isEmpty()) return;
-        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(postUrl))); } catch (Exception ignored) {}
-    }
-
-    private void loadImage(String url, ImageView view) {
-        if (url == null || url.trim().isEmpty()) return;
-        new Thread(() -> {
-            HttpURLConnection c = null;
-            try {
-                c = (HttpURLConnection) new URL(url).openConnection();
-                c.setConnectTimeout(7000);
-                c.setReadTimeout(9000);
-                c.setRequestProperty("User-Agent", "WoWReader/2.16 Android");
-                try (InputStream in = c.getInputStream()) {
-                    Bitmap bitmap = BitmapFactory.decodeStream(in);
-                    if (bitmap != null) runOnUiThread(() -> view.setImageBitmap(bitmap));
-                }
-            } catch (Exception ignored) {
-            } finally {
-                if (c != null) c.disconnect();
-            }
-        }, "wow-detail-cover").start();
     }
 
     private TextView smallButton(String value) {

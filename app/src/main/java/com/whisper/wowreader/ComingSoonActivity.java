@@ -3,8 +3,6 @@ package com.whisper.wowreader;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -18,9 +16,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.List;
 
 public class ComingSoonActivity extends Activity {
@@ -132,7 +127,7 @@ public class ComingSoonActivity extends Activity {
         cover.setBackground(roundRect(control(), dp(14), 0, 0));
         cover.setClipToOutline(true);
         card.addView(cover, new LinearLayout.LayoutParams(dp(86), dp(126)));
-        loadImage(post.imageUrl, cover);
+        ComingSoonImageLoader.load(this, post.imageUrl, cover);
 
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
@@ -168,26 +163,6 @@ public class ComingSoonActivity extends Activity {
         intent.putExtra("date", post.published);
         intent.putExtra("image", post.imageUrl);
         startActivity(intent);
-    }
-
-    private void loadImage(String url, ImageView view) {
-        if (url == null || url.trim().isEmpty()) return;
-        new Thread(() -> {
-            HttpURLConnection c = null;
-            try {
-                c = (HttpURLConnection) new URL(url).openConnection();
-                c.setConnectTimeout(7000);
-                c.setReadTimeout(9000);
-                c.setRequestProperty("User-Agent", "WoWReader/2.16 Android");
-                try (InputStream in = c.getInputStream()) {
-                    Bitmap bitmap = BitmapFactory.decodeStream(in);
-                    if (bitmap != null) runOnUiThread(() -> view.setImageBitmap(bitmap));
-                }
-            } catch (Exception ignored) {
-            } finally {
-                if (c != null) c.disconnect();
-            }
-        }, "wow-cover").start();
     }
 
     private TextView smallButton(String value) {

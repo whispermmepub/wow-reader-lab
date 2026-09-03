@@ -80,7 +80,7 @@ final class ComingSoonFeed {
             if (json == null || json.trim().isEmpty()) continue;
             try { merged.addAll(parse(json, source)); } catch (Exception ignored) {}
         }
-        merged.sort((a, b) -> Long.compare(b.publishedMs, a.publishedMs));
+        Collections.sort(merged, (a, b) -> Long.compare(b.publishedMs, a.publishedMs));
         if (totalLimit > 0 && merged.size() > totalLimit)
             return new ArrayList<>(merged.subList(0, totalLimit));
         return merged;

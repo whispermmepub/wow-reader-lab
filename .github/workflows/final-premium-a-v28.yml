@@ -1,0 +1,120 @@
+name: Final Premium A v28 clean build
+
+on:
+  push:
+    branches: [feature/premium-a-ui-v28]
+    paths:
+      - '.github/workflows/final-premium-a-v28.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  final-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/premium-a-ui-v28
+      - name: Remove temporary patch helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            scripts/apply_premium_a_ui.py \
+            scripts/apply_premium_reader_ui.py \
+            scripts/apply_premium_library_sheets.py \
+            scripts/apply_premium_library_sheets_v2.py \
+            .github/workflows/premium-a-ui-ci.yml \
+            .github/workflows/premium-reader-ui-ci.yml \
+            .github/workflows/premium-library-sheets-ci.yml \
+            .github/workflows/premium-library-sheets-v2-ci.yml \
+            .github/workflows/lab-apply-smart-sync.yml \
+            .github/workflows/lab-apply-smart-sync-manual.yml \
+            .github/workflows/final-premium-a-v28.yml
+          rmdir scripts 2>/dev/null || true
+          git diff --check
+      - name: Commit clean test branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'WoW Reader Lab CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'Clean Premium A v28 test branch'
+            git push origin HEAD:feature/premium-a-ui-v28
+          fi
+      - name: Verify final source and identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
+          grep -q "versionCode 28" app/build.gradle
+          grep -q "versionName '2.15.0-lab-premium-a'" app/build.gradle
+          grep -q "compileSdk 36" app/build.gradle
+          grep -q "targetSdk 36" app/build.gradle
+          test -s app/google-services.json
+          test -s app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
+          test -s app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          test -s app/src/main/java/com/whisper/wowreader/CloudMergePolicy.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingStatsStore.java
+          test -s app/src/main/java/com/whisper/wowreader/BookTypographyStore.java
+          test -s app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
+          grep -q 'addContinueReadingSection' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'buildBottomNavigation' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'showBookActions(File file, View anchor)' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'showReadingStatsDialog' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'showNotesHighlightsHub' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'showLibraryFilterSheet' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'GoogleDriveSync.smartBackup' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'presentReaderSheet' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'open_reader_settings' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          git diff --check
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android 16 SDK
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+      - name: Build debug, unsigned release, and lint
+        run: gradle :app:clean :app:assembleDebug :app:lintDebug :app:assembleRelease :app:lintRelease --stacktrace
+      - name: Smoke check release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$APK"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='28'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.15.0-lab-premium-a'"
+          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+      - name: Collect unsigned APK and private-local signing tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v28-Premium-A-unsigned.apk
+          APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
+          ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -n 1)
+          test -s "$APKSIGNER_JAR"
+          test -x "$ZIPALIGN"
+          cp "$APKSIGNER_JAR" apksigner.jar
+          cp "$ZIPALIGN" zipalign
+          chmod +x zipalign
+      - name: Upload unsigned test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v28-Premium-A-unsigned
+          path: |
+            WoW-Reader-Lab-v28-Premium-A-unsigned.apk
+            apksigner.jar
+            zipalign
+          if-no-files-found: error
+          retention-days: 1

@@ -10,7 +10,10 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
-/** Local-first shelf/collection storage for WoW Reader Lab. */
+/**
+ * Local-first shelf/collection storage for WoW Reader Lab.
+ * Shelf state stays in the existing reader preferences so it follows the current backup pipeline.
+ */
 public final class LibraryShelfStore {
     private LibraryShelfStore() {}
 

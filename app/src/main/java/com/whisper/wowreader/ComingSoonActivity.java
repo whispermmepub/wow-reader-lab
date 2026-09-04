@@ -85,6 +85,7 @@ public class ComingSoonActivity extends Activity {
         root.addView(scroll, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
+        AppWindowInsets.apply(this, root, bg(), !"black".equals(appTheme) && !"navy".equals(appTheme));
     }
 
     private void loadFeed() {

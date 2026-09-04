@@ -191,6 +191,7 @@ public class MainActivity extends Activity {
         root.addView(premiumBottomNav, bottomNavLp);
 
         setContentView(root);
+        AppWindowInsets.apply(this, root, themeBackground(), !isBlackAppTheme() && !isNavyAppTheme());
         refreshLibrary();
     }
 

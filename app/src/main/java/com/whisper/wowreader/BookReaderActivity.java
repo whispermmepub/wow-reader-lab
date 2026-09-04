@@ -592,6 +592,11 @@ public class BookReaderActivity extends Activity {
         webView = new ReaderWebView(this);
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
+        // Keep every EPUB chapter at the physical WebView viewport. Author viewport
+        // metadata must not trigger overview zoom when moving between spine items.
+        s.setUseWideViewPort(false);
+        s.setLoadWithOverviewMode(false);
+        s.setTextZoom(Math.max(80, Math.min(200, fontPercent)));
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
         s.setAllowFileAccessFromFileURLs(true);
@@ -633,9 +638,10 @@ public class BookReaderActivity extends Activity {
         });
 
         webView.setOnTouchListener((v, event) -> {
-            boolean paperHandled = handlePaperGesture(event);
-            if (!paperHandled) readerTapDetector.onTouchEvent(event);
-            return paperHandled;
+            // Legacy v2.4/v2.5 paper-curl gesture is intentionally retired.
+            // None/Slide are the only live page animations.
+            readerTapDetector.onTouchEvent(event);
+            return false;
         });
 
         webView.setWebViewClient(new WebViewClient() {
@@ -704,10 +710,9 @@ public class BookReaderActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
-        pageCurlView = new PageCurlView(this);
-        content.addView(pageCurlView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
+        // Do not attach the legacy v2.4/v2.5 PageCurlView. It used full-screen
+        // bitmap transforms and is not part of the current None/Slide reader anymore.
+        pageCurlView = null;
     }
 
     private void handleReaderTap(float x, float y) {
@@ -1869,6 +1874,10 @@ public class BookReaderActivity extends Activity {
 
     private void applyReaderStyle(boolean restoreProgress, int styleToken) {
         if (webView == null) return;
+        // WebView textZoom scales publisher px/pt/% sizes too. Body-only CSS scaling did
+        // not affect many EPUBs in Scroll mode, so textZoom is the single font scale.
+        try { webView.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        catch (Exception ignored) {}
 
         String bg = readerTheme == 2 ? "#121212" :
                 readerTheme == 1 ? "#F4ECD8" : "#FFFFFF";
@@ -1929,7 +1938,7 @@ public class BookReaderActivity extends Activity {
                 "@font-face{font-family:'WoWPuPu';src:url('file:///android_asset/fonts/m01_pupu_bold.ttf') format('truetype');font-display:block;}" +
                 "@font-face{font-family:'WoWMyanmarAyar';src:url('file:///android_asset/fonts/myanmar_ayar_typewriter.ttf') format('truetype');font-display:block;}" +
                 "@font-face{font-family:'WoWPhantee';src:url('file:///android_asset/fonts/phantee_hand_written.ttf') format('truetype');font-display:block;}" +
-                "html,body{background:" + bg + " !important;color:" + fg + " !important;}" +
+                "html,body{background:" + bg + " !important;color:" + fg + " !important;transform:none !important;zoom:1 !important;-webkit-text-size-adjust:100% !important;text-size-adjust:100% !important;}" +
                 "a{color:" + link + " !important;}" +
                 "pre{white-space:pre-wrap !important;overflow-wrap:anywhere !important;}" +
                 ".wow-reader-block{line-height:" + line + " !important;letter-spacing:normal !important;}" +
@@ -1946,11 +1955,12 @@ public class BookReaderActivity extends Activity {
                 "var align=" + jsQuote(textAlignment) + ",smart=" + (autoSpacingAdjustment ? "true" : "false") + ";" +
                 "var rx=/[\\u1000-\\u109F\\uA9E0-\\uA9FF\\uAA60-\\uAA7F]/g;" +
                 "var baseW=Math.max(1,(st.pageWidth||flow.clientWidth||window.innerWidth||1));" +
-                "var wraps=flow.querySelectorAll('div,section,article,main');" +
-                "for(var wi=0;wi<wraps.length;wi++){var wn=wraps[wi],wt=(wn.textContent||'').replace(/\\s+/g,' ').trim();if(wt.length<180)continue;" +
+                "var wraps=flow.querySelectorAll('div,section,article,main,p,blockquote,dd,dt');" +
+                "for(var wi=0;wi<wraps.length;wi++){var wn=wraps[wi],wt=(wn.textContent||'').replace(/\\s+/g,' ').trim();if(wt.length<120)continue;" +
                 "var wcs=getComputedStyle(wn);if(wcs.display!=='block')continue;var wr=wn.getBoundingClientRect();" +
-                "if(wr.width>0&&wr.width<baseW*0.84){wn.style.setProperty('width','auto','important');wn.style.setProperty('max-width','none','important');" +
-                "wn.style.setProperty('min-width','0','important');wn.style.setProperty('margin-left','0','important');wn.style.setProperty('margin-right','0','important');}}" +
+                "var par=wn.parentElement,pr=par?par.getBoundingClientRect():null,parWide=!pr||pr.width>=baseW*0.86;" +
+                "if(parWide&&wr.width>0&&wr.width<baseW*0.90){wn.style.setProperty('width','auto','important');wn.style.setProperty('max-width','none','important');" +
+                "wn.style.setProperty('min-width','0','important');wn.style.setProperty('box-sizing','border-box','important');wn.style.setProperty('margin-left','0','important');wn.style.setProperty('margin-right','0','important');}}" +
                 "var blocks=flow.querySelectorAll('p,li,blockquote,dd,dt,div');" +
                 "for(var i=0;i<blocks.length;i++){var n=blocks[i],txt=(n.textContent||'').trim();if(txt.length<8)continue;" +
                 "if(n.tagName==='DIV'&&n.querySelector('p,div,li,blockquote,dd,dt'))continue;" +
@@ -1985,7 +1995,7 @@ public class BookReaderActivity extends Activity {
         if ("page".equals(readingMode)) {
             css = commonCss +
                     "html,body{height:100% !important;width:100% !important;margin:0 !important;padding:0 !important;overflow:hidden !important;overscroll-behavior:none !important;}" +
-                    "body{font-size:" + fontPercent + "% !important;line-height:" + line + " !important;max-width:none !important;}" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;max-width:none !important;}" +
                     "#wow-page-viewport{position:absolute !important;left:0 !important;top:0 !important;width:100vw !important;height:100vh !important;overflow:hidden !important;clip-path:inset(0) !important;contain:layout paint size !important;}" +
                     "#wow-page-flow{position:absolute !important;left:0 !important;top:0 !important;height:100vh !important;max-width:none !important;" +
                     "margin:0 !important;padding:4.2vh 0 5.2vh 0 !important;box-sizing:border-box !important;overflow:visible !important;" +
@@ -2033,7 +2043,7 @@ public class BookReaderActivity extends Activity {
         } else {
             css = commonCss +
                     "html{overflow-x:hidden !important;overscroll-behavior:none !important;}" +
-                    "body{font-size:" + fontPercent + "% !important;line-height:" + line + " !important;" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;" +
                     "padding:5vh " + safeMargin + "vw 12vh " + safeMargin + "vw !important;" +
                     "height:auto !important;max-width:900px !important;margin:auto !important;box-sizing:border-box !important;" +
                     "column-width:auto !important;column-gap:normal !important;transform:none !important;transition:none !important;}" +
@@ -4019,29 +4029,43 @@ public class BookReaderActivity extends Activity {
             attrs.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             getWindow().setAttributes(attrs);
-
-            root.setOnApplyWindowInsetsListener((v, insets) -> {
-                android.view.DisplayCutout cutout = insets.getDisplayCutout();
-                int safeTop = cutout == null ? 0 : cutout.getSafeInsetTop();
-                int safeBottom = cutout == null ? 0 : cutout.getSafeInsetBottom();
-                if (topBar != null) {
-                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) topBar.getLayoutParams();
-                    int wanted = safeTop + dp(8);
-                    if (p.topMargin != wanted) { p.topMargin = wanted; topBar.setLayoutParams(p); }
-                }
-                if (bottomBar != null) {
-                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) bottomBar.getLayoutParams();
-                    int wanted = safeBottom + dp(12);
-                    if (p.bottomMargin != wanted) { p.bottomMargin = wanted; bottomBar.setLayoutParams(p); }
-                }
-                if (readingSeek != null) {
-                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) readingSeek.getLayoutParams();
-                    int wanted = safeBottom + dp(64);
-                    if (p.bottomMargin != wanted) { p.bottomMargin = wanted; readingSeek.setLayoutParams(p); }
-                }
-                return insets;
-            });
         }
+
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int safeTop = 0;
+            int safeBottom = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets bars = insets.getInsetsIgnoringVisibility(
+                        android.view.WindowInsets.Type.systemBars() |
+                        android.view.WindowInsets.Type.displayCutout());
+                safeTop = bars.top;
+                safeBottom = bars.bottom;
+            } else {
+                safeTop = Math.max(insets.getSystemWindowInsetTop(), insets.getStableInsetTop());
+                safeBottom = Math.max(insets.getSystemWindowInsetBottom(), insets.getStableInsetBottom());
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && insets.getDisplayCutout() != null) {
+                    safeTop = Math.max(safeTop, insets.getDisplayCutout().getSafeInsetTop());
+                    safeBottom = Math.max(safeBottom, insets.getDisplayCutout().getSafeInsetBottom());
+                }
+            }
+            if (topBar != null) {
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) topBar.getLayoutParams();
+                int wanted = safeTop + dp(8);
+                if (p.topMargin != wanted) { p.topMargin = wanted; topBar.setLayoutParams(p); }
+            }
+            if (bottomBar != null) {
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) bottomBar.getLayoutParams();
+                int wanted = safeBottom + dp(12);
+                if (p.bottomMargin != wanted) { p.bottomMargin = wanted; bottomBar.setLayoutParams(p); }
+            }
+            if (readingSeek != null) {
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) readingSeek.getLayoutParams();
+                int wanted = safeBottom + dp(64);
+                if (p.bottomMargin != wanted) { p.bottomMargin = wanted; readingSeek.setLayoutParams(p); }
+            }
+            return insets;
+        });
+        root.requestApplyInsets();
     }
 
     private void enterImmersive() {

@@ -108,6 +108,9 @@ public class BookReaderActivity extends Activity {
     private int pendingChapterCurlDirection = 0;
     private boolean pendingChapterFade = false;
     private int pendingChapterDirection = 0;
+    private boolean chapterTransitionCapturePending = false;
+    private boolean chapterTransitionLoadDeferred = false;
+    private int chapterTransitionCaptureToken = 0;
     private GestureDetector readerTapDetector;
     private VelocityTracker pageVelocityTracker;
     private int pageTouchSlop = 12;
@@ -685,7 +688,9 @@ public class BookReaderActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         chapterTransitionOverlay = new ImageView(this);
-        chapterTransitionOverlay.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        // PixelCopy captures the exact WebView viewport. Map that bitmap 1:1 to the
+        // same MATCH_PARENT bounds; never crop/zoom the outgoing chapter frame.
+        chapterTransitionOverlay.setScaleType(ImageView.ScaleType.FIT_XY);
         chapterTransitionOverlay.setVisibility(View.GONE);
         chapterTransitionOverlay.setClickable(false);
         content.addView(chapterTransitionOverlay, new FrameLayout.LayoutParams(
@@ -1562,6 +1567,13 @@ public class BookReaderActivity extends Activity {
 
     private void loadCurrentEpubChapter() {
         if (spine.isEmpty() || webView == null) return;
+        if (chapterTransitionCapturePending) {
+            chapterTransitionLoadDeferred = true;
+            chapterLoading = true;
+            pageTurnLocked = "page".equals(readingMode);
+            return;
+        }
+        chapterTransitionLoadDeferred = false;
 
         currentSelection = null;
         hideSelectionBar();
@@ -2820,24 +2832,82 @@ public class BookReaderActivity extends Activity {
 
     private void prepareChapterTransition(int direction) {
         if (webView == null || webView.getUrl() == null || chapterTransitionOverlay == null) return;
-        Bitmap shot = captureWebViewBitmap();
-        if (shot == null) return;
-
         pendingChapterDirection = direction < 0 ? -1 : 1;
         pendingChapterCurlDirection = 0;
-        if (chapterTransitionBitmap != null && !chapterTransitionBitmap.isRecycled())
-            chapterTransitionBitmap.recycle();
+        chapterTransitionLoadDeferred = false;
+
+        // WebView.draw(Canvas) is a software render and can use a different internal
+        // page scale from the hardware-composited frame visible on screen. That was
+        // the source of the outgoing chapter suddenly shrinking before navigation.
+        // PixelCopy copies the already-composited window pixels instead, so the old
+        // chapter is frozen at the exact size the reader was looking at.
+        if (Build.VERSION.SDK_INT >= 26 && webView.getWidth() > 0 && webView.getHeight() > 0) {
+            final int width = webView.getWidth();
+            final int height = webView.getHeight();
+            final Bitmap shot;
+            try {
+                shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            } catch (OutOfMemoryError | RuntimeException e) {
+                return;
+            }
+
+            int[] location = new int[2];
+            webView.getLocationInWindow(location);
+            android.graphics.Rect src = new android.graphics.Rect(
+                    location[0], location[1], location[0] + width, location[1] + height);
+            final int token = ++chapterTransitionCaptureToken;
+            chapterTransitionCapturePending = true;
+
+            try {
+                android.view.PixelCopy.request(getWindow(), src, shot, result -> {
+                    if (token != chapterTransitionCaptureToken || isFinishing()) {
+                        if (!shot.isRecycled()) shot.recycle();
+                        return;
+                    }
+                    chapterTransitionCapturePending = false;
+                    if (result != android.view.PixelCopy.SUCCESS) {
+                        // A rare compositor miss is preferable to reintroducing the
+                        // wrong-scale software WebView snapshot. Use a stable reader
+                        // background for that transition instead of a shrunken page.
+                        shot.eraseColor(readerTheme == 2 ? Color.rgb(18, 18, 18) :
+                                (readerTheme == 1 ? Color.rgb(244, 236, 216) : Color.WHITE));
+                    }
+                    installChapterTransitionSnapshot(shot);
+                    if (chapterTransitionLoadDeferred) {
+                        chapterTransitionLoadDeferred = false;
+                        loadCurrentEpubChapter();
+                    }
+                }, new android.os.Handler(android.os.Looper.getMainLooper()));
+                return;
+            } catch (RuntimeException e) {
+                chapterTransitionCapturePending = false;
+                if (!shot.isRecycled()) shot.recycle();
+            }
+        }
+
+        // Android 6/7 fallback. Modern devices never use this software path.
+        Bitmap fallback = captureWebViewBitmap();
+        if (fallback != null) installChapterTransitionSnapshot(fallback);
+    }
+
+    private void installChapterTransitionSnapshot(Bitmap shot) {
+        if (shot == null || chapterTransitionOverlay == null) return;
+        if (chapterTransitionBitmap != null && chapterTransitionBitmap != shot &&
+                !chapterTransitionBitmap.isRecycled()) chapterTransitionBitmap.recycle();
         chapterTransitionBitmap = shot;
-        chapterTransitionOverlay.setImageBitmap(shot);
         chapterTransitionOverlay.animate().cancel();
+        chapterTransitionOverlay.setImageBitmap(shot);
         chapterTransitionOverlay.setAlpha(1f);
         chapterTransitionOverlay.setTranslationX(0f);
+        chapterTransitionOverlay.setScaleX(1f);
+        chapterTransitionOverlay.setScaleY(1f);
         chapterTransitionOverlay.setVisibility(View.VISIBLE);
         chapterTransitionOverlay.bringToFront();
-        if (webView != null) {
-            webView.animate().cancel();
-            webView.setAlpha(0f);
-        }
+        webView.animate().cancel();
+        webView.setScaleX(1f);
+        webView.setScaleY(1f);
+        webView.setTranslationX(0f);
+        webView.setAlpha(0f);
         pendingChapterFade = true;
     }
 

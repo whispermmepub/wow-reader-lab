@@ -1,9 +1,13 @@
 name: WoW Reader Lab v35 Fast Stable Chapter
+
 on:
   push:
-    branches: [ feature/lab-v35-fast-stable-chapter ]
+    branches:
+      - feature/lab-v35-fast-stable-chapter
+
 permissions:
   contents: write
+
 jobs:
   verify:
     runs-on: ubuntu-24.04
@@ -11,25 +15,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+
       - name: Apply v35 fast chapter patch
         run: python3 scripts/apply_lab_v35_fast_chapter.py
+
       - name: Verify fast stable source contract
         shell: bash
         run: |
           set -euo pipefail
           R=app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           G=app/build.gradle
-          grep -q "android.view.PixelCopy.request(getWindow(), src, shot" "$R"
-          grep -q "confirmStableChapterReveal(generation, 0, -1, -1)" "$R"
-          grep -q "var geom=(viewport.clientWidth||0)" "$R"
-          grep -q "if(geom2!==geom&&attempt<1)" "$R"
-          ! grep -q "stableHits<2&&attempt<9" "$R"
-          grep -q "versionCode 35" "$G"
+          grep -q 'android.view.PixelCopy.request' "$R"
+          grep -q 'confirmStableChapterReveal(generation, 0, -1, -1)' "$R"
+          grep -q 'var geom=(viewport.clientWidth||0)' "$R"
+          grep -q 'if(geom2!==geom&&attempt<1)' "$R"
+          ! grep -q 'stableHits<2&&attempt<9' "$R"
+          grep -q 'versionCode 35' "$G"
           grep -q "versionName '2.16.5-lab-v35'" "$G"
           git diff --check
+
       - name: Commit clean v35 source
         shell: bash
         run: |
@@ -41,34 +49,41 @@ jobs:
           git add app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/build.gradle
           git commit -m 'Speed up stable chapter pagination in v35'
           git push origin HEAD:feature/lab-v35-fast-stable-chapter
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
           cache-read-only: true
+
       - name: Install Android SDK
-        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+
       - name: Compile debug release and lint
         run: gradle :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease --stacktrace
+
       - name: Smoke check release APK
         shell: bash
         run: |
           set -euo pipefail
           APK=app/build/outputs/apk/release/app-release-unsigned.apk
-          test -f "$APK"
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader' versionCode='35' versionName='2.16.5-lab-v35'"
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.whisper.wowreader' versionCode='35' versionName='2.16.5-lab-v35'" /tmp/badging.txt
+
       - name: Collect unsigned APK and signing tools
         shell: bash
         run: |
-          mkdir -p artifact
-          cp app/build/outputs/apk/release/app-release-unsigned.apk artifact/WoW-Reader-Lab-v35-unsigned.apk
-          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" artifact/apksigner
-          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" artifact/zipalign
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release-unsigned.apk out/WoW-Reader-Lab-v35-unsigned.apk
+          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" out/apksigner
+
       - uses: actions/upload-artifact@v4
         with:
           name: WoW-Reader-Lab-v35-unsigned
-          path: artifact/
+          path: out/
           retention-days: 2

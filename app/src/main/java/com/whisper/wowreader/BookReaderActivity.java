@@ -3706,6 +3706,33 @@ public class BookReaderActivity extends Activity {
                 .show();
     }
 
+    private void showPdfSettings() {
+        String[] options = new String[]{
+                "Brightness · " + brightnessDisplayName(),
+                "Keep screen on · " + onOff(keepScreenOn),
+                "Lock orientation · " + onOff(lockOrientation)
+        };
+
+        new AlertDialog.Builder(this)
+                .setTitle("Reader settings")
+                .setItems(options, (d, which) -> {
+                    if (which == 0) showBrightnessDialog();
+                    else if (which == 1) {
+                        keepScreenOn = !keepScreenOn;
+                        saveReaderPreferences();
+                        applyWindowPreferences();
+                        showPdfSettings();
+                    } else if (which == 2) {
+                        lockOrientation = !lockOrientation;
+                        saveReaderPreferences();
+                        applyWindowPreferences();
+                        showPdfSettings();
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
     private void showFontSizeDialog() {
         final int[] values = {80, 90, 100, 110, 115, 125, 140, 160, 180, 200};
         String[] labels = new String[values.length];

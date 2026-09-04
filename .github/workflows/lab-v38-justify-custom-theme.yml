@@ -16,6 +16,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Normalize v38 patch helper
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/apply_v38_justify_custom_theme.py')
+          s = p.read_text()
+          old = '''    text = replace_once(text,
+          ''' + "'''" + '''        appTheme = prefs.getString("app_theme", "white");
+                  applyBars();''' + "'''" + ''',
+          ''' + "'''" + '''        appTheme = prefs.getString("app_theme", "white");
+                  if (!AppThemePalette.isSupportedTheme(appTheme)) appTheme = "white";
+                  applyBars();''' + "'''" + ''', f'{label} validation')'''
+          new = '''    text = replace_once(text,
+                  '        appTheme = prefs.getString("app_theme", "white");',
+                  '        appTheme = prefs.getString("app_theme", "white");\\n        if (!AppThemePalette.isSupportedTheme(appTheme)) appTheme = "white";', f'{label} validation')'''
+          if old not in s:
+              raise SystemExit('companion validation patch anchor missing')
+          p.write_text(s.replace(old, new, 1))
+          PY
       - name: Apply v38 justify and custom theme patch
         run: python scripts/apply_v38_justify_custom_theme.py
       - name: Verify v38 source contract

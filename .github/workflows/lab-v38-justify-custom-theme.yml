@@ -4,7 +4,7 @@ on:
     branches:
       - feature/lab-v38-justify-custom-theme
 permissions:
-  contents: write
+  contents: read
 jobs:
   verify:
     runs-on: ubuntu-24.04
@@ -12,31 +12,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/lab-v38-justify-custom-theme
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Normalize v38 patch helper
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/apply_v38_justify_custom_theme.py')
-          s = p.read_text()
-          old = '''    text = replace_once(text,
-          ''' + "'''" + '''        appTheme = prefs.getString("app_theme", "white");
-                  applyBars();''' + "'''" + ''',
-          ''' + "'''" + '''        appTheme = prefs.getString("app_theme", "white");
-                  if (!AppThemePalette.isSupportedTheme(appTheme)) appTheme = "white";
-                  applyBars();''' + "'''" + ''', f'{label} validation')'''
-          new = '''    text = replace_once(text,
-                  '        appTheme = prefs.getString("app_theme", "white");',
-                  '        appTheme = prefs.getString("app_theme", "white");\\n        if (!AppThemePalette.isSupportedTheme(appTheme)) appTheme = "white";', f'{label} validation')'''
-          if old not in s:
-              raise SystemExit('companion validation patch anchor missing')
-          p.write_text(s.replace(old, new, 1))
-          PY
-      - name: Apply v38 justify and custom theme patch
-        run: python scripts/apply_v38_justify_custom_theme.py
       - name: Verify v38 source contract
         run: |
           set -euxo pipefail
@@ -53,35 +28,26 @@ jobs:
           grep -q 'customTheme()' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
           grep -q 'Intent.EXTRA_ALLOW_MULTIPLE,true' app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q 'function nodes()' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-      - name: Commit clean v38 source
-        run: |
-          git config user.name "AungSoe Moe"
-          git config user.email "61192036+whispermmepub@users.noreply.github.com"
-          git add app/build.gradle app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/src/main/java/com/whisper/wowreader/MainActivity.java app/src/main/java/com/whisper/wowreader/ComingSoonActivity.java app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java app/src/main/java/com/whisper/wowreader/AppThemePalette.java
-          if ! git diff --cached --quiet; then
-            git commit -m "Add explicit justify modes and safe custom app theme in v38"
-            git push origin HEAD:feature/lab-v38-justify-custom-theme
-          fi
+          git diff --check
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
       - name: Install Android SDK
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
       - name: Compile debug release and lint
-        run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon clean compileDebugJavaWithJavac assembleRelease lint
+        run: gradle --no-daemon clean :app:compileDebugJavaWithJavac :app:assembleRelease :app:lintDebug --stacktrace
       - name: Smoke check release APK
         run: |
           set -euxo pipefail
           APK=app/build/outputs/apk/release/app-release-unsigned.apk
           test -s "$APK"
           unzip -t "$APK" >/dev/null
-          unzip -p "$APK" AndroidManifest.xml | strings | grep -q com.whisper.wowreader || true
       - name: Collect unsigned APK and signing tools
         run: |
           mkdir -p out/tools/lib64

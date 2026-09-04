@@ -7,7 +7,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
-import android.text.Layout;
+import android.graphics.text.LineBreaker;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -158,10 +158,8 @@ public class ComingSoonDetailActivity extends Activity {
 
         TextView body = text("", 15, primary(), false);
         body.setLineSpacing(dp(2), 1.10f);
-        if (Build.VERSION.SDK_INT >= 26) {
-            // Android's layout engine expands available word/phrase spacing so
-            // Myanmar review lines read with the same balanced feel as Auto-spacing Justify.
-            body.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD);
+        if (Build.VERSION.SDK_INT >= 29) {
+            body.setJustificationMode(LineBreaker.JUSTIFICATION_MODE_INTER_CHARACTER);
         }
         body.setText(ComingSoonFeed.richText(post.contentHtml));
         body.setMovementMethod(null);

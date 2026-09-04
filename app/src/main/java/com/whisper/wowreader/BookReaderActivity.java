@@ -102,6 +102,14 @@ public class BookReaderActivity extends Activity {
     private Runnable readerStyleApplyRunnable;
 
     private WebView webView;
+    private ReaderWebView preloadWebView;
+    private FrameLayout epubWebContent;
+    private View.OnTouchListener readerTouchListener;
+    private int preloadedSpine = -1;
+    private boolean preloadReady = false;
+    private boolean preloadLoading = false;
+    private int preloadGeneration = 0;
+    private int preferredPreloadDirection = 1;
     private PageCurlView pageCurlView;
     private ImageView chapterTransitionOverlay;
     private Bitmap chapterTransitionBitmap;
@@ -591,66 +599,15 @@ public class BookReaderActivity extends Activity {
         }
     }
 
-    private void setupWebView(FrameLayout content) {
-        webView = new ReaderWebView(this);
-        WebSettings s = webView.getSettings();
-        s.setJavaScriptEnabled(true);
-        // Keep every EPUB chapter at the physical WebView viewport. Author viewport
-        // metadata must not trigger overview zoom when moving between spine items.
-        s.setUseWideViewPort(false);
-        s.setLoadWithOverviewMode(false);
-        s.setTextZoom(Math.max(80, Math.min(200, fontPercent)));
-        s.setAllowFileAccess(true);
-        s.setAllowContentAccess(true);
-        s.setAllowFileAccessFromFileURLs(true);
-        s.setAllowUniversalAccessFromFileURLs(true);
-        s.setDefaultTextEncodingName("UTF-8");
-        s.setBuiltInZoomControls(false);
-        s.setDisplayZoomControls(false);
-        s.setSupportZoom(false);
-
-        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        webView.setHorizontalScrollBarEnabled(false);
-        webView.setVerticalScrollBarEnabled(false);
-        webView.addJavascriptInterface(new ReaderBridge(), "WoW");
-
-        pageTouchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
-
-        readerTapDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
-            @Override public boolean onDown(MotionEvent e) { return true; }
-
-            @Override public boolean onSingleTapUp(MotionEvent e) {
-                // Immediate edge tap: do not wait for the double-tap timeout.
-                handleReaderTap(e.getX(), e.getY());
-                return true;
-            }
-
-            @Override public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
-                if (!"page".equals(readingMode) || e1 == null || e2 == null || chapterLoading || pageTurnLocked)
-                    return false;
-                float dx = e2.getX() - e1.getX();
-                float dy = e2.getY() - e1.getY();
-                int edgeSafe = dp(30);
-                if (e1.getX() < edgeSafe || e1.getX() > webView.getWidth() - edgeSafe) return false;
-                if (Math.abs(dx) < dp(64) || Math.abs(dx) < Math.abs(dy) * 1.35f || Math.abs(velocityX) < 500f)
-                    return false;
-                turnPage(dx < 0 ? 1 : -1);
-                return true;
-            }
-        });
-
-        webView.setOnTouchListener((v, event) -> {
-            // Legacy v2.4/v2.5 paper-curl gesture is intentionally retired.
-            // None/Slide are the only live page animations.
-            readerTapDetector.onTouchEvent(event);
-            return false;
-        });
-
-        webView.setWebViewClient(new WebViewClient() {
+    private WebViewClient createReaderWebViewClient() {
+        return new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                if (view != webView) {
+                    handlePreloadPageFinished(view, url);
+                    return;
+                }
                 final int generation = chapterLoadGeneration;
                 applyReaderStyle(true);
                 webView.postDelayed(() -> {
@@ -681,11 +638,276 @@ public class BookReaderActivity extends Activity {
                     }, 3900L);
                 }
             }
+        };
+    }
+
+
+    private ReaderWebView createPreloadWebView() {
+        try {
+            ReaderWebView view = new ReaderWebView(this);
+            WebSettings s = view.getSettings();
+            s.setJavaScriptEnabled(true);
+            s.setUseWideViewPort(false);
+            s.setLoadWithOverviewMode(false);
+            s.setTextZoom(Math.max(80, Math.min(200, fontPercent)));
+            s.setAllowFileAccess(true);
+            s.setAllowContentAccess(true);
+            s.setAllowFileAccessFromFileURLs(true);
+            s.setAllowUniversalAccessFromFileURLs(true);
+            s.setDefaultTextEncodingName("UTF-8");
+            s.setBuiltInZoomControls(false);
+            s.setDisplayZoomControls(false);
+            s.setSupportZoom(false);
+            view.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+            view.setHorizontalScrollBarEnabled(false);
+            view.setVerticalScrollBarEnabled(false);
+            view.addJavascriptInterface(new ReaderBridge(view), "WoW");
+            int solid = readerTheme == 2 ? Color.rgb(18, 18, 18) :
+                    (readerTheme == 1 ? Color.rgb(244, 236, 216) : Color.WHITE);
+            view.setBackgroundColor(solid);
+            return view;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private void handlePreloadPageFinished(WebView view, String url) {
+        if (view == null || view != preloadWebView || !preloadLoading || preloadedSpine < 0) return;
+        final int token = preloadGeneration;
+        warmPreloadedChapter(view, token);
+    }
+
+    private void warmPreloadedChapter(WebView view, int token) {
+        if (view == null || view != preloadWebView || token != preloadGeneration || preloadedSpine < 0) return;
+        try { view.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        catch (Exception ignored) {}
+
+        String bg = readerTheme == 2 ? "#121212" : (readerTheme == 1 ? "#F4ECD8" : "#FFFFFF");
+        String fg = readerTheme == 2 ? "#E8EAED" : (readerTheme == 1 ? "#4A4033" : "#202124");
+        double line = lineSpacing / 100.0;
+        int safeMargin = Math.max(3, Math.min(14, marginPercent));
+        String script;
+        if ("page".equals(readingMode)) {
+            String css = "html,body{height:100% !important;width:100% !important;margin:0 !important;padding:0 !important;overflow:hidden !important;background:" + bg + " !important;color:" + fg + " !important;transform:none !important;zoom:1 !important;}" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;max-width:none !important;}" +
+                    "#wow-page-viewport{position:absolute !important;left:0 !important;top:0 !important;width:100vw !important;height:100vh !important;overflow:hidden !important;}" +
+                    "#wow-page-flow{position:absolute !important;left:0 !important;top:0 !important;height:100vh !important;margin:0 !important;padding:4.2vh 0 5.2vh 0 !important;box-sizing:border-box !important;overflow:visible !important;column-fill:auto !important;transform-origin:0 0 !important;}" +
+                    "#wow-page-flow img,#wow-page-flow svg,#wow-page-flow video,#wow-page-flow table{max-width:100% !important;height:auto !important;}";
+            script = "(function(){try{" +
+                    "var s=document.getElementById('wow-preload-style');if(!s){s=document.createElement('style');s.id='wow-preload-style';document.head.appendChild(s);}s.innerHTML=" + jsQuote(css) + ";" +
+                    "var vp=document.getElementById('wow-page-viewport'),flow=document.getElementById('wow-page-flow');" +
+                    "if(!vp){vp=document.createElement('div');vp.id='wow-page-viewport';if(!flow){flow=document.createElement('div');flow.id='wow-page-flow';while(document.body.firstChild)flow.appendChild(document.body.firstChild);}vp.appendChild(flow);document.body.appendChild(vp);}" +
+                    "var w=Math.max(1,vp.clientWidth||window.innerWidth),m=Math.max(0,Math.round(w*" + (safeMargin / 100.0) + ")),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);" +
+                    "flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.transform='translate3d('+m+'px,0,0)';" +
+                    "var wraps=flow.querySelectorAll('div,section,article,main,p,blockquote,dd,dt');for(var i=0;i<wraps.length;i++){var n=wraps[i],t=(n.textContent||'').replace(/\\s+/g,' ').trim();if(t.length<120)continue;var r=n.getBoundingClientRect();if(r.width>0&&r.width<pw*.90){n.style.setProperty('width','auto','important');n.style.setProperty('max-width','none','important');n.style.setProperty('margin-left','0','important');n.style.setProperty('margin-right','0','important');}}" +
+                    "return true;}catch(e){return false;}})()";
+        } else {
+            String css = "html{overflow-x:hidden !important;background:" + bg + " !important;color:" + fg + " !important;}" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;padding:5vh " + safeMargin + "vw 12vh " + safeMargin + "vw !important;height:auto !important;max-width:900px !important;margin:auto !important;box-sizing:border-box !important;background:" + bg + " !important;color:" + fg + " !important;column-width:auto !important;column-gap:normal !important;transform:none !important;}" +
+                    "body *{max-width:100%;}img,svg,video{max-width:100% !important;height:auto !important;}";
+            script = "(function(){try{var vp=document.getElementById('wow-page-viewport'),flow=document.getElementById('wow-page-flow');if(flow){var before=vp||flow;while(flow.firstChild)document.body.insertBefore(flow.firstChild,before);if(vp)vp.remove();else flow.remove();}" +
+                    "var s=document.getElementById('wow-preload-style');if(!s){s=document.createElement('style');s.id='wow-preload-style';document.head.appendChild(s);}s.innerHTML=" + jsQuote(css) + ";return true;}catch(e){return false;}})()";
+        }
+
+        try {
+            view.evaluateJavascript(script, result -> view.postOnAnimation(() -> view.postOnAnimation(() -> {
+                if (view != preloadWebView || token != preloadGeneration || !preloadLoading || preloadedSpine < 0) return;
+                preloadReady = true;
+                preloadLoading = false;
+            })));
+        } catch (Exception ignored) {
+            if (view == preloadWebView && token == preloadGeneration) {
+                preloadReady = true;
+                preloadLoading = false;
+            }
+        }
+    }
+
+    private void scheduleAdjacentChapterPreload(int direction) {
+        if (isPdf || preloadWebView == null || spine.isEmpty() || chapterLoading || isFinishing()) return;
+        int dir = direction < 0 ? -1 : 1;
+        int target = currentSpine + dir;
+        if (target < 0 || target >= spine.size()) {
+            dir = -dir;
+            target = currentSpine + dir;
+        }
+        if (target < 0 || target >= spine.size() || target == currentSpine) return;
+        if (preloadedSpine == target && (preloadReady || preloadLoading)) return;
+
+        preferredPreloadDirection = dir;
+        preloadGeneration++;
+        preloadedSpine = target;
+        preloadReady = false;
+        preloadLoading = true;
+        try { preloadWebView.stopLoading(); } catch (Exception ignored) {}
+        preloadWebView.setEnabled(false);
+        preloadWebView.setVisibility(View.VISIBLE);
+        preloadWebView.setAlpha(0.01f);
+        preloadWebView.setScaleX(1f);
+        preloadWebView.setScaleY(1f);
+        preloadWebView.setTranslationX(0f);
+        try { preloadWebView.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        catch (Exception ignored) {}
+        try {
+            preloadWebView.loadUrl(Uri.fromFile(spine.get(target)).toString());
+        } catch (Exception e) {
+            cancelChapterPreload();
+        }
+    }
+
+    private void cancelChapterPreload() {
+        preloadGeneration++;
+        preloadReady = false;
+        preloadLoading = false;
+        preloadedSpine = -1;
+        if (preloadWebView != null) {
+            try { preloadWebView.stopLoading(); } catch (Exception ignored) {}
+            preloadWebView.setEnabled(false);
+            preloadWebView.setAlpha(0.01f);
+        }
+    }
+
+    private boolean activatePreloadedChapterIfReady() {
+        if (preloadWebView == null || !preloadReady || preloadedSpine != currentSpine) return false;
+        if (!(webView instanceof ReaderWebView)) return false;
+
+        ReaderWebView incoming = preloadWebView;
+        ReaderWebView outgoing = (ReaderWebView) webView;
+        preloadGeneration++;
+        preloadReady = false;
+        preloadLoading = false;
+        preloadedSpine = -1;
+
+        webView = incoming;
+        preloadWebView = outgoing;
+        currentSelection = null;
+        hideSelectionBar();
+        final int generation = ++chapterLoadGeneration;
+        chapterLoading = true;
+        pageTurnLocked = "page".equals(readingMode);
+        currentPageInChapter = 1;
+        pageCountInChapter = 1;
+
+        outgoing.animate().cancel();
+        outgoing.setEnabled(false);
+        outgoing.setAlpha(0.01f);
+        outgoing.setVisibility(View.VISIBLE);
+        outgoing.setScaleX(1f);
+        outgoing.setScaleY(1f);
+        outgoing.setTranslationX(0f);
+
+        incoming.animate().cancel();
+        incoming.setEnabled(true);
+        incoming.setVisibility(View.VISIBLE);
+        incoming.setScaleX(1f);
+        incoming.setScaleY(1f);
+        incoming.setTranslationX(0f);
+        incoming.setAlpha(0f);
+        incoming.bringToFront();
+        if (chapterTransitionOverlay != null && chapterTransitionOverlay.getVisibility() == View.VISIBLE)
+            chapterTransitionOverlay.bringToFront();
+        if (readerStyleOverlay != null && readerStyleOverlay.getVisibility() == View.VISIBLE)
+            readerStyleOverlay.bringToFront();
+        if (pageSlideOverlay != null && pageSlideOverlay.getVisibility() == View.VISIBLE)
+            pageSlideOverlay.bringToFront();
+
+        updateEpubProgress(currentProgressPermille);
+        updateBookmarkIcon();
+        applyReaderStyle(true);
+        webView.postDelayed(() -> {
+            if (generation == chapterLoadGeneration) applySavedAnnotations();
+        }, 260L);
+        webView.postDelayed(() -> {
+            if (generation == chapterLoadGeneration) installSelectionWatcher();
+        }, 320L);
+        webView.postDelayed(() -> {
+            if (generation == chapterLoadGeneration && chapterLoading && "scroll".equals(readingMode))
+                completePageReady(generation);
+        }, 850L);
+        webView.postDelayed(() -> {
+            if (generation == chapterLoadGeneration && chapterLoading && "page".equals(readingMode))
+                forceChapterRepaginate(generation);
+        }, 1050L);
+        return true;
+    }
+
+    private void setupWebView(FrameLayout content) {
+        epubWebContent = content;
+        webView = new ReaderWebView(this);
+        WebSettings s = webView.getSettings();
+        s.setJavaScriptEnabled(true);
+        // Keep every EPUB chapter at the physical WebView viewport. Author viewport
+        // metadata must not trigger overview zoom when moving between spine items.
+        s.setUseWideViewPort(false);
+        s.setLoadWithOverviewMode(false);
+        s.setTextZoom(Math.max(80, Math.min(200, fontPercent)));
+        s.setAllowFileAccess(true);
+        s.setAllowContentAccess(true);
+        s.setAllowFileAccessFromFileURLs(true);
+        s.setAllowUniversalAccessFromFileURLs(true);
+        s.setDefaultTextEncodingName("UTF-8");
+        s.setBuiltInZoomControls(false);
+        s.setDisplayZoomControls(false);
+        s.setSupportZoom(false);
+
+        webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        webView.setHorizontalScrollBarEnabled(false);
+        webView.setVerticalScrollBarEnabled(false);
+        webView.addJavascriptInterface(new ReaderBridge(webView), "WoW");
+
+        pageTouchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+
+        readerTapDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onDown(MotionEvent e) { return true; }
+
+            @Override public boolean onSingleTapUp(MotionEvent e) {
+                // Immediate edge tap: do not wait for the double-tap timeout.
+                handleReaderTap(e.getX(), e.getY());
+                return true;
+            }
+
+            @Override public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                if (!"page".equals(readingMode) || e1 == null || e2 == null || chapterLoading || pageTurnLocked)
+                    return false;
+                float dx = e2.getX() - e1.getX();
+                float dy = e2.getY() - e1.getY();
+                int edgeSafe = dp(30);
+                if (e1.getX() < edgeSafe || e1.getX() > webView.getWidth() - edgeSafe) return false;
+                if (Math.abs(dx) < dp(64) || Math.abs(dx) < Math.abs(dy) * 1.35f || Math.abs(velocityX) < 500f)
+                    return false;
+                turnPage(dx < 0 ? 1 : -1);
+                return true;
+            }
         });
+
+        readerTouchListener = (v, event) -> {
+            // Legacy v2.4/v2.5 paper-curl gesture is intentionally retired.
+            // None/Slide are the only live page animations.
+            readerTapDetector.onTouchEvent(event);
+            return false;
+        };
+        webView.setOnTouchListener(readerTouchListener);
+
+        webView.setWebViewClient(createReaderWebViewClient());
 
         content.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+
+        preloadWebView = createPreloadWebView();
+        if (preloadWebView != null) {
+            preloadWebView.setOnTouchListener(readerTouchListener);
+            preloadWebView.setWebViewClient(createReaderWebViewClient());
+            preloadWebView.setEnabled(false);
+            preloadWebView.setAlpha(0.01f);
+            preloadWebView.setVisibility(View.VISIBLE);
+            content.addView(preloadWebView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            webView.bringToFront();
+        }
 
         chapterTransitionOverlay = new ImageView(this);
         // PixelCopy captures the exact WebView viewport. Map that bitmap 1:1 to the
@@ -1575,6 +1797,21 @@ public class BookReaderActivity extends Activity {
         }
         chapterTransitionLoadDeferred = false;
 
+        if (activatePreloadedChapterIfReady()) return;
+        if (preloadWebView != null && preloadedSpine == currentSpine && preloadLoading) {
+            final int waitToken = preloadGeneration;
+            chapterLoading = true;
+            pageTurnLocked = "page".equals(readingMode);
+            webView.postDelayed(() -> {
+                if (waitToken != preloadGeneration) return;
+                if (activatePreloadedChapterIfReady()) return;
+                cancelChapterPreload();
+                loadCurrentEpubChapter();
+            }, 100L);
+            return;
+        }
+        cancelChapterPreload();
+
         currentSelection = null;
         hideSelectionBar();
         final int loadGeneration = ++chapterLoadGeneration;
@@ -1618,6 +1855,7 @@ public class BookReaderActivity extends Activity {
             return;
         }
 
+        preferredPreloadDirection = delta < 0 ? -1 : 1;
         prepareChapterTransition(delta);
         lastChapterNavMs = now;
         currentSpine = target;
@@ -1759,6 +1997,7 @@ public class BookReaderActivity extends Activity {
                     });
                 } else {
                     int direction = spineIndex > currentSpine ? 1 : -1;
+                    preferredPreloadDirection = direction;
                     prepareChapterTransition(direction);
                     pendingTocFragment = fragment;
                     currentSpine = spineIndex;
@@ -2225,6 +2464,7 @@ public class BookReaderActivity extends Activity {
         if (pageCurlView != null && !pageCurlView.isBusy()) pageCurlView.release();
         finishChapterFadeImmediate();
         prewarmAdjacentChapters();
+        scheduleAdjacentChapterPreload(preferredPreloadDirection);
     }
 
     private void prewarmAdjacentChapters() {
@@ -4269,6 +4509,7 @@ public class BookReaderActivity extends Activity {
         if (positionView != null) positionView.setTextColor(fg);
         if (root != null) root.setBackgroundColor(solid);
         if (webView != null) webView.setBackgroundColor(solid);
+        if (preloadWebView != null) preloadWebView.setBackgroundColor(solid);
         updateNightLightOverlay();
     }
 
@@ -4477,13 +4718,21 @@ public class BookReaderActivity extends Activity {
     }
 
     private class ReaderBridge {
+        private final WebView owner;
+
+        ReaderBridge(WebView owner) {
+            this.owner = owner;
+        }
+
         @JavascriptInterface
         public void onSelection(String text, int start, int end) {
+            if (owner != webView) return;
             runOnUiThread(() -> onWebSelection(text, start, end));
         }
 
         @JavascriptInterface
         public void onScroll(int p) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"scroll".equals(readingMode)) return;
                 updateEpubProgress(p);
@@ -4493,6 +4742,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void onScrollReady(int generation) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"scroll".equals(readingMode) || generation != chapterLoadGeneration) return;
                 completePageReady(generation);
@@ -4501,6 +4751,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void onPage(int page, int count, int p) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
                 updateEpubPageProgress(page, count, p);
@@ -4509,6 +4760,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void onPageReady(int generation, int page, int count, int p) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode) || generation != chapterLoadGeneration) return;
                 updateEpubPageProgress(page, count, p);
@@ -4518,11 +4770,13 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void onStyleReady(int token) {
+            if (owner != webView) return;
             runOnUiThread(() -> finishReaderStyleReflow(token));
         }
 
         @JavascriptInterface
         public void onPageTurnComplete(int page, int count, int p) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
                 updateEpubPageProgress(page, count, p);
@@ -4532,6 +4786,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void onEmptyChapter() {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
                 skipEmptyEpubSpine();
@@ -4540,6 +4795,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void pageEngineFailed(String message) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
                 readingMode = "scroll";
@@ -4555,6 +4811,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void requestChapter(int delta) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode) || delta == 0) return;
                 int target = currentSpine + (delta < 0 ? -1 : 1);
@@ -4609,6 +4866,13 @@ public class BookReaderActivity extends Activity {
     }
 
     @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW)
+            cancelChapterPreload();
+    }
+
+    @Override
     protected void onPause() {
         ReadingStatsStore.finishSession(prefs, bookFile == null ? null : bookFile.getName(), readingSessionStartedElapsedMs);
         readingSessionStartedElapsedMs = 0L;
@@ -4627,6 +4891,12 @@ public class BookReaderActivity extends Activity {
             try { webView.removeJavascriptInterface("WoW"); } catch (Exception ignored) {}
             try { webView.stopLoading(); } catch (Exception ignored) {}
             try { webView.destroy(); } catch (Exception ignored) {}
+        }
+        if (preloadWebView != null) {
+            try { preloadWebView.removeJavascriptInterface("WoW"); } catch (Exception ignored) {}
+            try { preloadWebView.stopLoading(); } catch (Exception ignored) {}
+            try { preloadWebView.destroy(); } catch (Exception ignored) {}
+            preloadWebView = null;
         }
 
         try { if (pdfPage != null) pdfPage.close(); } catch (Exception ignored) {}

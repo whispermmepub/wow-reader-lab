@@ -1,0 +1,98 @@
+name: WoW Reader Lab v39 Coming Soon Reading Polish
+
+on:
+  push:
+    branches:
+      - feature/lab-v39-coming-soon-reading-polish
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/lab-v39-coming-soon-reading-polish
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply guarded v39 patch
+        run: python scripts/apply_v39_coming_soon_reading_polish.py
+
+      - name: Verify v39 source contract
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -q "versionCode 39" app/build.gradle
+          grep -q "2.16.9-lab-v39" app/build.gradle
+          grep -q 'Html.FROM_HTML_MODE_LEGACY' app/src/main/java/com/whisper/wowreader/ComingSoonFeed.java
+          grep -q 'TextView body = text("", 15' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
+          grep -q 'JUSTIFICATION_MODE_INTER_WORD' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
+          grep -q 'BREAK_STRATEGY_HIGH_QUALITY' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
+          grep -q 'AppThemePalette.isSupportedTheme' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
+          grep -q 'Justify · Auto spacing' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'Intent.EXTRA_ALLOW_MULTIPLE,true' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'Scopes.DRIVE_APPFOLDER' app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          git diff --check
+
+      - name: Commit v39 source
+        shell: bash
+        run: |
+          git config user.name "AungSoe Moe"
+          git config user.email "61192036+whispermmepub@users.noreply.github.com"
+          git add app/build.gradle app/src/main/java/com/whisper/wowreader/ComingSoonFeed.java app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
+          if ! git diff --cached --quiet; then
+            git commit -m "Polish Coming Soon review reading in v39"
+            git push origin HEAD:feature/lab-v39-coming-soon-reading-polish
+          fi
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Compile release and lint
+        run: gradle --no-daemon clean :app:compileDebugJavaWithJavac :app:assembleRelease :app:lintDebug --stacktrace
+
+      - name: Smoke check release APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$APK"
+          unzip -t "$APK" >/dev/null
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='39'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.16.9-lab-v39'"
+          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+
+      - name: Collect unsigned APK and signing tools
+        shell: bash
+        run: |
+          mkdir -p out/tools/lib64
+          cp app/build/outputs/apk/release/app-release-unsigned.apk out/WoW-Reader-Lab-v39-unsigned.apk
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" out/tools/apksigner.jar
+          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" out/tools/zipalign
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib64/libc++.so" out/tools/lib64/libc++.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v39-unsigned
+          path: out/
+          retention-days: 2

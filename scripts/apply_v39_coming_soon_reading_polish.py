@@ -21,7 +21,8 @@ elif 'versionCode 39' not in gradle or "versionName '2.16.9-lab-v39'" not in gra
     raise SystemExit('unexpected version identity')
 gradle_path.write_text(gradle)
 
-# Restore the richer paragraph semantics that v30 used.
+# Restore the richer paragraph semantics that v30 used while retaining the
+# existing cleanup for broken images/objects and excessive blank lines.
 feed = feed_path.read_text()
 if 'Html.FROM_HTML_MODE_COMPACT' in feed:
     feed = replace_once(feed,
@@ -32,38 +33,46 @@ elif 'Html.FROM_HTML_MODE_LEGACY' not in feed:
     raise SystemExit('review html mode missing')
 feed_path.write_text(feed)
 
-# Review body only: 15sp + native justification. Avoid forcing line-break constants;
-# Android's default breaker is more compatible across API/OEM versions.
+# Review body only: 15sp + inter-character justification on Android 10+.
+# Inter-character is the closest native analogue to the Reader's Auto-spacing
+# Justify for Myanmar text; older Android versions keep the paragraph/font polish.
 detail = detail_path.read_text()
-if 'import android.os.Build;' not in detail:
-    detail = replace_once(detail,
+if 'import android.graphics.text.LineBreaker;' not in detail:
+    if 'import android.text.Layout;' in detail:
+        detail = detail.replace('import android.text.Layout;\n', 'import android.graphics.text.LineBreaker;\n', 1)
+    else:
+        detail = replace_once(detail,
 '''import android.graphics.drawable.GradientDrawable;
-import android.os.Bundle;''',
+import android.os.Build;''',
 '''import android.graphics.drawable.GradientDrawable;
-import android.os.Build;
-import android.os.Bundle;
-import android.text.Layout;''',
-'detail imports')
+import android.graphics.text.LineBreaker;
+import android.os.Build;''',
+'detail LineBreaker import')
 
-old_body = '''        TextView body = text("", 16, primary(), false);
+old_v38 = '''        TextView body = text("", 16, primary(), false);
         body.setLineSpacing(dp(2), 1.10f);
         body.setText(ComingSoonFeed.richText(post.contentHtml));'''
-new_body = '''        TextView body = text("", 15, primary(), false);
+old_v39_word = '''        TextView body = text("", 15, primary(), false);
         body.setLineSpacing(dp(2), 1.10f);
         if (Build.VERSION.SDK_INT >= 26) {
+            // Android's layout engine expands available word/phrase spacing so
+            // Myanmar review lines read with the same balanced feel as Auto-spacing Justify.
             body.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD);
         }
         body.setText(ComingSoonFeed.richText(post.contentHtml));'''
-if old_body in detail:
-    detail = replace_once(detail, old_body, new_body, 'review body typography')
-else:
-    detail = detail.replace('''        if (Build.VERSION.SDK_INT >= 23) {
-            body.setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY);
-            body.setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE);
+new_body = '''        TextView body = text("", 15, primary(), false);
+        body.setLineSpacing(dp(2), 1.10f);
+        if (Build.VERSION.SDK_INT >= 29) {
+            body.setJustificationMode(LineBreaker.JUSTIFICATION_MODE_INTER_CHARACTER);
         }
-''', '', 1)
-    if 'TextView body = text("", 15, primary(), false);' not in detail or 'JUSTIFICATION_MODE_INTER_WORD' not in detail:
-        raise SystemExit('v39 review body contract missing')
+        body.setText(ComingSoonFeed.richText(post.contentHtml));'''
+if old_v38 in detail:
+    detail = replace_once(detail, old_v38, new_body, 'review body typography')
+elif old_v39_word in detail:
+    detail = replace_once(detail, old_v39_word, new_body, 'review justification mode')
+elif ('TextView body = text("", 15, primary(), false);' not in detail or
+      'LineBreaker.JUSTIFICATION_MODE_INTER_CHARACTER' not in detail):
+    raise SystemExit('v39 review body contract missing')
 detail_path.write_text(detail)
 
 print('v39 Coming Soon reading polish applied')

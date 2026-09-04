@@ -6,6 +6,16 @@
         <item name="android:navigationBarColor">#FFFFFF</item>
         <item name="android:statusBarColor">#FFFFFF</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:colorAccent">#5F4B8B</item>
+        <item name="android:colorAccent">#6252D7</item>
+        <item name="android:alertDialogTheme">@style/WoWAlertDialogTheme</item>
+    </style>
+
+    <style name="WoWAlertDialogTheme" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@drawable/premium_dialog_surface</item>
+        <item name="android:windowMinWidthMajor">88%</item>
+        <item name="android:windowMinWidthMinor">88%</item>
+        <item name="android:colorAccent">#6252D7</item>
+        <item name="android:windowNoTitle">false</item>
     </style>
 </resources>

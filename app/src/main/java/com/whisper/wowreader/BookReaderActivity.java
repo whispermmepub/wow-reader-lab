@@ -84,6 +84,8 @@ public class BookReaderActivity extends Activity {
     private View nightLightOverlay;
     private Runnable chromeAutoHideRunnable;
     private SelectionData currentSelection;
+    private ActionMode nativeSelectionActionMode;
+    private Runnable hideNativeSelectionRunnable;
     private static final int SEL_HIGHLIGHT = 9301;
     private static final int SEL_NOTE = 9302;
     private static final int SEL_TRANSLATE = 9303;
@@ -100,12 +102,23 @@ public class BookReaderActivity extends Activity {
     private Runnable readerStyleApplyRunnable;
 
     private WebView webView;
+    private ReaderWebView preloadWebView;
+    private FrameLayout epubWebContent;
+    private View.OnTouchListener readerTouchListener;
+    private int preloadedSpine = -1;
+    private boolean preloadReady = false;
+    private boolean preloadLoading = false;
+    private int preloadGeneration = 0;
+    private int preferredPreloadDirection = 1;
     private PageCurlView pageCurlView;
     private ImageView chapterTransitionOverlay;
     private Bitmap chapterTransitionBitmap;
     private int pendingChapterCurlDirection = 0;
     private boolean pendingChapterFade = false;
     private int pendingChapterDirection = 0;
+    private boolean chapterTransitionCapturePending = false;
+    private boolean chapterTransitionLoadDeferred = false;
+    private int chapterTransitionCaptureToken = 0;
     private GestureDetector readerTapDetector;
     private VelocityTracker pageVelocityTracker;
     private int pageTouchSlop = 12;
@@ -251,6 +264,11 @@ public class BookReaderActivity extends Activity {
             root.postDelayed(() -> {
                 if (!isFinishing()) showAnnotations();
             }, 700L);
+        }
+        if (!isPdf && getIntent().getBooleanExtra("open_reader_settings", false)) {
+            root.postDelayed(() -> {
+                if (!isFinishing()) showReaderSettings();
+            }, 760L);
         }
     }
 
@@ -480,16 +498,16 @@ public class BookReaderActivity extends Activity {
         selectionBar = new LinearLayout(this);
         selectionBar.setOrientation(LinearLayout.HORIZONTAL);
         selectionBar.setGravity(Gravity.CENTER);
-        selectionBar.setPadding(dp(7), dp(5), dp(7), dp(5));
-        selectionBar.setBackground(glassPanel(readerPanelBase(), dp(20), readerPanelStroke()));
-        selectionBar.setElevation(dp(14));
+        selectionBar.setPadding(dp(6), dp(3), dp(6), dp(3));
+        selectionBar.setBackground(glassPanel(readerPanelBase(), dp(18), readerPanelStroke()));
+        selectionBar.setElevation(dp(12));
         selectionBar.addView(selectionActionButton("Highlight", SEL_HIGHLIGHT));
         selectionBar.addView(selectionActionButton("Note", SEL_NOTE));
         selectionBar.addView(selectionActionButton("Translate", SEL_TRANSLATE));
         selectionBar.addView(selectionActionButton("Copy", SEL_COPY));
         selectionBar.setVisibility(View.GONE);
         FrameLayout.LayoutParams selectionLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(72), Gravity.TOP | Gravity.START);
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(50), Gravity.TOP | Gravity.START);
         selectionLp.leftMargin = dp(12);
         selectionLp.topMargin = dp(100);
         root.addView(selectionBar, selectionLp);
@@ -537,10 +555,293 @@ public class BookReaderActivity extends Activity {
         return iconButton(text, 18);
     }
 
+    private final class ReaderWebView extends WebView {
+        ReaderWebView(android.content.Context context) {
+            super(context);
+        }
+
+        private ActionMode.Callback suppressNativeToolbar(ActionMode.Callback delegate) {
+            return new ActionMode.Callback() {
+                @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                    boolean created = delegate == null || delegate.onCreateActionMode(mode, menu);
+                    nativeSelectionActionMode = mode;
+                    menu.clear();
+                    try { mode.hide(3000L); } catch (Exception ignored) {}
+                    return created;
+                }
+
+                @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                    boolean changed = delegate != null && delegate.onPrepareActionMode(mode, menu);
+                    nativeSelectionActionMode = mode;
+                    menu.clear();
+                    try { mode.hide(3000L); } catch (Exception ignored) {}
+                    return changed || true;
+                }
+
+                @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                    // Native items are intentionally removed; WoW's compact bar owns actions.
+                    return true;
+                }
+
+                @Override public void onDestroyActionMode(ActionMode mode) {
+                    if (delegate != null) delegate.onDestroyActionMode(mode);
+                    if (nativeSelectionActionMode == mode) nativeSelectionActionMode = null;
+                }
+            };
+        }
+
+        @Override public ActionMode startActionMode(ActionMode.Callback callback) {
+            return super.startActionMode(suppressNativeToolbar(callback));
+        }
+
+        @Override public ActionMode startActionMode(ActionMode.Callback callback, int type) {
+            return super.startActionMode(suppressNativeToolbar(callback), type);
+        }
+    }
+
+    private WebViewClient createReaderWebViewClient() {
+        return new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                if (view != webView) {
+                    handlePreloadPageFinished(view, url);
+                    return;
+                }
+                final int generation = chapterLoadGeneration;
+                applyReaderStyle(true);
+                webView.postDelayed(() -> {
+                    if (generation == chapterLoadGeneration) applySavedAnnotations();
+                }, 520L);
+                webView.postDelayed(() -> {
+                    if (generation == chapterLoadGeneration) applySavedAnnotations();
+                }, 1450L);
+                webView.postDelayed(() -> {
+                    if (generation == chapterLoadGeneration) installSelectionWatcher();
+                }, 560L);
+                if ("scroll".equals(readingMode)) {
+                    // Scroll mode now reveals through WoW.onScrollReady after fonts and two animation frames.
+                    // Keep a guarded fallback for unusually broken EPUB scripts.
+                    webView.postDelayed(() -> {
+                        if (generation == chapterLoadGeneration && chapterLoading && "scroll".equals(readingMode))
+                            completePageReady(generation);
+                    }, 1600L);
+                } else {
+                    // Recheck if a device changes its edge-to-edge viewport just after navigation.
+                    webView.postDelayed(() -> {
+                        if (generation == chapterLoadGeneration && chapterLoading)
+                            forceChapterRepaginate(generation);
+                    }, 2100L);
+                    webView.postDelayed(() -> {
+                        if (generation == chapterLoadGeneration && chapterLoading)
+                            forceChapterRepaginate(generation);
+                    }, 3900L);
+                }
+            }
+        };
+    }
+
+
+    private ReaderWebView createPreloadWebView() {
+        try {
+            ReaderWebView view = new ReaderWebView(this);
+            WebSettings s = view.getSettings();
+            s.setJavaScriptEnabled(true);
+            s.setUseWideViewPort(false);
+            s.setLoadWithOverviewMode(false);
+            s.setTextZoom(Math.max(80, Math.min(200, fontPercent)));
+            s.setAllowFileAccess(true);
+            s.setAllowContentAccess(true);
+            s.setAllowFileAccessFromFileURLs(true);
+            s.setAllowUniversalAccessFromFileURLs(true);
+            s.setDefaultTextEncodingName("UTF-8");
+            s.setBuiltInZoomControls(false);
+            s.setDisplayZoomControls(false);
+            s.setSupportZoom(false);
+            view.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+            view.setHorizontalScrollBarEnabled(false);
+            view.setVerticalScrollBarEnabled(false);
+            view.addJavascriptInterface(new ReaderBridge(view), "WoW");
+            int solid = readerTheme == 2 ? Color.rgb(18, 18, 18) :
+                    (readerTheme == 1 ? Color.rgb(244, 236, 216) : Color.WHITE);
+            view.setBackgroundColor(solid);
+            return view;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private void handlePreloadPageFinished(WebView view, String url) {
+        if (view == null || view != preloadWebView || !preloadLoading || preloadedSpine < 0) return;
+        final int token = preloadGeneration;
+        warmPreloadedChapter(view, token);
+    }
+
+    private void warmPreloadedChapter(WebView view, int token) {
+        if (view == null || view != preloadWebView || token != preloadGeneration || preloadedSpine < 0) return;
+        try { view.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        catch (Exception ignored) {}
+
+        String bg = readerTheme == 2 ? "#121212" : (readerTheme == 1 ? "#F4ECD8" : "#FFFFFF");
+        String fg = readerTheme == 2 ? "#E8EAED" : (readerTheme == 1 ? "#4A4033" : "#202124");
+        double line = lineSpacing / 100.0;
+        int safeMargin = Math.max(3, Math.min(14, marginPercent));
+        String script;
+        if ("page".equals(readingMode)) {
+            String css = "html,body{height:100% !important;width:100% !important;margin:0 !important;padding:0 !important;overflow:hidden !important;background:" + bg + " !important;color:" + fg + " !important;transform:none !important;zoom:1 !important;}" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;max-width:none !important;}" +
+                    "#wow-page-viewport{position:absolute !important;left:0 !important;top:0 !important;width:100vw !important;height:100vh !important;overflow:hidden !important;}" +
+                    "#wow-page-flow{position:absolute !important;left:0 !important;top:0 !important;height:100vh !important;margin:0 !important;padding:4.2vh 0 5.2vh 0 !important;box-sizing:border-box !important;overflow:visible !important;column-fill:auto !important;transform-origin:0 0 !important;}" +
+                    "#wow-page-flow img,#wow-page-flow svg,#wow-page-flow video,#wow-page-flow table{max-width:100% !important;height:auto !important;}";
+            script = "(function(){try{" +
+                    "var s=document.getElementById('wow-preload-style');if(!s){s=document.createElement('style');s.id='wow-preload-style';document.head.appendChild(s);}s.innerHTML=" + jsQuote(css) + ";" +
+                    "var vp=document.getElementById('wow-page-viewport'),flow=document.getElementById('wow-page-flow');" +
+                    "if(!vp){vp=document.createElement('div');vp.id='wow-page-viewport';if(!flow){flow=document.createElement('div');flow.id='wow-page-flow';while(document.body.firstChild)flow.appendChild(document.body.firstChild);}vp.appendChild(flow);document.body.appendChild(vp);}" +
+                    "var w=Math.max(1,vp.clientWidth||window.innerWidth),m=Math.max(0,Math.round(w*" + (safeMargin / 100.0) + ")),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);" +
+                    "flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.transform='translate3d('+m+'px,0,0)';" +
+                    "var wraps=flow.querySelectorAll('div,section,article,main,p,blockquote,dd,dt');for(var i=0;i<wraps.length;i++){var n=wraps[i],t=(n.textContent||'').replace(/\\s+/g,' ').trim();if(t.length<120)continue;var r=n.getBoundingClientRect();if(r.width>0&&r.width<pw*.90){n.style.setProperty('width','auto','important');n.style.setProperty('max-width','none','important');n.style.setProperty('margin-left','0','important');n.style.setProperty('margin-right','0','important');}}" +
+                    "return true;}catch(e){return false;}})()";
+        } else {
+            String css = "html{overflow-x:hidden !important;background:" + bg + " !important;color:" + fg + " !important;}" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;padding:5vh " + safeMargin + "vw 12vh " + safeMargin + "vw !important;height:auto !important;max-width:900px !important;margin:auto !important;box-sizing:border-box !important;background:" + bg + " !important;color:" + fg + " !important;column-width:auto !important;column-gap:normal !important;transform:none !important;}" +
+                    "body *{max-width:100%;}img,svg,video{max-width:100% !important;height:auto !important;}";
+            script = "(function(){try{var vp=document.getElementById('wow-page-viewport'),flow=document.getElementById('wow-page-flow');if(flow){var before=vp||flow;while(flow.firstChild)document.body.insertBefore(flow.firstChild,before);if(vp)vp.remove();else flow.remove();}" +
+                    "var s=document.getElementById('wow-preload-style');if(!s){s=document.createElement('style');s.id='wow-preload-style';document.head.appendChild(s);}s.innerHTML=" + jsQuote(css) + ";return true;}catch(e){return false;}})()";
+        }
+
+        try {
+            view.evaluateJavascript(script, result -> view.postOnAnimation(() -> view.postOnAnimation(() -> {
+                if (view != preloadWebView || token != preloadGeneration || !preloadLoading || preloadedSpine < 0) return;
+                preloadReady = true;
+                preloadLoading = false;
+            })));
+        } catch (Exception ignored) {
+            if (view == preloadWebView && token == preloadGeneration) {
+                preloadReady = true;
+                preloadLoading = false;
+            }
+        }
+    }
+
+    private void scheduleAdjacentChapterPreload(int direction) {
+        if (isPdf || preloadWebView == null || spine.isEmpty() || chapterLoading || isFinishing()) return;
+        int dir = direction < 0 ? -1 : 1;
+        int target = currentSpine + dir;
+        if (target < 0 || target >= spine.size()) {
+            dir = -dir;
+            target = currentSpine + dir;
+        }
+        if (target < 0 || target >= spine.size() || target == currentSpine) return;
+        if (preloadedSpine == target && (preloadReady || preloadLoading)) return;
+
+        preferredPreloadDirection = dir;
+        preloadGeneration++;
+        preloadedSpine = target;
+        preloadReady = false;
+        preloadLoading = true;
+        try { preloadWebView.stopLoading(); } catch (Exception ignored) {}
+        preloadWebView.setEnabled(false);
+        preloadWebView.setVisibility(View.VISIBLE);
+        preloadWebView.setAlpha(0.01f);
+        preloadWebView.setScaleX(1f);
+        preloadWebView.setScaleY(1f);
+        preloadWebView.setTranslationX(0f);
+        try { preloadWebView.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        catch (Exception ignored) {}
+        try {
+            preloadWebView.loadUrl(Uri.fromFile(spine.get(target)).toString());
+        } catch (Exception e) {
+            cancelChapterPreload();
+        }
+    }
+
+    private void cancelChapterPreload() {
+        preloadGeneration++;
+        preloadReady = false;
+        preloadLoading = false;
+        preloadedSpine = -1;
+        if (preloadWebView != null) {
+            try { preloadWebView.stopLoading(); } catch (Exception ignored) {}
+            preloadWebView.setEnabled(false);
+            preloadWebView.setAlpha(0.01f);
+        }
+    }
+
+    private boolean activatePreloadedChapterIfReady() {
+        if (preloadWebView == null || !preloadReady || preloadedSpine != currentSpine) return false;
+        if (!(webView instanceof ReaderWebView)) return false;
+
+        ReaderWebView incoming = preloadWebView;
+        ReaderWebView outgoing = (ReaderWebView) webView;
+        preloadGeneration++;
+        preloadReady = false;
+        preloadLoading = false;
+        preloadedSpine = -1;
+
+        webView = incoming;
+        preloadWebView = outgoing;
+        currentSelection = null;
+        hideSelectionBar();
+        final int generation = ++chapterLoadGeneration;
+        chapterLoading = true;
+        pageTurnLocked = "page".equals(readingMode);
+        currentPageInChapter = 1;
+        pageCountInChapter = 1;
+
+        outgoing.animate().cancel();
+        outgoing.setEnabled(false);
+        outgoing.setAlpha(0.01f);
+        outgoing.setVisibility(View.VISIBLE);
+        outgoing.setScaleX(1f);
+        outgoing.setScaleY(1f);
+        outgoing.setTranslationX(0f);
+
+        incoming.animate().cancel();
+        incoming.setEnabled(true);
+        incoming.setVisibility(View.VISIBLE);
+        incoming.setScaleX(1f);
+        incoming.setScaleY(1f);
+        incoming.setTranslationX(0f);
+        incoming.setAlpha(0f);
+        incoming.bringToFront();
+        if (chapterTransitionOverlay != null && chapterTransitionOverlay.getVisibility() == View.VISIBLE)
+            chapterTransitionOverlay.bringToFront();
+        if (readerStyleOverlay != null && readerStyleOverlay.getVisibility() == View.VISIBLE)
+            readerStyleOverlay.bringToFront();
+        if (pageSlideOverlay != null && pageSlideOverlay.getVisibility() == View.VISIBLE)
+            pageSlideOverlay.bringToFront();
+
+        updateEpubProgress(currentProgressPermille);
+        updateBookmarkIcon();
+        applyReaderStyle(true);
+        webView.postDelayed(() -> {
+            if (generation == chapterLoadGeneration) applySavedAnnotations();
+        }, 260L);
+        webView.postDelayed(() -> {
+            if (generation == chapterLoadGeneration) installSelectionWatcher();
+        }, 320L);
+        webView.postDelayed(() -> {
+            if (generation == chapterLoadGeneration && chapterLoading && "scroll".equals(readingMode))
+                completePageReady(generation);
+        }, 850L);
+        webView.postDelayed(() -> {
+            if (generation == chapterLoadGeneration && chapterLoading && "page".equals(readingMode))
+                forceChapterRepaginate(generation);
+        }, 1050L);
+        return true;
+    }
+
     private void setupWebView(FrameLayout content) {
-        webView = new WebView(this);
+        epubWebContent = content;
+        webView = new ReaderWebView(this);
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
+        // Keep every EPUB chapter at the physical WebView viewport. Author viewport
+        // metadata must not trigger overview zoom when moving between spine items.
+        s.setUseWideViewPort(false);
+        s.setLoadWithOverviewMode(false);
+        s.setTextZoom(Math.max(80, Math.min(200, fontPercent)));
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
         s.setAllowFileAccessFromFileURLs(true);
@@ -554,7 +855,7 @@ public class BookReaderActivity extends Activity {
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         webView.setHorizontalScrollBarEnabled(false);
         webView.setVerticalScrollBarEnabled(false);
-        webView.addJavascriptInterface(new ReaderBridge(), "WoW");
+        webView.addJavascriptInterface(new ReaderBridge(webView), "WoW");
 
         pageTouchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
 
@@ -581,51 +882,36 @@ public class BookReaderActivity extends Activity {
             }
         });
 
-        webView.setOnTouchListener((v, event) -> {
-            boolean paperHandled = handlePaperGesture(event);
-            if (!paperHandled) readerTapDetector.onTouchEvent(event);
-            return paperHandled;
-        });
+        readerTouchListener = (v, event) -> {
+            // Legacy v2.4/v2.5 paper-curl gesture is intentionally retired.
+            // None/Slide are the only live page animations.
+            readerTapDetector.onTouchEvent(event);
+            return false;
+        };
+        webView.setOnTouchListener(readerTouchListener);
 
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                final int generation = chapterLoadGeneration;
-                applyReaderStyle(true);
-                webView.postDelayed(() -> {
-                    if (generation == chapterLoadGeneration) applySavedAnnotations();
-                }, 520L);
-                webView.postDelayed(() -> {
-                    if (generation == chapterLoadGeneration) applySavedAnnotations();
-                }, 1450L);
-                webView.postDelayed(() -> {
-                    if (generation == chapterLoadGeneration) installSelectionWatcher();
-                }, 560L);
-                if ("scroll".equals(readingMode)) {
-                    webView.postDelayed(() -> {
-                        if (generation != chapterLoadGeneration) return;
-                        revealStableChapter();
-                    }, 110L);
-                } else {
-                    // Recheck if a device changes its edge-to-edge viewport just after navigation.
-                    webView.postDelayed(() -> {
-                        if (generation == chapterLoadGeneration && chapterLoading)
-                            forceChapterRepaginate(generation);
-                    }, 2100L);
-                    webView.postDelayed(() -> {
-                        if (generation == chapterLoadGeneration && chapterLoading)
-                            forceChapterRepaginate(generation);
-                    }, 3900L);
-                }
-            }
-        });
+        webView.setWebViewClient(createReaderWebViewClient());
 
         content.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
+        preloadWebView = createPreloadWebView();
+        if (preloadWebView != null) {
+            preloadWebView.setOnTouchListener(readerTouchListener);
+            preloadWebView.setWebViewClient(createReaderWebViewClient());
+            preloadWebView.setEnabled(false);
+            preloadWebView.setAlpha(0.01f);
+            preloadWebView.setVisibility(View.VISIBLE);
+            content.addView(preloadWebView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            webView.bringToFront();
+        }
+
         chapterTransitionOverlay = new ImageView(this);
+        // PixelCopy captures the exact WebView viewport. Map that bitmap 1:1 to the
+        // same MATCH_PARENT bounds; never crop/zoom the outgoing chapter frame.
         chapterTransitionOverlay.setScaleType(ImageView.ScaleType.FIT_XY);
         chapterTransitionOverlay.setVisibility(View.GONE);
         chapterTransitionOverlay.setClickable(false);
@@ -651,10 +937,9 @@ public class BookReaderActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
-        pageCurlView = new PageCurlView(this);
-        content.addView(pageCurlView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
+        // Do not attach the legacy v2.4/v2.5 PageCurlView. It used full-screen
+        // bitmap transforms and is not part of the current None/Slide reader anymore.
+        pageCurlView = null;
     }
 
     private void handleReaderTap(float x, float y) {
@@ -698,28 +983,47 @@ public class BookReaderActivity extends Activity {
         int end;
     }
 
+    private void keepNativeSelectionToolbarHidden() {
+        if (nativeSelectionActionMode != null) {
+            try { nativeSelectionActionMode.hide(3000L); } catch (Exception ignored) {}
+        }
+        if (root == null) return;
+        if (hideNativeSelectionRunnable != null) root.removeCallbacks(hideNativeSelectionRunnable);
+        if (currentSelection == null) {
+            hideNativeSelectionRunnable = null;
+            return;
+        }
+        hideNativeSelectionRunnable = () -> {
+            hideNativeSelectionRunnable = null;
+            if (currentSelection != null) keepNativeSelectionToolbarHidden();
+        };
+        root.postDelayed(hideNativeSelectionRunnable, 2200L);
+    }
+
     private ActionMode.Callback createSelectionActionModeCallback() {
         return new ActionMode.Callback() {
             @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                nativeSelectionActionMode = mode;
                 menu.clear();
-                menu.add(0, SEL_HIGHLIGHT, 0, "Highlight").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                menu.add(0, SEL_NOTE, 1, "Add note").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                menu.add(0, SEL_TRANSLATE, 2, "Translate").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                menu.add(0, SEL_COPY, 3, "Copy").setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+                try { mode.hide(3000L); } catch (Exception ignored) {}
                 return true;
             }
 
-            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) { return false; }
+            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                nativeSelectionActionMode = mode;
+                menu.clear();
+                try { mode.hide(3000L); } catch (Exception ignored) {}
+                return true;
+            }
 
             @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-                int id = item.getItemId();
-                if (id != SEL_HIGHLIGHT && id != SEL_NOTE && id != SEL_TRANSLATE && id != SEL_COPY)
-                    return false;
-                captureCurrentSelection(id, mode);
+                // WoW's compact toolbar owns Highlight / Note / Translate / Copy.
                 return true;
             }
 
-            @Override public void onDestroyActionMode(ActionMode mode) {}
+            @Override public void onDestroyActionMode(ActionMode mode) {
+                if (nativeSelectionActionMode == mode) nativeSelectionActionMode = null;
+            }
         };
     }
 
@@ -732,9 +1036,11 @@ public class BookReaderActivity extends Activity {
                 "var sel=window.getSelection&&window.getSelection();if(!sel||sel.rangeCount===0||sel.isCollapsed)return null;" +
                 "var range=sel.getRangeAt(0),root=document.getElementById('wow-page-flow')||document.body;" +
                 "if(!root||!root.contains(range.commonAncestorContainer))return null;" +
-                "var pre=document.createRange();pre.selectNodeContents(root);pre.setEnd(range.startContainer,range.startOffset);" +
-                "var start=pre.toString().length;var text=range.toString();" +
-                "return JSON.stringify({text:text,start:start,end:start+text.length});" +
+                "function nodes(){var out=[],w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:function(n){var p=n.parentElement;if(!p)return NodeFilter.FILTER_REJECT;var tag=p.tagName;if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT')return NodeFilter.FILTER_REJECT;return n.nodeValue&&n.nodeValue.length?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}});var n;while(n=w.nextNode())out.push(n);return out;}" +
+                "var ns=nodes(),pos=0,start=-1,end=-1;for(var i=0;i<ns.length;i++){var n=ns[i],len=n.nodeValue.length;if(n===range.startContainer)start=pos+Math.max(0,Math.min(len,range.startOffset));if(n===range.endContainer)end=pos+Math.max(0,Math.min(len,range.endOffset));pos+=len;}" +
+                "var text=range.toString();if(start<0||end<start){var full='';for(var j=0;j<ns.length;j++)full+=ns[j].nodeValue||'';var raw=0;try{var pre=document.createRange();pre.selectNodeContents(root);pre.setEnd(range.startContainer,range.startOffset);raw=pre.toString().length;}catch(x){}var best=-1,dist=1e18,from=0,at;while(text&&(at=full.indexOf(text,from))>=0){var d=Math.abs(at-raw);if(d<dist){dist=d;best=at;}from=at+1;}if(best>=0){start=best;end=best+text.length;}}" +
+                "var lm=text.match(/^\\s+/),rm=text.match(/\\s+$/),lead=lm?lm[0].length:0,trail=rm?rm[0].length:0;start+=lead;end-=trail;text=text.trim();" +
+                "if(!text||start<0||end<=start)return null;return JSON.stringify({text:text,start:start,end:end});" +
                 "}catch(e){return null;}})()";
         try {
             webView.evaluateJavascript(js, result -> {
@@ -780,34 +1086,169 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showHighlightColorDialog(SelectionData data) {
-        String[] labels = {"Yellow", "Green", "Blue", "Pink"};
-        String[] colors = {
-                "rgba(255,235,59,.48)",
-                "rgba(129,199,132,.45)",
-                "rgba(100,181,246,.42)",
-                "rgba(244,143,177,.42)"
+        final String[] colors = {
+                "rgba(255,213,79,.46)",
+                "rgba(128,203,196,.42)",
+                "rgba(244,143,177,.42)",
+                "rgba(149,117,205,.38)",
+                "rgba(100,181,246,.40)"
         };
-        new AlertDialog.Builder(this)
-                .setTitle("Highlight")
-                .setItems(labels, (dialog, which) -> saveAnnotation(data, colors[which], ""))
-                .setNegativeButton("Cancel", null)
-                .show();
+        final int[] swatches = {
+                Color.rgb(255, 205, 70), Color.rgb(113, 201, 183), Color.rgb(239, 132, 172),
+                Color.rgb(146, 112, 210), Color.rgb(108, 170, 232)
+        };
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = readerSheetBase("Highlight", "Choose a color", dialog);
+        LinearLayout palette = new LinearLayout(this);
+        palette.setOrientation(LinearLayout.HORIZONTAL);
+        palette.setGravity(Gravity.CENTER);
+        palette.setPadding(dp(8), dp(8), dp(8), dp(10));
+        for (int i = 0; i < colors.length; i++) {
+            final int which = i;
+            TextView swatch = new TextView(this);
+            swatch.setText("●");
+            swatch.setTextSize(31);
+            swatch.setTextColor(swatches[i]);
+            swatch.setGravity(Gravity.CENTER);
+            swatch.setBackground(readerRoundRect(readerPanelBase(), dp(22), dp(1), readerPanelStroke()));
+            swatch.setOnClickListener(v -> {
+                dialog.dismiss();
+                saveAnnotation(data, colors[which], "");
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(52), dp(52));
+            if (i > 0) lp.leftMargin = dp(7);
+            palette.addView(swatch, lp);
+        }
+        sheet.addView(palette, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(72)));
+        presentReaderSheet(dialog, sheet, false);
     }
 
     private void showNoteEditor(SelectionData data) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = readerSheetBase("Add note", shortQuote(data.text, 120), dialog);
+
         EditText input = new EditText(this);
         input.setHint("Write a note…");
+        input.setTextSize(14.5f);
+        input.setTextColor(readerPanelText());
+        input.setHintTextColor(readerPanelSubText());
+        input.setGravity(Gravity.TOP | Gravity.START);
         input.setMinLines(3);
         input.setMaxLines(7);
-        input.setPadding(dp(16), dp(10), dp(16), dp(10));
-        new AlertDialog.Builder(this)
-                .setTitle("Add note")
-                .setMessage(shortQuote(data.text, 180))
-                .setView(input)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Save", (dialog, which) ->
-                        saveAnnotation(data, "rgba(255,235,59,.42)", input.getText().toString()))
-                .show();
+        input.setPadding(dp(14), dp(12), dp(14), dp(12));
+        input.setBackground(readerRoundRect(readerPanelBase(), dp(16), dp(1), readerAccent()));
+        LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(132));
+        inputLp.topMargin = dp(6);
+        sheet.addView(input, inputLp);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        actions.setPadding(0, dp(10), 0, 0);
+        TextView cancel = compactReaderButton("Cancel", false);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        TextView save = compactReaderButton("Save note", true);
+        save.setOnClickListener(v -> {
+            String note = input.getText().toString();
+            dialog.dismiss();
+            saveAnnotation(data, "rgba(149,117,205,.36)", note);
+        });
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(96), dp(42));
+        cancelLp.rightMargin = dp(8);
+        actions.addView(cancel, cancelLp);
+        actions.addView(save, new LinearLayout.LayoutParams(dp(124), dp(42)));
+        sheet.addView(actions, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
+        presentReaderSheet(dialog, sheet, true);
+        input.requestFocus();
+    }
+
+    private TextView compactReaderButton(String label, boolean primary) {
+        TextView button = new TextView(this);
+        button.setText(label);
+        button.setTextSize(13f);
+        button.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+        button.setGravity(Gravity.CENTER);
+        button.setTextColor(primary ? Color.WHITE : readerAccent());
+        button.setBackground(readerRoundRect(primary ? readerAccent() : readerPanelBase(), dp(16), dp(1), readerAccent()));
+        return button;
+    }
+
+    private LinearLayout readerSheetBase(String title, String subtitle, Dialog dialog) {
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(dp(18), dp(9), dp(18), dp(18));
+        sheet.setBackground(readerRoundRect(readerPanelBase(), dp(26), dp(1), readerPanelStroke()));
+        sheet.setElevation(dp(14));
+
+        TextView handle = new TextView(this);
+        handle.setBackground(readerRoundRect(readerPanelSubText(), dp(2), 0, Color.TRANSPARENT));
+        LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(50), dp(4));
+        handleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        handleLp.bottomMargin = dp(11);
+        sheet.addView(handle, handleLp);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView heading = new TextView(this);
+        heading.setText(title);
+        heading.setTextSize(20);
+        heading.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+        heading.setTextColor(readerPanelText());
+        copy.addView(heading);
+        if (subtitle != null && !subtitle.trim().isEmpty()) {
+            TextView sub = new TextView(this);
+            sub.setText(subtitle);
+            sub.setTextSize(10.5f);
+            sub.setTextColor(readerPanelSubText());
+            sub.setMaxLines(2);
+            sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            sub.setPadding(0, dp(2), 0, 0);
+            copy.addView(sub);
+        }
+        header.addView(copy, new LinearLayout.LayoutParams(0, dp(54), 1f));
+        TextView close = new TextView(this);
+        close.setText("×");
+        close.setTextSize(21);
+        close.setTextColor(readerPanelSubText());
+        close.setGravity(Gravity.CENTER);
+        close.setBackground(readerRoundRect(readerPanelBase(), dp(18), dp(1), readerPanelStroke()));
+        close.setOnClickListener(v -> dialog.dismiss());
+        header.addView(close, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        sheet.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
+        return sheet;
+    }
+
+    private void presentReaderSheet(Dialog dialog, View content, boolean keyboard) {
+        dialog.setContentView(content);
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window == null) return;
+        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        window.setDimAmount(0.34f);
+        window.setGravity(Gravity.BOTTOM);
+        int sw = getResources().getDisplayMetrics().widthPixels;
+        window.setLayout(Math.min(sw, dp(720)), ViewGroup.LayoutParams.WRAP_CONTENT);
+        if (keyboard) window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
+            window.setBackgroundBlurRadius(dp(16));
+        }
+    }
+
+    private GradientDrawable readerRoundRect(int fill, int radius, int strokeWidth, int strokeColor) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(fill);
+        d.setCornerRadius(radius);
+        if (strokeWidth > 0) d.setStroke(strokeWidth, strokeColor);
+        return d;
     }
 
     private void saveAnnotation(SelectionData data, String color, String note) {
@@ -830,8 +1271,9 @@ public class BookReaderActivity extends Activity {
                 "var old=root.querySelectorAll('span.wow-annotation');for(var oi=old.length-1;oi>=0;oi--){var q=old[oi];if(q.parentNode)q.parentNode.replaceChild(document.createTextNode(q.textContent||''),q);}" +
                 "root.normalize();var anns=JSON.parse(" + jsQuote(json) + ");" +
                 "function nodes(){var out=[],w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:function(n){var p=n.parentElement;if(!p)return NodeFilter.FILTER_REJECT;var tag=p.tagName;" +
-                "if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT'||p.closest('span.wow-annotation'))return NodeFilter.FILTER_REJECT;return n.nodeValue&&n.nodeValue.length?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}});var n;while(n=w.nextNode())out.push(n);return out;}" +
-                "function apply(a){var ns=nodes(),pos=0,parts=[];for(var i=0;i<ns.length;i++){var n=ns[i],len=n.nodeValue.length,lo=Math.max(a.start-pos,0),hi=Math.min(a.end-pos,len);if(hi>lo)parts.push({n:n,lo:lo,hi:hi});pos+=len;if(pos>=a.end)break;}" +
+                "if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT')return NodeFilter.FILTER_REJECT;return n.nodeValue&&n.nodeValue.length?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}});var n;while(n=w.nextNode())out.push(n);return out;}" +
+                "function resolved(a,ns){var full='';for(var z=0;z<ns.length;z++)full+=ns[z].nodeValue||'';var s=Math.max(0,Math.min(full.length,a.start||0)),e=Math.max(s,Math.min(full.length,a.end||s)),q=(a.quote||'').trim();if(q&&full.slice(s,e)!==q){var best=-1,dist=1e18,from=0,at;while((at=full.indexOf(q,from))>=0){var d=Math.abs(at-s);if(d<dist){dist=d;best=at;}from=at+1;}if(best>=0){s=best;e=best+q.length;}}return [s,e];}" +
+                "function apply(a){var ns=nodes(),rr=resolved(a,ns),targetStart=rr[0],targetEnd=rr[1],pos=0,parts=[];for(var i=0;i<ns.length;i++){var n=ns[i],len=n.nodeValue.length,lo=Math.max(targetStart-pos,0),hi=Math.min(targetEnd-pos,len);if(hi>lo)parts.push({n:n,lo:lo,hi:hi});pos+=len;if(pos>=targetEnd)break;}" +
                 "for(var j=parts.length-1;j>=0;j--){try{var p=parts[j],r=document.createRange();r.setStart(p.n,p.lo);r.setEnd(p.n,p.hi);var sp=document.createElement('span');sp.className='wow-annotation';sp.setAttribute('data-wow-ann-id',a.id);sp.style.background=a.color||'rgba(255,235,59,.48)';sp.style.borderRadius='3px';sp.style.boxDecorationBreak='clone';sp.style.webkitBoxDecorationBreak='clone';if(a.note)sp.style.borderBottom='2px solid rgba(251,188,4,.9)';r.surroundContents(sp);}catch(e){}}}" +
                 "for(var ai=0;ai<anns.length;ai++)apply(anns[ai]);" +
                 (pending == null ? "" : "setTimeout(function(){var el=root.querySelector('[data-wow-ann-id=\"'+" + jsQuote(pending) + "+'\"]');if(!el)return;var st=window.__wowPageEngine||{};if(st.mode==='page'&&st.step){var fr=(st.flow||root).getBoundingClientRect(),er=el.getBoundingClientRect();var pg=Math.max(0,Math.min((st.count||1)-1,Math.floor(Math.max(0,er.left-fr.left)/st.step)));st.page=pg;if(st.apply)st.apply(false);if(st.report)st.report();}else{el.scrollIntoView({block:'center',behavior:'smooth'});}},80);") +
@@ -850,46 +1292,117 @@ public class BookReaderActivity extends Activity {
     private void showAnnotations() {
         if (isPdf) return;
         List<ReaderAnnotationStore.Annotation> items = ReaderAnnotationStore.load(prefs, bookFile.getName());
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = readerSheetBase("Notes & highlights", items.isEmpty() ? "Nothing saved in this book yet" : items.size() + " saved items", dialog);
         if (items.isEmpty()) {
-            new AlertDialog.Builder(this)
-                    .setTitle("Notes & highlights")
-                    .setMessage("Select text while reading, then choose Highlight or Add note.")
-                    .setPositiveButton("OK", null)
-                    .show();
-            return;
+            TextView empty = new TextView(this);
+            empty.setText("Select text while reading, then choose Highlight or Note.");
+            empty.setTextSize(13);
+            empty.setTextColor(readerPanelSubText());
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(dp(20), dp(24), dp(20), dp(24));
+            sheet.addView(empty, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(96)));
+        } else {
+            ScrollView scroll = new ScrollView(this);
+            scroll.setVerticalScrollBarEnabled(false);
+            LinearLayout list = new LinearLayout(this);
+            list.setOrientation(LinearLayout.VERTICAL);
+            scroll.addView(list, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            for (ReaderAnnotationStore.Annotation a : items) {
+                String chapter = a.chapter >= 0 && a.chapter < spine.size() ? chapterDisplayTitle(a.chapter) : "Chapter " + (a.chapter + 1);
+                boolean isNote = a.note != null && !a.note.trim().isEmpty();
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(10), dp(7), dp(9), dp(7));
+                row.setBackground(readerRoundRect(readerPanelBase(), dp(15), dp(1), readerPanelStroke()));
+                TextView icon = new TextView(this);
+                icon.setText(isNote ? "▤" : "✎");
+                icon.setTextSize(17);
+                icon.setTextColor(readerAccent());
+                icon.setGravity(Gravity.CENTER);
+                row.addView(icon, new LinearLayout.LayoutParams(dp(38), dp(48)));
+                LinearLayout copy = new LinearLayout(this);
+                copy.setOrientation(LinearLayout.VERTICAL);
+                TextView quote = new TextView(this);
+                quote.setText(shortQuote(a.quote, 92));
+                quote.setTextSize(12.5f);
+                quote.setTextColor(readerPanelText());
+                quote.setMaxLines(2);
+                quote.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                copy.addView(quote);
+                TextView sub = new TextView(this);
+                sub.setText((isNote ? "Note" : "Highlight") + "  ·  " + chapter);
+                sub.setTextSize(9.5f);
+                sub.setTextColor(readerPanelSubText());
+                copy.addView(sub);
+                row.addView(copy, new LinearLayout.LayoutParams(0, dp(50), 1f));
+                TextView arrow = new TextView(this);
+                arrow.setText("›");
+                arrow.setTextSize(20);
+                arrow.setTextColor(readerPanelSubText());
+                arrow.setGravity(Gravity.CENTER);
+                row.addView(arrow, new LinearLayout.LayoutParams(dp(24), dp(48)));
+                row.setOnClickListener(v -> { dialog.dismiss(); showAnnotationDetail(a); });
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64));
+                lp.topMargin = dp(6);
+                list.addView(row, lp);
+            }
+            int h = Math.min(dp(430), Math.max(dp(96), items.size() * dp(70)));
+            sheet.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
         }
-        String[] labels = new String[items.size()];
-        for (int i = 0; i < items.size(); i++) {
-            ReaderAnnotationStore.Annotation a = items.get(i);
-            String chapter = a.chapter >= 0 && a.chapter < spine.size() ? chapterDisplayTitle(a.chapter) : "Chapter " + (a.chapter + 1);
-            String kind = a.note == null || a.note.isEmpty() ? "Highlight" : "Note";
-            labels[i] = kind + " · " + chapter + "\n" + shortQuote(a.quote, 100) +
-                    (a.note == null || a.note.isEmpty() ? "" : "\n✎ " + shortQuote(a.note, 80));
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("Notes & highlights · " + items.size())
-                .setItems(labels, (dialog, which) -> showAnnotationDetail(items.get(which)))
-                .setNegativeButton("Close", null)
-                .show();
+        presentReaderSheet(dialog, sheet, false);
     }
 
     private void showAnnotationDetail(ReaderAnnotationStore.Annotation a) {
         String chapter = a.chapter >= 0 && a.chapter < spine.size() ? chapterDisplayTitle(a.chapter) : "Chapter " + (a.chapter + 1);
-        String message = chapter + "\n\n“" + a.quote + "”" +
-                (a.note == null || a.note.isEmpty() ? "" : "\n\nNote\n" + a.note);
-        new AlertDialog.Builder(this)
-                .setTitle(a.note == null || a.note.isEmpty() ? "Highlight" : "Note")
-                .setMessage(message)
-                .setPositiveButton("Go to text", (dialog, which) -> goToAnnotation(a))
-                .setNeutralButton("Delete", (dialog, which) -> {
-                    ReaderAnnotationStore.remove(prefs, bookFile.getName(), a.id);
-                    GoogleAutoSync.scheduleSoon(this);
-                    applySavedAnnotations();
-                    updateAnnotationButton();
-                    Toast.makeText(this, "Removed", Toast.LENGTH_SHORT).show();
-                })
-                .setNegativeButton("Close", null)
-                .show();
+        boolean isNote = a.note != null && !a.note.trim().isEmpty();
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = readerSheetBase(isNote ? "Note" : "Highlight", chapter, dialog);
+        TextView quote = new TextView(this);
+        quote.setText("“" + a.quote + "”");
+        quote.setTextSize(14);
+        quote.setTextColor(readerPanelText());
+        quote.setLineSpacing(dp(2), 1.12f);
+        quote.setPadding(dp(13), dp(11), dp(13), dp(11));
+        quote.setBackground(readerRoundRect(readerPanelBase(), dp(15), dp(1), readerPanelStroke()));
+        sheet.addView(quote);
+        if (isNote) {
+            TextView note = new TextView(this);
+            note.setText(a.note);
+            note.setTextSize(13);
+            note.setTextColor(readerPanelText());
+            note.setPadding(dp(13), dp(11), dp(13), dp(11));
+            note.setBackground(readerRoundRect(readerPanelBase(), dp(15), dp(1), readerAccent()));
+            LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            noteLp.topMargin = dp(8);
+            sheet.addView(note, noteLp);
+        }
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView remove = compactReaderButton("Delete", false);
+        remove.setTextColor(Color.rgb(211, 65, 65));
+        remove.setOnClickListener(v -> {
+            dialog.dismiss();
+            ReaderAnnotationStore.remove(prefs, bookFile.getName(), a.id);
+            GoogleAutoSync.scheduleSoon(this);
+            applySavedAnnotations();
+            updateAnnotationButton();
+            Toast.makeText(this, "Removed", Toast.LENGTH_SHORT).show();
+        });
+        TextView go = compactReaderButton("Go to text", true);
+        go.setOnClickListener(v -> { dialog.dismiss(); goToAnnotation(a); });
+        LinearLayout.LayoutParams removeLp = new LinearLayout.LayoutParams(dp(92), dp(42)); removeLp.rightMargin = dp(8);
+        actions.addView(remove, removeLp);
+        actions.addView(go, new LinearLayout.LayoutParams(dp(126), dp(42)));
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)); actionsLp.topMargin = dp(9);
+        sheet.addView(actions, actionsLp);
+        presentReaderSheet(dialog, sheet, false);
     }
 
     private void goToAnnotation(ReaderAnnotationStore.Annotation a) {
@@ -945,45 +1458,44 @@ public class BookReaderActivity extends Activity {
 
     private View selectionActionButton(String label, int action) {
         LinearLayout button = new LinearLayout(this);
-        button.setOrientation(LinearLayout.VERTICAL);
+        button.setOrientation(LinearLayout.HORIZONTAL);
         button.setGravity(Gravity.CENTER);
-        button.setPadding(dp(4), dp(4), dp(4), dp(3));
+        button.setPadding(dp(5), 0, dp(5), 0);
         button.setClickable(true);
         button.setContentDescription(label);
 
         int iconColor = readerAccent();
         String iconText = "✎";
-        if (action == SEL_HIGHLIGHT) { iconText = "✎"; iconColor = readerTheme == 1 ? Color.rgb(171, 116, 57) : Color.rgb(133, 79, 201); }
-        else if (action == SEL_NOTE) { iconText = "▤"; iconColor = Color.rgb(229, 170, 46); }
-        else if (action == SEL_TRANSLATE) { iconText = "A"; iconColor = Color.rgb(79, 126, 224); }
-        else if (action == SEL_COPY) { iconText = "▣"; iconColor = readerPanelSubText(); }
+        if (action == SEL_HIGHLIGHT) iconText = "✎";
+        else if (action == SEL_NOTE) iconText = "▤";
+        else if (action == SEL_TRANSLATE) iconText = "A";
+        else if (action == SEL_COPY) iconText = "▣";
 
         TextView icon = new TextView(this);
         icon.setText(iconText);
-        icon.setTextSize(action == SEL_TRANSLATE ? 18 : 20);
+        icon.setTextSize(action == SEL_TRANSLATE ? 14 : 16);
         icon.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
         icon.setTextColor(iconColor);
         icon.setGravity(Gravity.CENTER);
-        button.addView(icon, new LinearLayout.LayoutParams(dp(54), dp(30)));
+        button.addView(icon, new LinearLayout.LayoutParams(dp(26), dp(38)));
 
         TextView copy = new TextView(this);
         copy.setText(label);
-        copy.setTextSize(11.5f);
+        copy.setTextSize(10.5f);
         copy.setTextColor(readerPanelText());
-        copy.setGravity(Gravity.CENTER);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
         copy.setSingleLine(true);
-        button.addView(copy, new LinearLayout.LayoutParams(dp(70), dp(24)));
+        button.addView(copy, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)));
 
         button.setOnTouchListener((v, e) -> {
             if (e.getActionMasked() == MotionEvent.ACTION_DOWN)
-                v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(55L).start();
-            else if (e.getActionMasked() == MotionEvent.ACTION_UP ||
-                    e.getActionMasked() == MotionEvent.ACTION_CANCEL)
-                v.animate().scaleX(1f).scaleY(1f).setDuration(105L).start();
+                v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(45L).start();
+            else if (e.getActionMasked() == MotionEvent.ACTION_UP || e.getActionMasked() == MotionEvent.ACTION_CANCEL)
+                v.animate().scaleX(1f).scaleY(1f).setDuration(85L).start();
             return false;
         });
         button.setOnClickListener(v -> performSelectionAction(action));
-        button.setLayoutParams(new LinearLayout.LayoutParams(dp(74), dp(60)));
+        button.setLayoutParams(new LinearLayout.LayoutParams(dp(action == SEL_TRANSLATE ? 82 : 72), dp(42)));
         return button;
     }
 
@@ -994,9 +1506,12 @@ public class BookReaderActivity extends Activity {
                 "document.addEventListener('selectionchange',function(){clearTimeout(timer);timer=setTimeout(function(){try{" +
                 "var sel=window.getSelection&&window.getSelection();if(!sel||sel.rangeCount===0||sel.isCollapsed){WoW.onSelection('',0,0);return;}" +
                 "var range=sel.getRangeAt(0),root=document.getElementById('wow-page-flow')||document.body;if(!root||!root.contains(range.commonAncestorContainer)){WoW.onSelection('',0,0);return;}" +
-                "var pre=document.createRange();pre.selectNodeContents(root);pre.setEnd(range.startContainer,range.startOffset);var start=pre.toString().length,text=range.toString();" +
-                "if(!text||!text.trim()){WoW.onSelection('',0,0);return;}WoW.onSelection(text,start,start+text.length);" +
-                "}catch(e){WoW.onSelection('',0,0);}},110);});" +
+                "function nodes(){var out=[],w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:function(n){var p=n.parentElement;if(!p)return NodeFilter.FILTER_REJECT;var tag=p.tagName;if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT')return NodeFilter.FILTER_REJECT;return n.nodeValue&&n.nodeValue.length?NodeFilter.FILTER_ACCEPT:NodeFilter.FILTER_REJECT;}});var n;while(n=w.nextNode())out.push(n);return out;}" +
+                "var ns=nodes(),pos=0,start=-1,end=-1;for(var i=0;i<ns.length;i++){var n=ns[i],len=n.nodeValue.length;if(n===range.startContainer)start=pos+Math.max(0,Math.min(len,range.startOffset));if(n===range.endContainer)end=pos+Math.max(0,Math.min(len,range.endOffset));pos+=len;}" +
+                "var text=range.toString();if(start<0||end<start){var full='';for(var j=0;j<ns.length;j++)full+=ns[j].nodeValue||'';var at=full.indexOf(text);if(at>=0){start=at;end=at+text.length;}}" +
+                "var lm=text.match(/^\\s+/),rm=text.match(/\\s+$/),lead=lm?lm[0].length:0,trail=rm?rm[0].length:0;start+=lead;end-=trail;text=text.trim();" +
+                "if(!text||start<0||end<=start){WoW.onSelection('',0,0);return;}WoW.onSelection(text,start,end);" +
+                "}catch(e){WoW.onSelection('',0,0);}},180);});" +
                 "}catch(e){}})();";
         try { webView.evaluateJavascript(js, null); } catch (Exception ignored) {}
     }
@@ -1008,7 +1523,8 @@ public class BookReaderActivity extends Activity {
             clearWebSelection();
             return;
         }
-        if (text == null || text.trim().isEmpty() || end <= start) {
+        String clean = text == null ? "" : text.trim();
+        if (clean.isEmpty() || end <= start) {
             currentSelection = null;
             hideSelectionBar();
             return;
@@ -1017,21 +1533,23 @@ public class BookReaderActivity extends Activity {
             paperGestureCandidate = false;
             recyclePageVelocityTracker();
         }
+        if (currentSelection != null && currentSelection.start == start && currentSelection.end == end && clean.equals(currentSelection.text)) {
+            if (selectionBar != null && selectionBar.getVisibility() != View.VISIBLE) showSelectionBar();
+            return;
+        }
         SelectionData data = new SelectionData();
-        data.text = text.trim();
+        data.text = clean;
         data.start = Math.max(0, start);
         data.end = Math.max(data.start, end);
         currentSelection = data;
+        keepNativeSelectionToolbarHidden();
         showSelectionBar();
     }
-
 
     private void showSelectionBar() {
         if (selectionBar == null || isPdf) return;
         selectionBar.animate().cancel();
-        selectionBar.setVisibility(View.INVISIBLE);
         selectionBar.bringToFront();
-
         if (webView == null) {
             positionSelectionBarFallback();
             return;
@@ -1040,20 +1558,14 @@ public class BookReaderActivity extends Activity {
                 "if(!s||s.rangeCount===0||s.isCollapsed)return null;var r=s.getRangeAt(0).getBoundingClientRect();" +
                 "var d=window.devicePixelRatio||1;return JSON.stringify({x:((r.left+r.right)/2)*d,t:r.top*d,b:r.bottom*d});" +
                 "}catch(e){return null;}})()";
-        try {
-            webView.evaluateJavascript(js, this::positionSelectionBarFromJs);
-        } catch (Exception ignored) {
-            positionSelectionBarFallback();
-        }
+        try { webView.evaluateJavascript(js, this::positionSelectionBarFromJs); }
+        catch (Exception ignored) { positionSelectionBarFallback(); }
     }
 
     private void positionSelectionBarFromJs(String result) {
         if (selectionBar == null) return;
         try {
-            if (result == null || "null".equals(result)) {
-                positionSelectionBarFallback();
-                return;
-            }
+            if (result == null || "null".equals(result)) { positionSelectionBarFallback(); return; }
             Object decoded = new JSONTokener(result).nextValue();
             String raw = decoded instanceof String ? (String) decoded : String.valueOf(decoded);
             JSONObject o = new JSONObject(raw);
@@ -1061,39 +1573,34 @@ public class BookReaderActivity extends Activity {
             float top = (float) o.optDouble("t", 0);
             float bottom = (float) o.optDouble("b", top);
             positionSelectionBar(centerX, top, bottom);
-        } catch (Exception ignored) {
-            positionSelectionBarFallback();
-        }
+        } catch (Exception ignored) { positionSelectionBarFallback(); }
     }
 
     private void positionSelectionBar(float selectionCenterX, float selectionTop, float selectionBottom) {
         if (selectionBar == null || root == null) return;
+        final boolean wasVisible = selectionBar.getVisibility() == View.VISIBLE;
         selectionBar.measure(
-                View.MeasureSpec.makeMeasureSpec(Math.max(1, root.getWidth() - dp(24)), View.MeasureSpec.AT_MOST),
-                View.MeasureSpec.makeMeasureSpec(dp(72), View.MeasureSpec.EXACTLY));
-        int barW = Math.max(dp(292), selectionBar.getMeasuredWidth());
-        int barH = dp(72);
+                View.MeasureSpec.makeMeasureSpec(Math.max(1, root.getWidth() - dp(20)), View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(dp(50), View.MeasureSpec.EXACTLY));
+        int barW = Math.max(dp(280), selectionBar.getMeasuredWidth());
+        int barH = dp(50);
         int rootW = Math.max(1, root.getWidth());
         int rootH = Math.max(1, root.getHeight());
-
         int[] webLoc = new int[2];
         int[] rootLoc = new int[2];
         if (webView != null) webView.getLocationOnScreen(webLoc);
         root.getLocationOnScreen(rootLoc);
         int webOffsetX = webLoc[0] - rootLoc[0];
         int webOffsetY = webLoc[1] - rootLoc[1];
-
         int cx = webOffsetX + Math.round(selectionCenterX);
         int top = webOffsetY + Math.round(selectionTop);
         int bottom = webOffsetY + Math.round(selectionBottom);
-        int x = Math.max(dp(12), Math.min(rootW - barW - dp(12), cx - barW / 2));
-
-        int y = top - barH - dp(18);
-        int safeTop = dp(74);
-        int safeBottom = Math.max(safeTop, rootH - barH - dp(74));
-        if (y < safeTop) y = bottom + dp(18);
+        int x = Math.max(dp(10), Math.min(rootW - barW - dp(10), cx - barW / 2));
+        int y = top - barH - dp(12);
+        int safeTop = dp(68);
+        int safeBottom = Math.max(safeTop, rootH - barH - dp(66));
+        if (y < safeTop) y = bottom + dp(12);
         y = Math.max(safeTop, Math.min(safeBottom, y));
-
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) selectionBar.getLayoutParams();
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
@@ -1101,24 +1608,32 @@ public class BookReaderActivity extends Activity {
         lp.leftMargin = x;
         lp.topMargin = y;
         selectionBar.setLayoutParams(lp);
-        selectionBar.setAlpha(0f);
-        selectionBar.setTranslationY(dp(5));
         selectionBar.setVisibility(View.VISIBLE);
-        selectionBar.animate().alpha(1f).translationY(0f).setDuration(135L)
-                .setInterpolator(new android.view.animation.DecelerateInterpolator(1.4f)).start();
+        if (!wasVisible) {
+            selectionBar.setAlpha(0f);
+            selectionBar.setTranslationY(dp(3));
+            selectionBar.animate().alpha(1f).translationY(0f).setDuration(105L)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator(1.35f)).start();
+        } else {
+            selectionBar.setAlpha(1f);
+            selectionBar.setTranslationY(0f);
+        }
     }
 
     private void positionSelectionBarFallback() {
         if (selectionBar == null || root == null) return;
         selectionBar.post(() -> {
             int rootW = Math.max(1, root.getWidth());
-            int barW = Math.max(dp(292), selectionBar.getMeasuredWidth());
+            selectionBar.measure(
+                    View.MeasureSpec.makeMeasureSpec(Math.max(1, rootW - dp(20)), View.MeasureSpec.AT_MOST),
+                    View.MeasureSpec.makeMeasureSpec(dp(50), View.MeasureSpec.EXACTLY));
+            int barW = Math.max(dp(280), selectionBar.getMeasuredWidth());
             FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) selectionBar.getLayoutParams();
             lp.gravity = Gravity.TOP | Gravity.START;
             lp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
-            lp.height = dp(72);
-            lp.leftMargin = Math.max(dp(12), (rootW - barW) / 2);
-            lp.topMargin = Math.max(dp(80), root.getHeight() - dp(168));
+            lp.height = dp(50);
+            lp.leftMargin = Math.max(dp(10), (rootW - barW) / 2);
+            lp.topMargin = Math.max(dp(74), root.getHeight() - dp(150));
             selectionBar.setLayoutParams(lp);
             selectionBar.setAlpha(1f);
             selectionBar.setTranslationY(0f);
@@ -1127,6 +1642,8 @@ public class BookReaderActivity extends Activity {
     }
 
     private void hideSelectionBar() {
+        if (root != null && hideNativeSelectionRunnable != null) root.removeCallbacks(hideNativeSelectionRunnable);
+        hideNativeSelectionRunnable = null;
         if (selectionBar != null) {
             selectionBar.animate().cancel();
             selectionBar.setVisibility(View.GONE);
@@ -1278,6 +1795,28 @@ public class BookReaderActivity extends Activity {
 
     private void loadCurrentEpubChapter() {
         if (spine.isEmpty() || webView == null) return;
+        if (chapterTransitionCapturePending) {
+            chapterTransitionLoadDeferred = true;
+            chapterLoading = true;
+            pageTurnLocked = "page".equals(readingMode);
+            return;
+        }
+        chapterTransitionLoadDeferred = false;
+
+        if (activatePreloadedChapterIfReady()) return;
+        if (preloadWebView != null && preloadedSpine == currentSpine && preloadLoading) {
+            final int waitToken = preloadGeneration;
+            chapterLoading = true;
+            pageTurnLocked = "page".equals(readingMode);
+            webView.postDelayed(() -> {
+                if (waitToken != preloadGeneration) return;
+                if (activatePreloadedChapterIfReady()) return;
+                cancelChapterPreload();
+                loadCurrentEpubChapter();
+            }, 100L);
+            return;
+        }
+        cancelChapterPreload();
 
         currentSelection = null;
         hideSelectionBar();
@@ -1291,8 +1830,12 @@ public class BookReaderActivity extends Activity {
                 readerLoadingOverlay.getVisibility() == View.VISIBLE &&
                 (chapterTransitionOverlay == null || chapterTransitionOverlay.getVisibility() != View.VISIBLE);
         webView.animate().cancel();
+        webView.setScaleX(1f);
+        webView.setScaleY(1f);
         webView.setTranslationX(0f);
-        webView.setAlpha(firstOpen ? 0f : 1f);
+        // Never expose a newly loaded chapter until fonts + pagination settle.
+        // The previous chapter snapshot (or the initial loading screen) stays visible.
+        webView.setAlpha(0f);
 
         try {
             webView.loadUrl(Uri.fromFile(spine.get(currentSpine)).toString());
@@ -1318,6 +1861,7 @@ public class BookReaderActivity extends Activity {
             return;
         }
 
+        preferredPreloadDirection = delta < 0 ? -1 : 1;
         prepareChapterTransition(delta);
         lastChapterNavMs = now;
         currentSpine = target;
@@ -1459,6 +2003,7 @@ public class BookReaderActivity extends Activity {
                     });
                 } else {
                     int direction = spineIndex > currentSpine ? 1 : -1;
+                    preferredPreloadDirection = direction;
                     prepareChapterTransition(direction);
                     pendingTocFragment = fragment;
                     currentSpine = spineIndex;
@@ -1586,12 +2131,19 @@ public class BookReaderActivity extends Activity {
 
     private void applyReaderStyle(boolean restoreProgress, int styleToken) {
         if (webView == null) return;
+        // WebView textZoom scales publisher px/pt/% sizes too. Body-only CSS scaling did
+        // not affect many EPUBs in Scroll mode, so textZoom is the single font scale.
+        try { webView.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        catch (Exception ignored) {}
 
         String bg = readerTheme == 2 ? "#121212" :
                 readerTheme == 1 ? "#F4ECD8" : "#FFFFFF";
-        String fg = readerTheme == 2 ? "#E8EAED" : "#202124";
-        String headingFg = readerTheme == 2 ? "#F1F3F4" : fg;
-        String link = readerTheme == 2 ? "#AECBFA" : "#1967D2";
+        String fg = readerTheme == 2 ? "#E8EAED" :
+                readerTheme == 1 ? "#4A4033" : "#202124";
+        String headingFg = readerTheme == 2 ? "#F1F3F4" :
+                readerTheme == 1 ? "#3B3128" : fg;
+        String link = readerTheme == 2 ? "#AECBFA" :
+                readerTheme == 1 ? "#8A5A35" : "#1967D2";
 
         String familyCss = "";
         if ("pyidaungsu".equals(fontChoice))
@@ -1629,6 +2181,10 @@ public class BookReaderActivity extends Activity {
         String darkCss = readerTheme == 2
                 ? "body,body p,body div,body span,body section,body article,body li,body dd,body dt,body blockquote,body td,body th,body figcaption{color:" + fg + " !important;}" +
                   "h1,h2,h3,h4,h5,h6,strong,b{color:" + headingFg + " !important;}"
+                : readerTheme == 1
+                ? "body,body p,body div,body span,body section,body article,body li,body dd,body dt,body blockquote,body td,body th,body figcaption{color:" + fg + " !important;}" +
+                  "h1,h2,h3,h4,h5,h6,strong,b{color:" + headingFg + " !important;}" +
+                  "a{color:" + link + " !important;}"
                 : "";
 
         String commonCss =
@@ -1639,7 +2195,7 @@ public class BookReaderActivity extends Activity {
                 "@font-face{font-family:'WoWPuPu';src:url('file:///android_asset/fonts/m01_pupu_bold.ttf') format('truetype');font-display:block;}" +
                 "@font-face{font-family:'WoWMyanmarAyar';src:url('file:///android_asset/fonts/myanmar_ayar_typewriter.ttf') format('truetype');font-display:block;}" +
                 "@font-face{font-family:'WoWPhantee';src:url('file:///android_asset/fonts/phantee_hand_written.ttf') format('truetype');font-display:block;}" +
-                "html,body{background:" + bg + " !important;color:" + fg + " !important;}" +
+                "html,body{background:" + bg + " !important;color:" + fg + " !important;transform:none !important;zoom:1 !important;-webkit-text-size-adjust:100% !important;text-size-adjust:100% !important;}" +
                 "a{color:" + link + " !important;}" +
                 "pre{white-space:pre-wrap !important;overflow-wrap:anywhere !important;}" +
                 ".wow-reader-block{line-height:" + line + " !important;letter-spacing:normal !important;}" +
@@ -1655,6 +2211,13 @@ public class BookReaderActivity extends Activity {
                 "st.applyTypography=function(){try{" +
                 "var align=" + jsQuote(textAlignment) + ",smart=" + (autoSpacingAdjustment ? "true" : "false") + ";" +
                 "var rx=/[\\u1000-\\u109F\\uA9E0-\\uA9FF\\uAA60-\\uAA7F]/g;" +
+                "var baseW=Math.max(1,(st.pageWidth||flow.clientWidth||window.innerWidth||1));" +
+                "var wraps=flow.querySelectorAll('div,section,article,main,p,blockquote,dd,dt');" +
+                "for(var wi=0;wi<wraps.length;wi++){var wn=wraps[wi],wt=(wn.textContent||'').replace(/\\s+/g,' ').trim();if(wt.length<120)continue;" +
+                "var wcs=getComputedStyle(wn);if(wcs.display!=='block')continue;var wr=wn.getBoundingClientRect();" +
+                "var par=wn.parentElement,pr=par?par.getBoundingClientRect():null,parWide=!pr||pr.width>=baseW*0.86;" +
+                "if(parWide&&wr.width>0&&wr.width<baseW*0.90){wn.style.setProperty('width','auto','important');wn.style.setProperty('max-width','none','important');" +
+                "wn.style.setProperty('min-width','0','important');wn.style.setProperty('box-sizing','border-box','important');wn.style.setProperty('margin-left','0','important');wn.style.setProperty('margin-right','0','important');}}" +
                 "var blocks=flow.querySelectorAll('p,li,blockquote,dd,dt,div');" +
                 "for(var i=0;i<blocks.length;i++){var n=blocks[i],txt=(n.textContent||'').trim();if(txt.length<8)continue;" +
                 "if(n.tagName==='DIV'&&n.querySelector('p,div,li,blockquote,dd,dt'))continue;" +
@@ -1689,7 +2252,7 @@ public class BookReaderActivity extends Activity {
         if ("page".equals(readingMode)) {
             css = commonCss +
                     "html,body{height:100% !important;width:100% !important;margin:0 !important;padding:0 !important;overflow:hidden !important;overscroll-behavior:none !important;}" +
-                    "body{font-size:" + fontPercent + "% !important;line-height:" + line + " !important;max-width:none !important;}" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;max-width:none !important;}" +
                     "#wow-page-viewport{position:absolute !important;left:0 !important;top:0 !important;width:100vw !important;height:100vh !important;overflow:hidden !important;clip-path:inset(0) !important;contain:layout paint size !important;}" +
                     "#wow-page-flow{position:absolute !important;left:0 !important;top:0 !important;height:100vh !important;max-width:none !important;" +
                     "margin:0 !important;padding:4.2vh 0 5.2vh 0 !important;box-sizing:border-box !important;overflow:visible !important;" +
@@ -1719,13 +2282,12 @@ public class BookReaderActivity extends Activity {
                     "st.goToFragment=function(id){try{if(!id)return false;var el=document.getElementById(id);if(!el&&document.getElementsByName){var named=document.getElementsByName(id);if(named&&named.length)el=named[0];}if(!el)return false;" +
                     "var currentPhysical=st.physical(),r=el.getBoundingClientRect(),docX=(r.left-st.marginPx)+(currentPhysical*st.step),physical=Math.max(0,Math.floor((docX+2)/st.step));st.page=st.nearestLogical(physical);st.apply(false);st.report();return true;}catch(e){return false;}};" +
                     "st.paperTurn=function(d,done){st.apply(false);done();};" +
-                    "st.measure=function(r){st.measureEpoch=(st.measureEpoch||0)+1;var epoch=st.measureEpoch,ratio=st.clamp(r,0,1),attempt=0,lastSig='',stableHits=0;" +
+                    "st.measure=function(r){st.measureEpoch=(st.measureEpoch||0)+1;var epoch=st.measureEpoch,ratio=st.clamp(r,0,1),attempt=0;" +
                     "var run=function(){if(epoch!==st.measureEpoch)return;st.layout();st.page=0;st.pageMap=[0];flow.style.transition='none';flow.style.transform='translate3d('+st.marginPx+'px,0,0)';st.applyTypography();st.preparePagination();" +
-                    "requestAnimationFrame(function(){requestAnimationFrame(function(){if(epoch!==st.measureEpoch)return;st.layout();var map=st.collectPageMap();if(!map.length){st.count=0;st.locked=false;WoW.onEmptyChapter();return;}" +
-                    "var sig=(viewport.clientWidth||0)+'x'+(viewport.clientHeight||0)+'|'+Math.round(flow.scrollWidth||0)+'|'+map.join(',');if(sig===lastSig)stableHits++;else{lastSig=sig;stableHits=0;}attempt++;" +
-                    "if(stableHits<1&&attempt<7){setTimeout(run,76);return;}st.pageMap=map;st.count=map.length;st.page=st.clamp(Math.round((st.count-1)*ratio),0,st.count-1);st.apply(false);" +
-                    "requestAnimationFrame(function(){if(epoch!==st.measureEpoch)return;var verify=st.collectPageMap();var sig2=(viewport.clientWidth||0)+'x'+(viewport.clientHeight||0)+'|'+Math.round(flow.scrollWidth||0)+'|'+verify.join(',');" +
-                    "if(sig2!==sig&&attempt<9){lastSig=sig2;stableHits=0;setTimeout(run,64);return;}st.locked=false;st.report();WoW.onPageReady(" + styleGeneration + ",st.page+1,st.count,st.progress());" +
+                    "requestAnimationFrame(function(){requestAnimationFrame(function(){if(epoch!==st.measureEpoch)return;st.layout();var geom=(viewport.clientWidth||0)+'x'+(viewport.clientHeight||0)+'|'+Math.round(flow.scrollWidth||0);" +
+                    "var map=st.collectPageMap();if(!map.length){st.count=0;st.locked=false;WoW.onEmptyChapter();return;}st.pageMap=map;st.count=map.length;st.page=st.clamp(Math.round((st.count-1)*ratio),0,st.count-1);st.apply(false);" +
+                    "requestAnimationFrame(function(){if(epoch!==st.measureEpoch)return;st.layout();var geom2=(viewport.clientWidth||0)+'x'+(viewport.clientHeight||0)+'|'+Math.round(flow.scrollWidth||0);" +
+                    "if(geom2!==geom&&attempt<1){attempt++;setTimeout(run,42);return;}st.locked=false;st.report();WoW.onPageReady(" + styleGeneration + ",st.page+1,st.count,st.progress());" +
                     (styleToken > 0 ? "WoW.onStyleReady(" + styleToken + ");" : "") +
                     "});});});};run();};" +
                     "st.turn=function(d){if(st.mode!=='page'||st.locked)return 'locked';if(d<0&&(st.page||0)<=0){st.locked=true;WoW.requestChapter(-1);return 'chapter';}if(d>0&&(st.page||0)>=(st.count||1)-1){st.locked=true;WoW.requestChapter(1);return 'chapter';}st.locked=true;st.page=st.clamp((st.page||0)+d,0,(st.count||1)-1);st.paperTurn(d,function(){st.report();st.locked=false;WoW.onPageTurnComplete(st.page+1,st.count,st.progress());});return 'page';};" +
@@ -1737,7 +2299,7 @@ public class BookReaderActivity extends Activity {
         } else {
             css = commonCss +
                     "html{overflow-x:hidden !important;overscroll-behavior:none !important;}" +
-                    "body{font-size:" + fontPercent + "% !important;line-height:" + line + " !important;" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;" +
                     "padding:5vh " + safeMargin + "vw 12vh " + safeMargin + "vw !important;" +
                     "height:auto !important;max-width:900px !important;margin:auto !important;box-sizing:border-box !important;" +
                     "column-width:auto !important;column-gap:normal !important;transform:none !important;transition:none !important;}" +
@@ -1754,6 +2316,7 @@ public class BookReaderActivity extends Activity {
                     "if(!window.__wowScrollBound){window.__wowScrollBound=true;var t=0;window.addEventListener('scroll',function(){if(window.__wowPageEngine&&window.__wowPageEngine.mode==='page')return;clearTimeout(t);t=setTimeout(function(){var h=Math.max(1,document.documentElement.scrollHeight-window.innerHeight);WoW.onScroll(Math.round((window.scrollY/h)*1000));},90);},{passive:true});}" +
                     "var finishWowStyle=function(){requestAnimationFrame(function(){requestAnimationFrame(function(){" +
                     (restore >= 0 ? "var h=Math.max(0,document.documentElement.scrollHeight-window.innerHeight);window.scrollTo(0,h*" + ratio + ");" : "") +
+                    "WoW.onScrollReady(" + styleGeneration + ");" +
                     (styleToken > 0 ? "WoW.onStyleReady(" + styleToken + ");" : "") +
                     "});});};if(document.fonts&&document.fonts.ready)document.fonts.ready.then(finishWowStyle);else finishWowStyle();" +
                     "}catch(e){}})();";
@@ -1830,25 +2393,84 @@ public class BookReaderActivity extends Activity {
     }
 
     private void revealStableChapter() {
+        // Never expose the new chapter's first WebView paint. Some EPUBs briefly
+        // render a narrow/shifted column before the page engine finishes its final
+        // viewport + typography pass. Keep the previous chapter snapshot visible
+        // and the WebView hidden until two consecutive layout samples are stable.
+        final int generation = chapterLoadGeneration;
+        confirmStableChapterReveal(generation, 0, -1, -1);
+    }
+
+    private void confirmStableChapterReveal(int generation, int attempt, int previousWidth, int previousLeft) {
+        if (webView == null || generation != chapterLoadGeneration || !chapterLoading) return;
+        webView.setAlpha(0f);
+        webView.setTranslationX(0f);
+        webView.setScaleX(1f);
+        webView.setScaleY(1f);
+
+        final String probe = "(function(){try{" +
+                "var root=document.getElementById('wow-page-flow')||document.body;" +
+                "if(!root)return [-1,-1,-1];" +
+                "var de=document.documentElement,b=document.body;" +
+                "if(de){de.style.setProperty('zoom','1','important');de.style.setProperty('transform','none','important');}" +
+                "if(b){b.style.setProperty('zoom','1','important');b.style.setProperty('transform','none','important');}" +
+                "void root.offsetWidth;var r=root.getBoundingClientRect();" +
+                "return [Math.round(r.width),Math.round(r.left),Math.round(window.innerWidth||0)];" +
+                "}catch(e){return [-1,-1,-1];}})()";
+
+        webView.evaluateJavascript(probe, value -> {
+            if (generation != chapterLoadGeneration || !chapterLoading) return;
+            int width = -1, left = -1, viewportCss = -1;
+            try {
+                String clean = value == null ? "" : value.replace("[", "").replace("]", "");
+                String[] parts = clean.split(",");
+                if (parts.length >= 3) {
+                    width = Integer.parseInt(parts[0].trim());
+                    left = Integer.parseInt(parts[1].trim());
+                    viewportCss = Integer.parseInt(parts[2].trim());
+                }
+            } catch (Exception ignored) {}
+
+            int tolerance = Math.max(2, Math.round(Math.max(1, viewportCss) * 0.01f));
+            boolean saneWidth = width > 0 && viewportCss > 0 && width >= Math.round(viewportCss * 0.82f);
+            boolean sameAsPrevious = previousWidth > 0 &&
+                    Math.abs(width - previousWidth) <= tolerance &&
+                    Math.abs(left - previousLeft) <= tolerance;
+
+            // At least two matching, full-width CSS layout samples are required.
+            // The previous chapter snapshot remains on top for the entire check,
+            // so the transient narrow frame can never be exposed to the reader.
+            if ((saneWidth && sameAsPrevious) || attempt >= 6) {
+                webView.postOnAnimation(() -> webView.postOnAnimation(() -> {
+                    if (generation != chapterLoadGeneration || !chapterLoading) return;
+                    finishStableChapterReveal();
+                }));
+                return;
+            }
+
+            final int nextWidth = width;
+            final int nextLeft = left;
+            webView.postDelayed(() -> confirmStableChapterReveal(
+                    generation, attempt + 1, nextWidth, nextLeft), 70L);
+        });
+    }
+
+    private void finishStableChapterReveal() {
         if (webView != null) {
             webView.animate().cancel();
+            webView.setScaleX(1f);
+            webView.setScaleY(1f);
+            webView.setTranslationX(0f);
             webView.setAlpha(1f);
-            if (pendingChapterFade && "slide".equals(pageAnimation) && "page".equals(readingMode)) {
-                float offset = (pendingChapterDirection < 0 ? -1f : 1f) * dp(18);
-                webView.setTranslationX(offset);
-                webView.animate().translationX(0f).setDuration(175L)
-                        .setInterpolator(new android.view.animation.DecelerateInterpolator(1.35f)).start();
-            } else {
-                webView.setTranslationX(0f);
-            }
         }
         hideInitialReaderLoading();
         pageTurnLocked = false;
         chapterLoading = false;
         pendingChapterCurlDirection = 0;
         if (pageCurlView != null && !pageCurlView.isBusy()) pageCurlView.release();
-        finishChapterFade();
+        finishChapterFadeImmediate();
         prewarmAdjacentChapters();
+        scheduleAdjacentChapterPreload(preferredPreloadDirection);
     }
 
     private void prewarmAdjacentChapters() {
@@ -2455,20 +3077,82 @@ public class BookReaderActivity extends Activity {
 
     private void prepareChapterTransition(int direction) {
         if (webView == null || webView.getUrl() == null || chapterTransitionOverlay == null) return;
-        Bitmap shot = captureWebViewBitmap();
-        if (shot == null) return;
-
         pendingChapterDirection = direction < 0 ? -1 : 1;
         pendingChapterCurlDirection = 0;
-        if (chapterTransitionBitmap != null && !chapterTransitionBitmap.isRecycled())
-            chapterTransitionBitmap.recycle();
+        chapterTransitionLoadDeferred = false;
+
+        // WebView.draw(Canvas) is a software render and can use a different internal
+        // page scale from the hardware-composited frame visible on screen. That was
+        // the source of the outgoing chapter suddenly shrinking before navigation.
+        // PixelCopy copies the already-composited window pixels instead, so the old
+        // chapter is frozen at the exact size the reader was looking at.
+        if (Build.VERSION.SDK_INT >= 26 && webView.getWidth() > 0 && webView.getHeight() > 0) {
+            final int width = webView.getWidth();
+            final int height = webView.getHeight();
+            final Bitmap shot;
+            try {
+                shot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            } catch (OutOfMemoryError | RuntimeException e) {
+                return;
+            }
+
+            int[] location = new int[2];
+            webView.getLocationInWindow(location);
+            android.graphics.Rect src = new android.graphics.Rect(
+                    location[0], location[1], location[0] + width, location[1] + height);
+            final int token = ++chapterTransitionCaptureToken;
+            chapterTransitionCapturePending = true;
+
+            try {
+                android.view.PixelCopy.request(getWindow(), src, shot, result -> {
+                    if (token != chapterTransitionCaptureToken || isFinishing()) {
+                        if (!shot.isRecycled()) shot.recycle();
+                        return;
+                    }
+                    chapterTransitionCapturePending = false;
+                    if (result != android.view.PixelCopy.SUCCESS) {
+                        // A rare compositor miss is preferable to reintroducing the
+                        // wrong-scale software WebView snapshot. Use a stable reader
+                        // background for that transition instead of a shrunken page.
+                        shot.eraseColor(readerTheme == 2 ? Color.rgb(18, 18, 18) :
+                                (readerTheme == 1 ? Color.rgb(244, 236, 216) : Color.WHITE));
+                    }
+                    installChapterTransitionSnapshot(shot);
+                    if (chapterTransitionLoadDeferred) {
+                        chapterTransitionLoadDeferred = false;
+                        loadCurrentEpubChapter();
+                    }
+                }, new android.os.Handler(android.os.Looper.getMainLooper()));
+                return;
+            } catch (RuntimeException e) {
+                chapterTransitionCapturePending = false;
+                if (!shot.isRecycled()) shot.recycle();
+            }
+        }
+
+        // Android 6/7 fallback. Modern devices never use this software path.
+        Bitmap fallback = captureWebViewBitmap();
+        if (fallback != null) installChapterTransitionSnapshot(fallback);
+    }
+
+    private void installChapterTransitionSnapshot(Bitmap shot) {
+        if (shot == null || chapterTransitionOverlay == null) return;
+        if (chapterTransitionBitmap != null && chapterTransitionBitmap != shot &&
+                !chapterTransitionBitmap.isRecycled()) chapterTransitionBitmap.recycle();
         chapterTransitionBitmap = shot;
-        chapterTransitionOverlay.setImageBitmap(shot);
         chapterTransitionOverlay.animate().cancel();
+        chapterTransitionOverlay.setImageBitmap(shot);
         chapterTransitionOverlay.setAlpha(1f);
         chapterTransitionOverlay.setTranslationX(0f);
+        chapterTransitionOverlay.setScaleX(1f);
+        chapterTransitionOverlay.setScaleY(1f);
         chapterTransitionOverlay.setVisibility(View.VISIBLE);
         chapterTransitionOverlay.bringToFront();
+        webView.animate().cancel();
+        webView.setScaleX(1f);
+        webView.setScaleY(1f);
+        webView.setTranslationX(0f);
+        webView.setAlpha(0f);
         pendingChapterFade = true;
     }
 
@@ -2489,19 +3173,9 @@ public class BookReaderActivity extends Activity {
     }
 
     private void finishChapterFade() {
-        if (!pendingChapterFade || chapterTransitionOverlay == null) return;
-        pendingChapterFade = false;
-        chapterTransitionOverlay.animate().cancel();
-        long duration = "slide".equals(pageAnimation) && "page".equals(readingMode) ? 180L : 92L;
-        float distance = "slide".equals(pageAnimation) && "page".equals(readingMode)
-                ? (pendingChapterDirection < 0 ? 1f : -1f) * dp(36) : 0f;
-        chapterTransitionOverlay.animate()
-                .alpha(0f)
-                .translationX(distance)
-                .setDuration(duration)
-                .setInterpolator(new android.view.animation.DecelerateInterpolator(1.45f))
-                .withEndAction(this::finishChapterFadeImmediate)
-                .start();
+        // The V31 screenshot remains only while the new chapter stabilizes.
+        // Once ready, remove it immediately: no fade, slide or translation.
+        finishChapterFadeImmediate();
     }
 
     private void finishChapterFadeImmediate() {
@@ -2922,7 +3596,6 @@ public class BookReaderActivity extends Activity {
                 "Reading mode · " + readingModeDisplayName(),
                 "Page animation · " + pageAnimationDisplayName(),
                 "Text alignment · " + alignmentDisplayName(),
-                "Auto spacing adjustment · " + onOff(autoSpacingAdjustment),
                 "Font size · " + fontPercent + "%",
                 "Font · " + fontDisplayName(),
                 "Line spacing · " + lineSpacingDisplay(),
@@ -2942,36 +3615,30 @@ public class BookReaderActivity extends Activity {
                         case 0: showReadingModeDialog(); break;
                         case 1: showPageAnimationDialog(); break;
                         case 2: showAlignmentDialog(); break;
-                        case 3:
-                            autoSpacingAdjustment = !autoSpacingAdjustment;
-                            saveReaderPreferences();
-                            applyReaderStyleSmooth(true);
-                            showReaderSettings();
-                            break;
-                        case 4: showFontSizeDialog(); break;
-                        case 5: showFontDialog(); break;
-                        case 6: showLineSpacingDialog(); break;
-                        case 7: showMarginDialog(); break;
-                        case 8: showThemeDialog(); break;
-                        case 9: showBrightnessDialog(); break;
-                        case 10:
+                        case 3: showFontSizeDialog(); break;
+                        case 4: showFontDialog(); break;
+                        case 5: showLineSpacingDialog(); break;
+                        case 6: showMarginDialog(); break;
+                        case 7: showThemeDialog(); break;
+                        case 8: showBrightnessDialog(); break;
+                        case 9:
                             keepScreenOn = !keepScreenOn;
                             saveReaderPreferences();
                             applyWindowPreferences();
                             showReaderSettings();
                             break;
-                        case 11:
+                        case 10:
                             lockOrientation = !lockOrientation;
                             saveReaderPreferences();
                             applyWindowPreferences();
                             showReaderSettings();
                             break;
-                        case 12:
+                        case 11:
                             volumeChapterKeys = !volumeChapterKeys;
                             saveReaderPreferences();
                             showReaderSettings();
                             break;
-                        case 13: resetReaderPreferences(); break;
+                        case 12: resetReaderPreferences(); break;
                     }
                 })
                 .setNegativeButton("Close", null)
@@ -3013,18 +3680,29 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showAlignmentDialog() {
-        String[] labels = {"Justify", "Left", "Right"};
-        String[] values = {"justify", "left", "right"};
-        int selected = "left".equals(textAlignment) ? 1 : ("right".equals(textAlignment) ? 2 : 0);
+        String[] labels = {"Justify · Normal", "Justify · Auto spacing", "Left", "Right"};
+        int selected;
+        if ("left".equals(textAlignment)) selected = 2;
+        else if ("right".equals(textAlignment)) selected = 3;
+        else selected = autoSpacingAdjustment ? 1 : 0;
         new AlertDialog.Builder(this)
                 .setTitle("Text alignment")
-                .setSingleChoiceItems(labels, selected, (dialog, which) -> {
-                    textAlignment = values[which];
+                .setItems(labels, (dialog, which) -> {
+                    if (which == 0) {
+                        textAlignment = "justify";
+                        autoSpacingAdjustment = false;
+                    } else if (which == 1) {
+                        textAlignment = "justify";
+                        autoSpacingAdjustment = true;
+                    } else if (which == 2) {
+                        textAlignment = "left";
+                    } else {
+                        textAlignment = "right";
+                    }
                     saveReaderPreferences();
                     applyReaderStyleSmooth(true);
-                    dialog.dismiss();
                 })
-                .setNegativeButton("Cancel", null)
+                .setNegativeButton("Close", null)
                 .show();
     }
 
@@ -3319,7 +3997,7 @@ public class BookReaderActivity extends Activity {
     private String alignmentDisplayName() {
         if ("left".equals(textAlignment)) return "Left";
         if ("right".equals(textAlignment)) return "Right";
-        return "Justify";
+        return autoSpacingAdjustment ? "Justify · Auto spacing" : "Justify · Normal";
     }
 
     private String fontDisplayName() {
@@ -3731,29 +4409,43 @@ public class BookReaderActivity extends Activity {
             attrs.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             getWindow().setAttributes(attrs);
-
-            root.setOnApplyWindowInsetsListener((v, insets) -> {
-                android.view.DisplayCutout cutout = insets.getDisplayCutout();
-                int safeTop = cutout == null ? 0 : cutout.getSafeInsetTop();
-                int safeBottom = cutout == null ? 0 : cutout.getSafeInsetBottom();
-                if (topBar != null) {
-                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) topBar.getLayoutParams();
-                    int wanted = safeTop + dp(8);
-                    if (p.topMargin != wanted) { p.topMargin = wanted; topBar.setLayoutParams(p); }
-                }
-                if (bottomBar != null) {
-                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) bottomBar.getLayoutParams();
-                    int wanted = safeBottom + dp(12);
-                    if (p.bottomMargin != wanted) { p.bottomMargin = wanted; bottomBar.setLayoutParams(p); }
-                }
-                if (readingSeek != null) {
-                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) readingSeek.getLayoutParams();
-                    int wanted = safeBottom + dp(64);
-                    if (p.bottomMargin != wanted) { p.bottomMargin = wanted; readingSeek.setLayoutParams(p); }
-                }
-                return insets;
-            });
         }
+
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int safeTop = 0;
+            int safeBottom = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets bars = insets.getInsetsIgnoringVisibility(
+                        android.view.WindowInsets.Type.systemBars() |
+                        android.view.WindowInsets.Type.displayCutout());
+                safeTop = bars.top;
+                safeBottom = bars.bottom;
+            } else {
+                safeTop = Math.max(insets.getSystemWindowInsetTop(), insets.getStableInsetTop());
+                safeBottom = Math.max(insets.getSystemWindowInsetBottom(), insets.getStableInsetBottom());
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && insets.getDisplayCutout() != null) {
+                    safeTop = Math.max(safeTop, insets.getDisplayCutout().getSafeInsetTop());
+                    safeBottom = Math.max(safeBottom, insets.getDisplayCutout().getSafeInsetBottom());
+                }
+            }
+            if (topBar != null) {
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) topBar.getLayoutParams();
+                int wanted = safeTop + dp(8);
+                if (p.topMargin != wanted) { p.topMargin = wanted; topBar.setLayoutParams(p); }
+            }
+            if (bottomBar != null) {
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) bottomBar.getLayoutParams();
+                int wanted = safeBottom + dp(12);
+                if (p.bottomMargin != wanted) { p.bottomMargin = wanted; bottomBar.setLayoutParams(p); }
+            }
+            if (readingSeek != null) {
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) readingSeek.getLayoutParams();
+                int wanted = safeBottom + dp(64);
+                if (p.bottomMargin != wanted) { p.bottomMargin = wanted; readingSeek.setLayoutParams(p); }
+            }
+            return insets;
+        });
+        root.requestApplyInsets();
     }
 
     private void enterImmersive() {
@@ -3806,7 +4498,7 @@ public class BookReaderActivity extends Activity {
             stroke = Color.argb(56, 255, 255, 255);
         } else if (readerTheme == 1) {
             solid = Color.rgb(244, 236, 216);
-            fg = Color.rgb(32, 33, 36);
+            fg = Color.rgb(74, 64, 51);
             glass = Color.argb(238, 250, 244, 228);
             stroke = Color.argb(92, 168, 153, 126);
         } else {
@@ -3827,6 +4519,7 @@ public class BookReaderActivity extends Activity {
         if (positionView != null) positionView.setTextColor(fg);
         if (root != null) root.setBackgroundColor(solid);
         if (webView != null) webView.setBackgroundColor(solid);
+        if (preloadWebView != null) preloadWebView.setBackgroundColor(solid);
         updateNightLightOverlay();
     }
 
@@ -4035,13 +4728,21 @@ public class BookReaderActivity extends Activity {
     }
 
     private class ReaderBridge {
+        private final WebView owner;
+
+        ReaderBridge(WebView owner) {
+            this.owner = owner;
+        }
+
         @JavascriptInterface
         public void onSelection(String text, int start, int end) {
+            if (owner != webView) return;
             runOnUiThread(() -> onWebSelection(text, start, end));
         }
 
         @JavascriptInterface
         public void onScroll(int p) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"scroll".equals(readingMode)) return;
                 updateEpubProgress(p);
@@ -4050,7 +4751,17 @@ public class BookReaderActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void onScrollReady(int generation) {
+            if (owner != webView) return;
+            runOnUiThread(() -> {
+                if (!"scroll".equals(readingMode) || generation != chapterLoadGeneration) return;
+                completePageReady(generation);
+            });
+        }
+
+        @JavascriptInterface
         public void onPage(int page, int count, int p) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
                 updateEpubPageProgress(page, count, p);
@@ -4059,6 +4770,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void onPageReady(int generation, int page, int count, int p) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode) || generation != chapterLoadGeneration) return;
                 updateEpubPageProgress(page, count, p);
@@ -4068,11 +4780,13 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void onStyleReady(int token) {
+            if (owner != webView) return;
             runOnUiThread(() -> finishReaderStyleReflow(token));
         }
 
         @JavascriptInterface
         public void onPageTurnComplete(int page, int count, int p) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
                 updateEpubPageProgress(page, count, p);
@@ -4082,6 +4796,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void onEmptyChapter() {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
                 skipEmptyEpubSpine();
@@ -4090,14 +4805,14 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void pageEngineFailed(String message) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode)) return;
                 readingMode = "scroll";
                 pageTurnLocked = false;
-                chapterLoading = false;
+                chapterLoading = true;
                 pendingChapterCurlDirection = 0;
                 if (pageCurlView != null) pageCurlView.release();
-                finishChapterFade();
                 prefs.edit().putString("epub_reading_mode", "scroll").apply();
                 applyReaderStyle(true);
                 Toast.makeText(BookReaderActivity.this, "Page layout adjusted to Scroll for this book", Toast.LENGTH_SHORT).show();
@@ -4106,6 +4821,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public void requestChapter(int delta) {
+            if (owner != webView) return;
             runOnUiThread(() -> {
                 if (!"page".equals(readingMode) || delta == 0) return;
                 int target = currentSpine + (delta < 0 ? -1 : 1);
@@ -4137,10 +4853,9 @@ public class BookReaderActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // Back gestures never leave a book accidentally. Use the visible ‹ button to exit.
-        if (!controlsVisible) showControls();
-        else hideControls();
-        enterImmersive();
+        if (!isPdf) saveEpubState();
+        finish();
+        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
     }
 
     @Override
@@ -4158,6 +4873,13 @@ public class BookReaderActivity extends Activity {
         updateNightLightOverlay();
         GoogleAutoSync.schedule(this);
         getWindow().getDecorView().postDelayed(this::enterImmersive, 80L);
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW)
+            cancelChapterPreload();
     }
 
     @Override
@@ -4179,6 +4901,12 @@ public class BookReaderActivity extends Activity {
             try { webView.removeJavascriptInterface("WoW"); } catch (Exception ignored) {}
             try { webView.stopLoading(); } catch (Exception ignored) {}
             try { webView.destroy(); } catch (Exception ignored) {}
+        }
+        if (preloadWebView != null) {
+            try { preloadWebView.removeJavascriptInterface("WoW"); } catch (Exception ignored) {}
+            try { preloadWebView.stopLoading(); } catch (Exception ignored) {}
+            try { preloadWebView.destroy(); } catch (Exception ignored) {}
+            preloadWebView = null;
         }
 
         try { if (pdfPage != null) pdfPage.close(); } catch (Exception ignored) {}

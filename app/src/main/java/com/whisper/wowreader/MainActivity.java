@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.ClipData;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -74,6 +75,7 @@ public class MainActivity extends Activity {
     private ProfileAvatarView accountButton;
     private TextView themeButton;
     private TextView statsSummaryView;
+    private TextView streakSummaryView;
     private TextView notesSummaryView;
     private String appTheme = "white";
     private String sortMode = "added";
@@ -92,6 +94,7 @@ public class MainActivity extends Activity {
     private long lastAutoSyncAttemptMs = 0L;
     private Runnable googleSyncRetryRunnable;
     private volatile boolean metadataWarmupRunning = false;
+    private boolean homeMode = true;
     private final Collator myanmarCollator = Collator.getInstance(new Locale("my", "MM"));
     private final Collator englishCollator = Collator.getInstance(Locale.ENGLISH);
 
@@ -106,7 +109,7 @@ public class MainActivity extends Activity {
         if (!coverCacheDir.exists()) coverCacheDir.mkdirs();
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
         appTheme = prefs.getString("app_theme", "white");
-        if (!"white".equals(appTheme) && !"black".equals(appTheme) && !"navy".equals(appTheme)) appTheme = "white";
+        if (!AppThemePalette.isSupportedTheme(appTheme)) appTheme = "white";
         applySystemBarTheme();
         googleAccount = new GoogleAccountAuth(this);
         googleDrive = new GoogleDriveSync(this);
@@ -134,7 +137,23 @@ public class MainActivity extends Activity {
         maybeAutoGoogleSync();
     }
 
+    @Override public void onBackPressed() {
+        if (!homeMode) {
+            switchToHome();
+            return;
+        }
+        finish();
+    }
+
     private void buildUi() {
+        // Rebuild only the presentation layer when switching Home/Library.
+        // Account/auth/sync state remains in the Activity and SharedPreferences.
+        countView = null;
+        sortButton = null;
+        authorButton = null;
+        searchInput = null;
+        floatingAdd = null;
+
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(themeBackground());
 
@@ -144,13 +163,13 @@ public class MainActivity extends Activity {
         libraryRecycler.setOverScrollMode(View.OVER_SCROLL_NEVER);
         androidx.recyclerview.widget.DefaultItemAnimator itemAnimator = new androidx.recyclerview.widget.DefaultItemAnimator();
         itemAnimator.setSupportsChangeAnimations(false);
-        itemAnimator.setAddDuration(135L);
-        itemAnimator.setRemoveDuration(110L);
-        itemAnimator.setMoveDuration(170L);
+        itemAnimator.setAddDuration(120L);
+        itemAnimator.setRemoveDuration(100L);
+        itemAnimator.setMoveDuration(150L);
         libraryRecycler.setItemAnimator(itemAnimator);
         libraryRecycler.setItemViewCacheSize(20);
         libraryRecycler.setHasFixedSize(false);
-        libraryRecycler.setPadding(0, 0, 0, dp(96));
+        libraryRecycler.setPadding(0, 0, 0, dp(86));
 
         libraryAdapter = new LibraryAdapter();
         configureLibraryLayout();
@@ -164,57 +183,18 @@ public class MainActivity extends Activity {
         root.addView(libraryRecycler, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        floatingAdd = new TextView(this);
-        floatingAdd.setText("＋  Add book");
-        floatingAdd.setTextSize(14.5f);
-        floatingAdd.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        floatingAdd.setTextColor(Color.WHITE);
-        floatingAdd.setGravity(Gravity.CENTER);
-        floatingAdd.setPadding(dp(14), 0, dp(16), 0);
-        floatingAdd.setContentDescription("Add book");
-        floatingAdd.setBackground(gradientRoundRect(themeFabColors(), dp(29)));
-        floatingAdd.setElevation(dp(11));
-        floatingAdd.setOnClickListener(v -> {
-            try { v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP); } catch (Exception ignored) {}
-            chooseBook();
-        });
-        floatingAdd.setOnTouchListener((v, e) -> {
-            int action = e.getActionMasked();
-            if (action == android.view.MotionEvent.ACTION_DOWN) {
-                v.animate().cancel();
-                v.animate().scaleX(0.955f).scaleY(0.955f).translationY(dp(1)).setDuration(72L).start();
-                v.setElevation(dp(7));
-            } else if (action == android.view.MotionEvent.ACTION_UP || action == android.view.MotionEvent.ACTION_CANCEL) {
-                v.animate().cancel();
-                v.animate().scaleX(1f).scaleY(1f).translationY(0f).setDuration(185L)
-                        .setInterpolator(new android.view.animation.OvershootInterpolator(1.18f)).start();
-                v.setElevation(dp(11));
-            }
-            return false;
-        });
-        FrameLayout.LayoutParams fabLp = new FrameLayout.LayoutParams(dp(124), dp(58), Gravity.END | Gravity.BOTTOM);
-        fabLp.rightMargin = dp(16);
-        fabLp.bottomMargin = dp(20);
-        root.addView(floatingAdd, fabLp);
-
-        libraryRecycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
-            @Override public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
-                if (floatingAdd == null) return;
-                floatingAdd.animate().cancel();
-                if (dy > dp(2) && recyclerView.canScrollVertically(-1)) {
-                    floatingAdd.animate().translationY(dp(88)).alpha(0f).setDuration(165L)
-                            .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
-                } else if (dy < -dp(2) || !recyclerView.canScrollVertically(-1)) {
-                    floatingAdd.animate().translationY(0f).alpha(1f).setDuration(210L)
-                            .setInterpolator(new android.view.animation.DecelerateInterpolator(1.35f)).start();
-                }
-            }
-        });
+        View premiumBottomNav = buildBottomNavigation();
+        FrameLayout.LayoutParams bottomNavLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(64), Gravity.BOTTOM);
+        bottomNavLp.leftMargin = dp(10);
+        bottomNavLp.rightMargin = dp(10);
+        bottomNavLp.bottomMargin = dp(6);
+        root.addView(premiumBottomNav, bottomNavLp);
 
         setContentView(root);
+        AppWindowInsets.apply(this, root, themeBackground(), themeUsesDarkSystemIcons());
         refreshLibrary();
     }
-
 
     private TextView iconButton(String text) {
         TextView v = new TextView(this);
@@ -229,9 +209,155 @@ public class MainActivity extends Activity {
     }
 
 
+
+    private void addComingSoonSection(LinearLayout root) {
+        LinearLayout heading = new LinearLayout(this);
+        heading.setOrientation(LinearLayout.HORIZONTAL);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        heading.setPadding(dp(2), dp(14), dp(2), dp(8));
+
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("Coming Soon");
+        title.setTextSize(17.5f);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        TextView sub = new TextView(this);
+        sub.setText("Latest book notes from 3 WoW sources");
+        sub.setTextSize(10.5f);
+        sub.setTextColor(themeSecondaryText());
+        titles.addView(title);
+        titles.addView(sub);
+        heading.addView(titles, new LinearLayout.LayoutParams(0, dp(48), 1f));
+
+        TextView all = new TextView(this);
+        all.setText("View all  ›");
+        all.setTextSize(12.5f);
+        all.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        all.setTextColor(themeAccent());
+        all.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        all.setOnClickListener(v -> showExploreHome());
+        heading.addView(all, new LinearLayout.LayoutParams(dp(84), dp(48)));
+        root.addView(heading);
+
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        scroller.setHorizontalScrollBarEnabled(false);
+        scroller.setFillViewport(false);
+        scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        strip.setPadding(0, 0, dp(12), dp(2));
+        scroller.addView(strip, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView loading = new TextView(this);
+        loading.setText("Loading latest posts…");
+        loading.setTextSize(12.5f);
+        loading.setTextColor(themeSecondaryText());
+        loading.setGravity(Gravity.CENTER_VERTICAL);
+        loading.setPadding(dp(18), 0, dp(18), 0);
+        loading.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+        strip.addView(loading, new LinearLayout.LayoutParams(dp(260), dp(132)));
+
+        root.addView(scroller, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(138)));
+
+        new Thread(() -> {
+            List<ComingSoonFeed.Post> posts = ComingSoonFeed.fetchLatest(this, 6, 6);
+            runOnUiThread(() -> {
+                if (isFinishing() || !homeMode) return;
+                strip.removeAllViews();
+                if (posts == null || posts.isEmpty()) {
+                    TextView empty = new TextView(this);
+                    empty.setText("Coming Soon posts are unavailable right now");
+                    empty.setTextSize(12.5f);
+                    empty.setTextColor(themeSecondaryText());
+                    empty.setGravity(Gravity.CENTER_VERTICAL);
+                    empty.setPadding(dp(18), 0, dp(18), 0);
+                    empty.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+                    empty.setOnClickListener(v -> showExploreHome());
+                    strip.addView(empty, new LinearLayout.LayoutParams(dp(280), dp(132)));
+                    return;
+                }
+                for (int i = 0; i < posts.size(); i++) {
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(286), dp(132));
+                    if (i > 0) lp.leftMargin = dp(10);
+                    strip.addView(buildComingSoonPreviewCard(posts.get(i)), lp);
+                }
+            });
+        }, "wow-home-coming-soon").start();
+    }
+
+    private View buildComingSoonPreviewCard(ComingSoonFeed.Post post) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(9), dp(9), dp(11), dp(9));
+        card.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+        card.setElevation(dp(1));
+        card.setClickable(true);
+        card.setOnClickListener(v -> openComingSoonPost(post));
+
+        ImageView cover = new ImageView(this);
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.setBackground(roundRect(themeControlSurface(), dp(13), 0, 0));
+        cover.setClipToOutline(true);
+        card.addView(cover, new LinearLayout.LayoutParams(dp(78), dp(114)));
+        ComingSoonImageLoader.load(this, post.imageUrl, cover);
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
+        copy.setPadding(dp(12), dp(1), 0, dp(1));
+
+        TextView source = new TextView(this);
+        source.setText(post.source + (post.published.isEmpty() ? "" : " · " + post.published));
+        source.setTextSize(9.5f);
+        source.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        source.setTextColor(themeAccent());
+        source.setSingleLine(true);
+        source.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        copy.addView(source);
+
+        TextView title = new TextView(this);
+        title.setText(post.title);
+        title.setTextSize(14.5f);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        title.setMaxLines(2);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        title.setPadding(0, dp(4), 0, 0);
+        applyBookTitleTypeface(title);
+        copy.addView(title);
+
+        TextView excerpt = new TextView(this);
+        excerpt.setText(post.excerpt);
+        excerpt.setTextSize(10.5f);
+        excerpt.setTextColor(themeSecondaryText());
+        excerpt.setMaxLines(3);
+        excerpt.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        excerpt.setPadding(0, dp(5), 0, 0);
+        copy.addView(excerpt);
+
+        card.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        return card;
+    }
+
+    private void openComingSoonPost(ComingSoonFeed.Post post) {
+        if (post == null) return;
+        Intent intent = new Intent(this, ComingSoonDetailActivity.class);
+        intent.putExtra("url", post.url);
+        intent.putExtra("title", post.title);
+        intent.putExtra("source", post.source);
+        intent.putExtra("date", post.published);
+        intent.putExtra("image", post.imageUrl);
+        startActivity(intent);
+    }
+
     private void addDiscoverySection(LinearLayout root) {
         TextView heading = new TextView(this);
-        heading.setText("Explore");
+        heading.setText("Quick links");
         heading.setTextSize(14);
         heading.setTextColor(themeSecondaryText());
         heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -253,7 +379,7 @@ public class MainActivity extends Activity {
                 {"telegram", "Telegram", "New books", "https://t.me/TheBookR"},
                 {"discussion", "Discussion", "Reader community", "https://t.me/+rUiqzi2mdhNiNGZl"},
                 {"website", "Book Website", "saroatsin.com", "https://saroatsin.com"},
-                {"review", "Book Reviews", "အညွှန်း & review", "https://whispermmepub.github.io/Review/"}
+                {"review", "Book Reviews", "Coming Soon feed", "wow://coming-soon"}
         };
         int[] colors = {
                 Color.rgb(232, 245, 255), Color.rgb(239, 238, 255),
@@ -268,7 +394,6 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(78)));
     }
 
-
     private View discoveryCard(String kind, String title, String subtitle, int background, String url) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.HORIZONTAL);
@@ -277,7 +402,10 @@ public class MainActivity extends Activity {
         card.setBackground(roundRect(themeDiscoverySurface(background), dp(18), dp(1), themeStroke()));
         card.setClickable(true);
         card.setElevation(dp(1));
-        card.setOnClickListener(v -> openExternal(url));
+        card.setOnClickListener(v -> {
+            if ("wow://coming-soon".equals(url)) showExploreHome();
+            else openExternal(url);
+        });
         card.setOnTouchListener((v, e) -> {
             if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN)
                 v.animate().scaleX(0.975f).scaleY(0.975f).setDuration(80L).start();
@@ -541,7 +669,7 @@ public class MainActivity extends Activity {
         card.setElevation(dp(1));
         card.setClickable(true);
         card.setOnClickListener(v -> openBook(file));
-        card.setOnLongClickListener(v -> { showBookActions(file); return true; });
+        card.setOnLongClickListener(v -> { showBookActions(file, v); return true; });
         card.setOnTouchListener((v, e) -> {
             if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN)
                 v.animate().scaleX(0.985f).scaleY(0.985f).setDuration(70L).start();
@@ -601,7 +729,7 @@ public class MainActivity extends Activity {
         card.setBackground(roundRect(themeCardSurface(), dp(18), dp(1), themeStroke()));
         card.setElevation(dp(1));
         card.setOnClickListener(v -> openBook(file));
-        card.setOnLongClickListener(v -> { showBookActions(file); return true; });
+        card.setOnLongClickListener(v -> { showBookActions(file, v); return true; });
         card.setOnTouchListener((v, e) -> {
             int action = e.getActionMasked();
             if (action == android.view.MotionEvent.ACTION_DOWN) {
@@ -716,67 +844,63 @@ public class MainActivity extends Activity {
     private View buildLibraryHeader() {
         LinearLayout outer = new LinearLayout(this);
         outer.setOrientation(LinearLayout.VERTICAL);
-        outer.setPadding(dp(14), dp(12), dp(14), dp(2));
-
-        LinearLayout hero = new LinearLayout(this);
-        hero.setOrientation(LinearLayout.VERTICAL);
-        hero.setPadding(dp(16), dp(14), dp(12), dp(14));
-        hero.setBackground(gradientRoundRect(themeHeroColors(), dp(24)));
+        outer.setPadding(dp(14), dp(12), dp(14), dp(4));
 
         LinearLayout brandRow = new LinearLayout(this);
         brandRow.setOrientation(LinearLayout.HORIZONTAL);
         brandRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout brandCopy = new LinearLayout(this);
-        brandCopy.setOrientation(LinearLayout.VERTICAL);
+        brandRow.setPadding(dp(4), 0, dp(2), 0);
+
         TextView brand = new TextView(this);
-        brand.setText("WoW Reader");
-        brand.setTextSize(27);
+        brand.setText("WoW");
+        brand.setTextSize(34);
         brand.setTextColor(themePrimaryText());
-        brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        TextView sub = new TextView(this);
-        sub.setText("Your books, beautifully organized");
-        sub.setTextSize(11.5f);
-        sub.setTextColor(themeSecondaryText());
-        sub.setPadding(0, dp(2), 0, 0);
-        brandCopy.addView(brand);
-        brandCopy.addView(sub);
-        brandRow.addView(brandCopy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        brand.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
+        brand.setGravity(Gravity.CENTER_VERTICAL);
+        brandRow.addView(brand, new LinearLayout.LayoutParams(0, dp(58), 1f));
 
         accountButton = new ProfileAvatarView(this);
         accountButton.setContentDescription("Google account & cloud library");
         accountButton.setOnClickListener(v -> showAccountMenu());
-        brandRow.addView(accountButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        brandRow.addView(accountButton, new LinearLayout.LayoutParams(dp(46), dp(46)));
         updateAccountButton();
 
-        themeButton = iconButton("navy".equals(appTheme) ? "✦" : "◐");
-        themeButton.setTextSize(17);
+        themeButton = iconButton("navy".equals(appTheme) ? "✦" : ("custom".equals(appTheme) ? "◆" : "◐"));
+        themeButton.setTextSize(16);
         themeButton.setContentDescription("App theme");
         themeButton.setOnClickListener(v -> showAppThemeDialog());
-        brandRow.addView(themeButton, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        themeLp.leftMargin = dp(8);
+        brandRow.addView(themeButton, themeLp);
 
-        viewModeButton = iconButton(gridMode ? "☷" : "▦");
-        viewModeButton.setTextSize(17);
+        viewModeButton = iconButton(gridMode ? "▦" : "☷");
+        viewModeButton.setTextSize(16);
         viewModeButton.setContentDescription("Change library view");
         viewModeButton.setOnClickListener(v -> {
             gridMode = !gridMode;
             prefs.edit().putBoolean("library_grid", gridMode).apply();
-            viewModeButton.setText(gridMode ? "☷" : "▦");
+            viewModeButton.setText(gridMode ? "▦" : "☷");
             configureLibraryLayout();
             if (libraryAdapter != null) libraryAdapter.notifyDataSetChanged();
         });
         LinearLayout.LayoutParams viewLp = new LinearLayout.LayoutParams(dp(44), dp(44));
         viewLp.leftMargin = dp(8);
         brandRow.addView(viewModeButton, viewLp);
-        hero.addView(brandRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        outer.addView(brandRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
+
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setPadding(dp(2), 0, dp(2), 0);
 
         searchInput = new EditText(this);
         searchInput.setSingleLine(true);
-        searchInput.setHint("Search title or book");
+        searchInput.setHint("Search title or author");
         searchInput.setTextSize(14.5f);
         searchInput.setTextColor(themePrimaryText());
         searchInput.setHintTextColor(themeSecondaryText());
-        searchInput.setPadding(dp(16), 0, dp(16), 0);
-        searchInput.setBackground(roundRect(themeSearchSurface(), dp(23), dp(1), themeStroke()));
+        searchInput.setPadding(dp(17), 0, dp(17), 0);
+        searchInput.setBackground(roundRect(themeSearchSurface(), dp(25), dp(1), themeStroke()));
         if (!searchQuery.isEmpty()) {
             searchInput.setText(searchQuery);
             searchInput.setSelection(searchInput.length());
@@ -789,157 +913,330 @@ public class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable s) {}
         });
-        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
-        searchLp.topMargin = dp(8);
-        hero.addView(searchInput, searchLp);
+        searchRow.addView(searchInput, new LinearLayout.LayoutParams(0, dp(50), 1f));
 
-        LinearLayout readingStatsCard = new LinearLayout(this);
-        readingStatsCard.setOrientation(LinearLayout.HORIZONTAL);
-        readingStatsCard.setGravity(Gravity.CENTER_VERTICAL);
-        readingStatsCard.setPadding(dp(13), 0, dp(12), 0);
-        readingStatsCard.setBackground(roundRect(themeControlSurface(), dp(19), dp(1), themeStroke()));
-        readingStatsCard.setClickable(true);
-        readingStatsCard.setElevation(dp(1));
-        readingStatsCard.setContentDescription("Reading statistics");
-        readingStatsCard.setOnClickListener(v -> showReadingStatsDialog());
+        TextView filter = iconButton("⌁");
+        filter.setTextSize(19);
+        filter.setContentDescription("Filter and sort library");
+        filter.setOnClickListener(v -> showLibraryFilterSheet());
+        LinearLayout.LayoutParams filterLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        filterLp.leftMargin = dp(8);
+        searchRow.addView(filter, filterLp);
+        LinearLayout.LayoutParams searchRowLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        searchRowLp.topMargin = dp(6);
+        outer.addView(searchRow, searchRowLp);
 
-        TextView statsIcon = new TextView(this);
-        statsIcon.setText("◷");
-        statsIcon.setTextSize(20);
-        statsIcon.setTextColor(themeAccent());
-        statsIcon.setGravity(Gravity.CENTER);
-        readingStatsCard.addView(statsIcon, new LinearLayout.LayoutParams(dp(34), dp(44)));
-
-        LinearLayout statsCopy = new LinearLayout(this);
-        statsCopy.setOrientation(LinearLayout.VERTICAL);
-        statsCopy.setGravity(Gravity.CENTER_VERTICAL);
-        TextView statsTitle = new TextView(this);
-        statsTitle.setText("Reading");
-        statsTitle.setTextSize(12.5f);
-        statsTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        statsTitle.setTextColor(themePrimaryText());
-        statsCopy.addView(statsTitle);
-        statsSummaryView = new TextView(this);
-        statsSummaryView.setTextSize(10.5f);
-        statsSummaryView.setTextColor(themeSecondaryText());
-        statsSummaryView.setSingleLine(true);
-        statsCopy.addView(statsSummaryView);
-        readingStatsCard.addView(statsCopy, new LinearLayout.LayoutParams(0, dp(44), 1f));
-
-        TextView statsArrow = new TextView(this);
-        statsArrow.setText("›");
-        statsArrow.setTextSize(22);
-        statsArrow.setTextColor(themeSecondaryText());
-        statsArrow.setGravity(Gravity.CENTER);
-        readingStatsCard.addView(statsArrow, new LinearLayout.LayoutParams(dp(28), dp(44)));
-
-        LinearLayout.LayoutParams statsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
-        statsLp.topMargin = dp(8);
-        hero.addView(readingStatsCard, statsLp);
-        updateReadingStatsSummary();
-
-        LinearLayout notesHubCard = new LinearLayout(this);
-        notesHubCard.setOrientation(LinearLayout.HORIZONTAL);
-        notesHubCard.setGravity(Gravity.CENTER_VERTICAL);
-        notesHubCard.setPadding(dp(13), 0, dp(12), 0);
-        notesHubCard.setBackground(roundRect(themeControlSurface(), dp(19), dp(1), themeStroke()));
-        notesHubCard.setClickable(true);
-        notesHubCard.setElevation(dp(1));
-        notesHubCard.setContentDescription("Notes and highlights hub");
-        notesHubCard.setOnClickListener(v -> showNotesHighlightsHub());
-
-        TextView notesIcon = new TextView(this);
-        notesIcon.setText("✎");
-        notesIcon.setTextSize(18);
-        notesIcon.setTextColor(themeAccent());
-        notesIcon.setGravity(Gravity.CENTER);
-        notesHubCard.addView(notesIcon, new LinearLayout.LayoutParams(dp(34), dp(44)));
-
-        LinearLayout notesCopy = new LinearLayout(this);
-        notesCopy.setOrientation(LinearLayout.VERTICAL);
-        notesCopy.setGravity(Gravity.CENTER_VERTICAL);
-        TextView notesTitle = new TextView(this);
-        notesTitle.setText("Notes & highlights");
-        notesTitle.setTextSize(12.5f);
-        notesTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        notesTitle.setTextColor(themePrimaryText());
-        notesCopy.addView(notesTitle);
-        notesSummaryView = new TextView(this);
-        notesSummaryView.setTextSize(10.5f);
-        notesSummaryView.setTextColor(themeSecondaryText());
-        notesSummaryView.setSingleLine(true);
-        notesCopy.addView(notesSummaryView);
-        notesHubCard.addView(notesCopy, new LinearLayout.LayoutParams(0, dp(44), 1f));
-
-        TextView notesArrow = new TextView(this);
-        notesArrow.setText("›");
-        notesArrow.setTextSize(22);
-        notesArrow.setTextColor(themeSecondaryText());
-        notesArrow.setGravity(Gravity.CENTER);
-        notesHubCard.addView(notesArrow, new LinearLayout.LayoutParams(dp(28), dp(44)));
-
-        LinearLayout.LayoutParams notesLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
-        notesLp.topMargin = dp(7);
-        hero.addView(notesHubCard, notesLp);
-        updateNotesHubSummary();
-
-        HorizontalScrollView smartFilters = new HorizontalScrollView(this);
-        smartFilters.setHorizontalScrollBarEnabled(false);
-        smartFilters.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        LinearLayout filterStrip = new LinearLayout(this);
-        filterStrip.setOrientation(LinearLayout.HORIZONTAL);
-        filterStrip.setGravity(Gravity.CENTER_VERTICAL);
-        filterStrip.setPadding(0, 0, dp(8), 0);
-        smartFilters.addView(filterStrip, new HorizontalScrollView.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        statusAllChip = libraryFilterChip("All");
-        statusReadingChip = libraryFilterChip("Reading");
-        statusUnreadChip = libraryFilterChip("Unread");
-        statusFinishedChip = libraryFilterChip("Finished");
-        shelfChip = libraryFilterChip("Shelves  ▾");
-        statusAllChip.setOnClickListener(v -> setLibraryStatusFilter("all"));
-        statusReadingChip.setOnClickListener(v -> setLibraryStatusFilter("reading"));
-        statusUnreadChip.setOnClickListener(v -> setLibraryStatusFilter("unread"));
-        statusFinishedChip.setOnClickListener(v -> setLibraryStatusFilter("finished"));
-        shelfChip.setOnClickListener(v -> showShelvesDialog());
-        addFilterChip(filterStrip, statusAllChip);
-        addFilterChip(filterStrip, statusReadingChip);
-        addFilterChip(filterStrip, statusUnreadChip);
-        addFilterChip(filterStrip, statusFinishedChip);
-        addFilterChip(filterStrip, shelfChip);
-        LinearLayout.LayoutParams filtersLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
-        filtersLp.topMargin = dp(7);
-        hero.addView(smartFilters, filtersLp);
-        updateLibraryFilterChips();
-
-        outer.addView(hero, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        addContinueReadingSection(outer);
+        addPremiumReadingStrip(outer);
+        addComingSoonSection(outer);
         addDiscoverySection(outer);
         return outer;
+    }
+
+    private void addContinueReadingSection(LinearLayout root) {
+        LinearLayout heading = new LinearLayout(this);
+        heading.setOrientation(LinearLayout.HORIZONTAL);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        heading.setPadding(dp(2), dp(18), dp(2), dp(8));
+        TextView title = new TextView(this);
+        title.setText("Continue reading");
+        title.setTextSize(17.5f);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        heading.addView(title, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        TextView all = new TextView(this);
+        all.setText("View all  ›");
+        all.setTextSize(12.5f);
+        all.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        all.setTextColor(themeAccent());
+        all.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        all.setOnClickListener(v -> switchToLibrary());
+        heading.addView(all, new LinearLayout.LayoutParams(dp(84), dp(38)));
+        root.addView(heading);
+
+        File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
+        if (books == null) books = new File[0];
+        java.util.Arrays.sort(books, (a, b) -> {
+            long ao = openedTime(a), bo = openedTime(b);
+            if (ao != bo) return Long.compare(bo, ao);
+            return Long.compare(addedTime(b), addedTime(a));
+        });
+        java.util.List<File> preferred = new java.util.ArrayList<>();
+        for (File f : books) {
+            int p = prefs.getInt("percent_" + f.getName(), 0);
+            if (p > 0 && p < 100) preferred.add(f);
+        }
+        if (preferred.isEmpty()) {
+            for (File f : books) preferred.add(f);
+        }
+
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        scroller.setHorizontalScrollBarEnabled(false);
+        scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        strip.setPadding(0, 0, dp(12), dp(2));
+        scroller.addView(strip, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        if (preferred.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("Add an EPUB or PDF to start your library");
+            empty.setTextSize(13);
+            empty.setTextColor(themeSecondaryText());
+            empty.setGravity(Gravity.CENTER_VERTICAL);
+            empty.setPadding(dp(18), 0, dp(18), 0);
+            empty.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+            empty.setOnClickListener(v -> chooseBook());
+            strip.addView(empty, new LinearLayout.LayoutParams(dp(280), dp(100)));
+        } else {
+            int max = Math.min(preferred.size(), 8);
+            int screen = getResources().getDisplayMetrics().widthPixels;
+            int featuredWidth = Math.max(dp(258), Math.min(dp(326), screen - dp(92)));
+            for (int i = 0; i < max; i++) {
+                boolean featured = i == 0;
+                View card = buildContinueBookCard(preferred.get(i), featured);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(featured ? featuredWidth : dp(146), dp(204));
+                if (i > 0) lp.leftMargin = dp(10);
+                strip.addView(card, lp);
+            }
+        }
+        root.addView(scroller, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(208)));
+    }
+
+    private View buildContinueBookCard(File file, boolean featured) {
+        FrameLayout shell = new FrameLayout(this);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(featured ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        card.setPadding(dp(10), dp(10), dp(10), dp(10));
+        card.setGravity(featured ? Gravity.CENTER_VERTICAL : Gravity.TOP);
+        card.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+        card.setElevation(dp(1));
+        card.setClickable(true);
+        card.setOnClickListener(v -> openBook(file));
+        card.setOnLongClickListener(v -> { showBookActions(file, v); return true; });
+        shell.addView(card, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        String initial = cachedLibraryTitle(file);
+        ImageView cover = new ImageView(this);
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.setImageBitmap(placeholderBitmap(initial, 220, 330));
+        cover.setBackground(roundRect(Color.rgb(235, 237, 242), dp(13), 0, 0));
+        cover.setClipToOutline(true);
+        if (featured) {
+            card.addView(cover, new LinearLayout.LayoutParams(dp(108), dp(166)));
+        } else {
+            LinearLayout.LayoutParams coverLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(116));
+            card.addView(cover, coverLp);
+        }
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
+        copy.setPadding(featured ? dp(12) : dp(2), featured ? dp(2) : dp(7), dp(2), 0);
+        TextView title = new TextView(this);
+        title.setText(initial);
+        title.setTextSize(featured ? 16.5f : 12.5f);
+        title.setTextColor(themePrimaryText());
+        title.setMaxLines(2);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        applyBookTitleTypeface(title);
+        copy.addView(title);
+
+        TextView meta = new TextView(this);
+        meta.setText(cachedLibraryAuthor(file));
+        meta.setTextSize(featured ? 11.5f : 9.5f);
+        meta.setTextColor(themeSecondaryText());
+        meta.setSingleLine(true);
+        meta.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        meta.setPadding(0, dp(5), 0, 0);
+        copy.addView(meta);
+
+        int progress = prefs.getInt("percent_" + file.getName(), 0);
+        TextView progressText = new TextView(this);
+        progressText.setText(progress + (featured ? "% complete" : "%"));
+        progressText.setTextSize(featured ? 11.5f : 10.5f);
+        progressText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        progressText.setTextColor(themeAccent());
+        progressText.setPadding(0, dp(featured ? 12 : 6), 0, dp(4));
+        copy.addView(progressText);
+
+        LinearLayout track = new LinearLayout(this);
+        track.setGravity(Gravity.START);
+        track.setBackground(roundRect(themeTrackColor(), dp(2), 0, 0));
+        View fill = new View(this);
+        fill.setBackground(roundRect(themeAccent(), dp(2), 0, 0));
+        int trackWidth = featured ? dp(144) : dp(112);
+        track.addView(fill, new LinearLayout.LayoutParams(Math.max(dp(2), Math.round(trackWidth * progress / 100f)), dp(3)));
+        LinearLayout.LayoutParams trackLp = new LinearLayout.LayoutParams(featured ? dp(144) : ViewGroup.LayoutParams.MATCH_PARENT, dp(3));
+        copy.addView(track, trackLp);
+
+        if (featured) {
+            TextView continueButton = new TextView(this);
+            continueButton.setText(progress > 0 ? "Continue reading  ›" : "Start reading  ›");
+            continueButton.setTextSize(11.5f);
+            continueButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            continueButton.setTextColor(themeAccent());
+            continueButton.setGravity(Gravity.CENTER);
+            continueButton.setPadding(dp(10), 0, dp(10), 0);
+            continueButton.setBackground(roundRect(themeControlSurface(), dp(17), dp(1), themeStroke()));
+            continueButton.setOnClickListener(v -> openBook(file));
+            LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34));
+            actionLp.topMargin = dp(10);
+            copy.addView(continueButton, actionLp);
+            card.addView(copy, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        } else {
+            card.addView(copy, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        }
+
+        TextView more = new TextView(this);
+        more.setText("⋮");
+        more.setTextSize(19);
+        more.setTextColor(themeSecondaryText());
+        more.setGravity(Gravity.CENTER);
+        more.setContentDescription("Book actions");
+        more.setBackground(roundRect(themeControlSurface(), dp(14), 0, 0));
+        more.setOnClickListener(v -> showBookActions(file, v));
+        FrameLayout.LayoutParams moreLp = new FrameLayout.LayoutParams(dp(30), dp(34), Gravity.TOP | Gravity.END);
+        moreLp.topMargin = dp(5);
+        moreLp.rightMargin = dp(5);
+        shell.addView(more, moreLp);
+
+        loadBookVisual(file, cover, title, meta);
+        return shell;
+    }
+
+    private void addPremiumReadingStrip(LinearLayout root) {
+        ReadingStatsStore.Snapshot stats = ReadingStatsStore.snapshot(prefs);
+        int annotationCount = 0;
+        File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
+        if (books != null) for (File f : books) annotationCount += ReaderAnnotationStore.count(prefs, f.getName());
+
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        strip.setGravity(Gravity.CENTER_VERTICAL);
+        strip.setPadding(dp(8), dp(4), dp(8), dp(4));
+        strip.setBackground(roundRect(themeCardSurface(), dp(20), dp(1), themeStroke()));
+        strip.setElevation(dp(1));
+
+        strip.addView(premiumMetric("◷", "Today", formatReadingTime(stats.todayMs), 0, this::showReadingStatsDialog),
+                new LinearLayout.LayoutParams(0, dp(58), 1f));
+        strip.addView(premiumDivider(), new LinearLayout.LayoutParams(dp(1), dp(34)));
+        strip.addView(premiumMetric("♨", "Streak", stats.currentStreak + (stats.currentStreak == 1 ? " day" : " days"), 1, this::showReadingStatsDialog),
+                new LinearLayout.LayoutParams(0, dp(58), 1f));
+        strip.addView(premiumDivider(), new LinearLayout.LayoutParams(dp(1), dp(34)));
+        strip.addView(premiumMetric("✎", "Notes", String.valueOf(annotationCount), 2, this::showNotesHighlightsHub),
+                new LinearLayout.LayoutParams(0, dp(58), 1f));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(66));
+        lp.topMargin = dp(8);
+        root.addView(strip, lp);
+    }
+
+    private View premiumMetric(String iconText, String label, String value, int slot, Runnable action) {
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.HORIZONTAL);
+        item.setGravity(Gravity.CENTER);
+        item.setPadding(dp(4), 0, dp(4), 0);
+        TextView icon = new TextView(this);
+        icon.setText(iconText);
+        icon.setTextSize(19);
+        icon.setTextColor(themeAccent());
+        icon.setGravity(Gravity.CENTER);
+        item.addView(icon, new LinearLayout.LayoutParams(dp(34), dp(42)));
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
+        TextView labelView = new TextView(this);
+        labelView.setText(label);
+        labelView.setTextSize(9.5f);
+        labelView.setTextColor(themeSecondaryText());
+        copy.addView(labelView);
+        TextView valueView = new TextView(this);
+        valueView.setText(value);
+        valueView.setTextSize(12.5f);
+        valueView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        valueView.setTextColor(themePrimaryText());
+        copy.addView(valueView);
+        item.addView(copy, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        if (slot == 0) statsSummaryView = valueView;
+        else if (slot == 1) streakSummaryView = valueView;
+        else notesSummaryView = valueView;
+        item.setClickable(true);
+        item.setOnClickListener(v -> action.run());
+        return item;
+    }
+
+    private View premiumDivider() {
+        View v = new View(this);
+        v.setBackgroundColor(themeStroke());
+        return v;
+    }
+
+    private View buildBottomNavigation() {
+        LinearLayout nav = new LinearLayout(this);
+        nav.setOrientation(LinearLayout.HORIZONTAL);
+        nav.setGravity(Gravity.CENTER);
+        nav.setPadding(dp(8), dp(4), dp(8), dp(3));
+        nav.setBackground(roundRect(themeCardSurface(), dp(24), dp(1), themeStroke()));
+        nav.setElevation(dp(9));
+        nav.addView(bottomNavItem("⌂", "Home", homeMode, this::switchToHome), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("▥", "Library", !homeMode, this::switchToLibrary), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("✎", "Notes", false, this::showNotesHighlightsHub), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("◈", "Explore", false, this::showExploreHome), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("＋", "Add book", false, this::chooseBook), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        return nav;
+    }
+
+    private void switchToHome() {
+        if (homeMode && libraryRecycler != null) {
+            libraryRecycler.smoothScrollToPosition(0);
+            return;
+        }
+        homeMode = true;
+        buildUi();
+    }
+
+    private void switchToLibrary() {
+        if (!homeMode && libraryRecycler != null) {
+            libraryRecycler.smoothScrollToPosition(0);
+            return;
+        }
+        homeMode = false;
+        buildUi();
+    }
+
+    private void showExploreHome() {
+        startActivity(new Intent(this, ComingSoonActivity.class));
+    }
+
+    private View bottomNavItem(String iconText, String label, boolean active, Runnable action) {
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER);
+        item.setClickable(true);
+        TextView icon = new TextView(this);
+        icon.setText(iconText);
+        icon.setTextSize(18);
+        icon.setTextColor(active ? themeAccent() : themeSecondaryText());
+        icon.setGravity(Gravity.CENTER);
+        item.addView(icon, new LinearLayout.LayoutParams(dp(34), dp(28)));
+        TextView text = new TextView(this);
+        text.setText(label);
+        text.setTextSize(9.5f);
+        text.setTypeface(Typeface.DEFAULT, active ? Typeface.BOLD : Typeface.NORMAL);
+        text.setTextColor(active ? themeAccent() : themeSecondaryText());
+        text.setGravity(Gravity.CENTER);
+        item.addView(text, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(20)));
+        item.setOnClickListener(v -> action.run());
+        return item;
     }
 
     private void updateNotesHubSummary() {
         if (notesSummaryView == null || prefs == null || libraryDir == null) return;
         File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
-        if (books == null || books.length == 0) {
-            notesSummaryView.setText("No saved notes yet");
-            return;
-        }
         int itemCount = 0;
-        int bookCount = 0;
-        for (File book : books) {
-            int count = ReaderAnnotationStore.count(prefs, book.getName());
-            if (count <= 0) continue;
-            itemCount += count;
-            bookCount++;
-        }
-        if (itemCount <= 0) {
-            notesSummaryView.setText("No saved notes yet");
-            return;
-        }
-        String itemText = itemCount == 1 ? "1 item" : itemCount + " items";
-        String bookText = bookCount == 1 ? "1 book" : bookCount + " books";
-        notesSummaryView.setText(itemText + "  ·  " + bookText);
+        if (books != null) for (File book : books) itemCount += ReaderAnnotationStore.count(prefs, book.getName());
+        notesSummaryView.setText(String.valueOf(itemCount));
     }
 
     private void showNotesHighlightsHub() {
@@ -947,26 +1244,149 @@ public class MainActivity extends Activity {
         if (books == null) books = new File[0];
         sortLibraryFiles(books);
         java.util.List<File> annotatedBooks = new java.util.ArrayList<>();
-        java.util.List<String> labels = new java.util.ArrayList<>();
-        for (File book : books) {
-            int count = ReaderAnnotationStore.count(prefs, book.getName());
-            if (count <= 0) continue;
-            annotatedBooks.add(book);
-            labels.add(cachedLibraryTitle(book) + "  ·  " + count + (count == 1 ? " item" : " items"));
-        }
+        for (File book : books) if (ReaderAnnotationStore.count(prefs, book.getName()) > 0) annotatedBooks.add(book);
+
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Notes & highlights", "Organized by book", dialog);
+
         if (annotatedBooks.isEmpty()) {
-            new AlertDialog.Builder(this)
-                    .setTitle("Notes & highlights")
-                    .setMessage("Your saved highlights and notes will appear here. Select text while reading an EPUB and choose Highlight or Note.")
-                    .setPositiveButton("Done", null)
-                    .show();
-            return;
+            TextView empty = new TextView(this);
+            empty.setText("No saved notes yet\nSelect text while reading an EPUB and choose Highlight or Note.");
+            empty.setTextSize(13);
+            empty.setTextColor(themeSecondaryText());
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(dp(22), dp(26), dp(22), dp(26));
+            sheet.addView(empty, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(116)));
+        } else {
+            ScrollView scroll = new ScrollView(this);
+            scroll.setVerticalScrollBarEnabled(false);
+            LinearLayout list = new LinearLayout(this);
+            list.setOrientation(LinearLayout.VERTICAL);
+            scroll.addView(list, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            for (File book : annotatedBooks) {
+                java.util.List<ReaderAnnotationStore.Annotation> annotations = ReaderAnnotationStore.load(prefs, book.getName());
+                int notes = 0;
+                for (ReaderAnnotationStore.Annotation a : annotations)
+                    if (a.note != null && !a.note.trim().isEmpty()) notes++;
+                int highlights = annotations.size();
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(9), dp(7), dp(9), dp(7));
+                row.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
+                row.setClickable(true);
+
+                ImageView cover = new ImageView(this);
+                cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                String initial = cachedLibraryTitle(book);
+                cover.setImageBitmap(placeholderBitmap(initial, 120, 170));
+                cover.setBackground(roundRect(Color.rgb(235, 237, 242), dp(9), 0, 0));
+                cover.setClipToOutline(true);
+                row.addView(cover, new LinearLayout.LayoutParams(dp(48), dp(66)));
+
+                LinearLayout copy = new LinearLayout(this);
+                copy.setOrientation(LinearLayout.VERTICAL);
+                copy.setPadding(dp(10), 0, dp(6), 0);
+                TextView title = new TextView(this);
+                title.setText(initial);
+                title.setTextSize(12.5f);
+                title.setMaxLines(2);
+                title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                title.setTextColor(themePrimaryText());
+                applyBookTitleTypeface(title);
+                copy.addView(title);
+                TextView counts = new TextView(this);
+                counts.setText(notes + (notes == 1 ? " note" : " notes") + "  ·  " + highlights + (highlights == 1 ? " highlight" : " highlights"));
+                counts.setTextSize(9.5f);
+                counts.setTextColor(themeSecondaryText());
+                counts.setPadding(0, dp(4), 0, 0);
+                copy.addView(counts);
+                row.addView(copy, new LinearLayout.LayoutParams(0, dp(66), 1f));
+
+                TextView arrow = new TextView(this);
+                arrow.setText("›");
+                arrow.setTextSize(21);
+                arrow.setTextColor(themeSecondaryText());
+                arrow.setGravity(Gravity.CENTER);
+                row.addView(arrow, new LinearLayout.LayoutParams(dp(28), dp(54)));
+                TextView dummyMeta = new TextView(this);
+                loadBookVisual(book, cover, title, dummyMeta);
+                row.setOnClickListener(v -> { dialog.dismiss(); openBookAnnotations(book); });
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80));
+                rowLp.topMargin = dp(7);
+                list.addView(row, rowLp);
+            }
+            int h = Math.min(dp(414), Math.max(dp(104), annotatedBooks.size() * dp(87)));
+            sheet.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Notes & highlights")
-                .setItems(labels.toArray(new String[0]), (dialog, which) -> openBookAnnotations(annotatedBooks.get(which)))
-                .setNegativeButton("Close", null)
-                .show();
+        presentBottomSheet(dialog, sheet, 0.84f);
+    }
+
+    private LinearLayout premiumSheet(String title, String subtitle, android.app.Dialog dialog) {
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(dp(18), dp(10), dp(18), dp(20));
+        sheet.setBackground(roundRect(themeCardSurface(), dp(28), dp(1), themeStroke()));
+        sheet.setElevation(dp(14));
+
+        TextView handle = new TextView(this);
+        handle.setBackground(roundRect(themeSecondaryText(), dp(2), 0, 0));
+        LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(54), dp(4));
+        handleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        handleLp.bottomMargin = dp(12);
+        sheet.addView(handle, handleLp);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView heading = new TextView(this);
+        heading.setText(title);
+        heading.setTextSize(21);
+        heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        heading.setTextColor(themePrimaryText());
+        copy.addView(heading);
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView sub = new TextView(this);
+            sub.setText(subtitle);
+            sub.setTextSize(10.5f);
+            sub.setTextColor(themeSecondaryText());
+            sub.setPadding(0, dp(2), 0, 0);
+            copy.addView(sub);
+        }
+        head.addView(copy, new LinearLayout.LayoutParams(0, dp(56), 1f));
+        TextView close = iconButton("×");
+        close.setTextSize(20);
+        close.setOnClickListener(v -> dialog.dismiss());
+        head.addView(close, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        sheet.addView(head, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58)));
+        return sheet;
+    }
+
+    private void presentBottomSheet(android.app.Dialog dialog, View sheet, float maxFraction) {
+        dialog.setContentView(sheet);
+        dialog.show();
+        android.view.Window window = dialog.getWindow();
+        if (window == null) return;
+        window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        window.setDimAmount(0.38f);
+        window.setGravity(Gravity.BOTTOM);
+        int sw = getResources().getDisplayMetrics().widthPixels;
+        int sh = getResources().getDisplayMetrics().heightPixels;
+        window.setLayout(Math.min(sw, dp(720)), ViewGroup.LayoutParams.WRAP_CONTENT);
+        android.view.WindowManager.LayoutParams attrs = window.getAttributes();
+        attrs.width = Math.min(sw, dp(720));
+        attrs.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        attrs.gravity = Gravity.BOTTOM;
+        window.setAttributes(attrs);
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
+            window.setBackgroundBlurRadius(dp(18));
+        }
     }
 
     private void openBookAnnotations(File file) {
@@ -980,24 +1400,71 @@ public class MainActivity extends Activity {
     }
 
     private void updateReadingStatsSummary() {
-        if (statsSummaryView == null || prefs == null) return;
+        if (prefs == null) return;
         ReadingStatsStore.Snapshot stats = ReadingStatsStore.snapshot(prefs);
-        String streak = stats.currentStreak == 1 ? "1 day streak" : stats.currentStreak + " day streak";
-        statsSummaryView.setText("Today " + formatReadingTime(stats.todayMs) + "  ·  " + streak + "  ·  Total " + formatReadingTime(stats.totalMs));
+        if (statsSummaryView != null) statsSummaryView.setText(formatReadingTime(stats.todayMs));
+        if (streakSummaryView != null)
+            streakSummaryView.setText(stats.currentStreak + (stats.currentStreak == 1 ? " day" : " days"));
     }
 
     private void showReadingStatsDialog() {
         ReadingStatsStore.Snapshot stats = ReadingStatsStore.snapshot(prefs);
-        String message = "Today\n" + formatReadingTimeLong(stats.todayMs) +
-                "\n\nCurrent streak\n" + stats.currentStreak + (stats.currentStreak == 1 ? " day" : " days") +
-                "\n\nLongest streak\n" + stats.longestStreak + (stats.longestStreak == 1 ? " day" : " days") +
-                "\n\nActive reading days\n" + stats.activeDays +
-                "\n\nTotal reading time\n" + formatReadingTimeLong(stats.totalMs);
-        new AlertDialog.Builder(this)
-                .setTitle("Reading statistics")
-                .setMessage(message)
-                .setPositiveButton("Done", null)
-                .show();
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+
+        LinearLayout sheet = premiumSheet("Reading statistics", "Your reading activity", dialog);
+        sheet.addView(statSheetRow("◷", "Today", "Time spent reading today", formatReadingTimeLong(stats.todayMs), themeAccent()));
+        sheet.addView(statSheetRow("♨", "Current streak", "Keep the reading habit going",
+                stats.currentStreak + (stats.currentStreak == 1 ? " day" : " days"), Color.rgb(231, 111, 55)));
+        sheet.addView(statSheetRow("♛", "Longest streak", "Your best reading streak so far",
+                stats.longestStreak + (stats.longestStreak == 1 ? " day" : " days"), Color.rgb(205, 151, 43)));
+        sheet.addView(statSheetRow("□", "Active reading days", "Days with reading activity",
+                stats.activeDays + (stats.activeDays == 1 ? " day" : " days"), Color.rgb(54, 157, 85)));
+        sheet.addView(statSheetRow("◷", "Total reading time", "All time spent reading",
+                formatReadingTimeLong(stats.totalMs), themeAccent()));
+        presentBottomSheet(dialog, sheet, 0.82f);
+    }
+
+    private View statSheetRow(String iconText, String title, String subtitle, String value, int accent) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(5), dp(10), dp(5));
+        row.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
+        TextView icon = new TextView(this);
+        icon.setText(iconText);
+        icon.setTextSize(19);
+        icon.setTextColor(accent);
+        icon.setGravity(Gravity.CENTER);
+        icon.setBackground(roundRect(themeCardSurface(), dp(14), 0, 0));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setPadding(dp(10), 0, dp(8), 0);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(13.5f);
+        t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        t.setTextColor(themePrimaryText());
+        copy.addView(t);
+        TextView sub = new TextView(this);
+        sub.setText(subtitle);
+        sub.setTextSize(9.5f);
+        sub.setTextColor(themeSecondaryText());
+        copy.addView(sub);
+        row.addView(copy, new LinearLayout.LayoutParams(0, dp(46), 1f));
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextSize(13f);
+        v.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        v.setTextColor(accent);
+        v.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        row.addView(v, new LinearLayout.LayoutParams(dp(112), dp(46)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58));
+        lp.topMargin = dp(7);
+        row.setLayoutParams(lp);
+        return row;
     }
 
     private String formatReadingTime(long milliseconds) {
@@ -1017,6 +1484,87 @@ public class MainActivity extends Activity {
         String result = hours + (hours == 1L ? " hour" : " hours");
         if (rest > 0L) result += " " + rest + (rest == 1L ? " minute" : " minutes");
         return result;
+    }
+
+    private void showLibraryFilterSheet() {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Filter & sort", "Library view and filters", dialog);
+
+        TextView viewTitle = sheetSectionLabel("View");
+        sheet.addView(viewTitle);
+        LinearLayout viewRow = new LinearLayout(this);
+        viewRow.setOrientation(LinearLayout.HORIZONTAL);
+        TextView grid = filterChoice("Grid", gridMode);
+        TextView list = filterChoice("List", !gridMode);
+        grid.setOnClickListener(v -> { if (!gridMode) { gridMode = true; prefs.edit().putBoolean("library_grid", true).apply(); configureLibraryLayout(); refreshLibrary(); dialog.dismiss(); } });
+        list.setOnClickListener(v -> { if (gridMode) { gridMode = false; prefs.edit().putBoolean("library_grid", false).apply(); configureLibraryLayout(); refreshLibrary(); dialog.dismiss(); } });
+        LinearLayout.LayoutParams half1 = new LinearLayout.LayoutParams(0, dp(40), 1f); half1.rightMargin = dp(5);
+        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0, dp(40), 1f); half2.leftMargin = dp(5);
+        viewRow.addView(grid, half1); viewRow.addView(list, half2); sheet.addView(viewRow);
+
+        sheet.addView(sheetSectionLabel("Status"));
+        LinearLayout status = new LinearLayout(this);
+        status.setOrientation(LinearLayout.HORIZONTAL);
+        String[] statusNames = {"All", "Reading", "Unread", "Finished"};
+        String[] statusValues = {"all", "reading", "unread", "finished"};
+        for (int i = 0; i < statusNames.length; i++) {
+            final String value = statusValues[i];
+            TextView chip = filterChoice(statusNames[i], value.equals(libraryStatusFilter));
+            chip.setOnClickListener(v -> { libraryStatusFilter = value; refreshLibrary(); dialog.dismiss(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(38), 1f);
+            if (i > 0) lp.leftMargin = dp(5);
+            status.addView(chip, lp);
+        }
+        sheet.addView(status);
+
+        sheet.addView(sheetSectionLabel("Shelves"));
+        java.util.List<String> shelves = LibraryShelfStore.shelves(prefs);
+        HorizontalScrollView shelfScroll = new HorizontalScrollView(this);
+        shelfScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout shelfRow = new LinearLayout(this);
+        shelfRow.setOrientation(LinearLayout.HORIZONTAL);
+        TextView allShelf = filterChoice("All", shelfFilter.isEmpty());
+        allShelf.setOnClickListener(v -> { shelfFilter = ""; refreshLibrary(); dialog.dismiss(); });
+        shelfRow.addView(allShelf, new LinearLayout.LayoutParams(dp(68), dp(38)));
+        for (String shelf : shelves) {
+            TextView chip = filterChoice(shelf, shelf.equals(shelfFilter));
+            chip.setOnClickListener(v -> { shelfFilter = shelf; refreshLibrary(); dialog.dismiss(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
+            lp.leftMargin = dp(6); shelfRow.addView(chip, lp);
+        }
+        TextView newShelf = filterChoice("＋ New", false);
+        newShelf.setOnClickListener(v -> { dialog.dismiss(); showCreateShelfDialog(null); });
+        LinearLayout.LayoutParams newLp = new LinearLayout.LayoutParams(dp(82), dp(38)); newLp.leftMargin = dp(6); shelfRow.addView(newShelf, newLp);
+        shelfScroll.addView(shelfRow);
+        sheet.addView(shelfScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+
+        presentBottomSheet(dialog, sheet, 0.82f);
+    }
+
+    private TextView sheetSectionLabel(String value) {
+        TextView label = new TextView(this);
+        label.setText(value);
+        label.setTextSize(11f);
+        label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        label.setTextColor(themeSecondaryText());
+        label.setPadding(dp(1), dp(10), dp(1), dp(6));
+        return label;
+    }
+
+    private TextView filterChoice(String value, boolean selected) {
+        TextView chip = new TextView(this);
+        chip.setText(value);
+        chip.setTextSize(11.5f);
+        chip.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+        chip.setTextColor(selected ? themeAccent() : themePrimaryText());
+        chip.setGravity(Gravity.CENTER);
+        chip.setPadding(dp(12), 0, dp(12), 0);
+        chip.setSingleLine(true);
+        chip.setBackground(roundRect(selected ? themeSelectedSurface() : themeControlSurface(),
+                dp(17), dp(1), selected ? themeAccent() : themeStroke()));
+        return chip;
     }
 
     private TextView libraryFilterChip(String label) {
@@ -1079,92 +1627,402 @@ public class MainActivity extends Activity {
 
     private void showShelvesDialog() {
         java.util.List<String> shelves = LibraryShelfStore.shelves(prefs);
-        String[] labels = new String[shelves.size() + 2];
-        labels[0] = "All shelves";
-        for (int i = 0; i < shelves.size(); i++) {
-            String name = shelves.get(i);
-            labels[i + 1] = name + " · " + LibraryShelfStore.count(prefs, name) + " books";
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Shelves", shelves.isEmpty() ? "Create your first shelf" : shelves.size() + " shelves", dialog);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(list, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        list.addView(premiumChoiceRow("All shelves", libraryDir.listFiles(file -> file.isFile() && isBook(file.getName())) == null ? "" : "Show every book", shelfFilter.isEmpty(), () -> {
+            shelfFilter = "";
+            refreshLibrary();
+            dialog.dismiss();
+        }));
+        for (String shelf : shelves) {
+            int count = LibraryShelfStore.count(prefs, shelf);
+            list.addView(premiumChoiceRow(shelf, count + (count == 1 ? " book" : " books"), shelf.equals(shelfFilter), () -> {
+                shelfFilter = shelf;
+                refreshLibrary();
+                dialog.dismiss();
+            }));
         }
-        labels[labels.length - 1] = "＋ New shelf";
-        new AlertDialog.Builder(this)
-                .setTitle("Shelves")
-                .setItems(labels, (dialog, which) -> {
-                    if (which == 0) {
-                        shelfFilter = "";
-                        refreshLibrary();
-                    } else if (which == labels.length - 1) {
-                        showCreateShelfDialog(null);
-                    } else {
-                        shelfFilter = shelves.get(which - 1);
-                        refreshLibrary();
-                    }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        list.addView(premiumChoiceRow("＋ New shelf", "Create a collection", false, () -> {
+            dialog.dismiss();
+            showCreateShelfDialog(null);
+        }));
+        int h = Math.min(dp(420), Math.max(dp(120), (shelves.size() + 2) * dp(58)));
+        sheet.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
+        presentBottomSheet(dialog, sheet, 0.82f);
+    }
+
+    private View premiumChoiceRow(String titleText, String subtitleText, boolean selected, Runnable action) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(4), dp(10), dp(4));
+        row.setBackground(roundRect(selected ? themeSelectedSurface() : themeControlSurface(),
+                dp(15), dp(1), selected ? themeAccent() : themeStroke()));
+        row.setClickable(true);
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText(titleText);
+        title.setTextSize(13f);
+        title.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+        title.setTextColor(selected ? themeAccent() : themePrimaryText());
+        copy.addView(title);
+        if (subtitleText != null && !subtitleText.isEmpty()) {
+            TextView sub = new TextView(this);
+            sub.setText(subtitleText);
+            sub.setTextSize(9.5f);
+            sub.setTextColor(themeSecondaryText());
+            copy.addView(sub);
+        }
+        row.addView(copy, new LinearLayout.LayoutParams(0, dp(46), 1f));
+        TextView mark = new TextView(this);
+        mark.setText(selected ? "✓" : "›");
+        mark.setTextSize(selected ? 17 : 20);
+        mark.setTextColor(selected ? themeAccent() : themeSecondaryText());
+        mark.setGravity(Gravity.CENTER);
+        row.addView(mark, new LinearLayout.LayoutParams(dp(28), dp(44)));
+        row.setOnClickListener(v -> action.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        lp.topMargin = dp(6);
+        row.setLayoutParams(lp);
+        return row;
     }
 
     private void showCreateShelfDialog(File bookToAdd) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("New shelf", "Keep books organized your way", dialog);
         EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setHint("Shelf name");
+        input.setTextSize(14f);
+        input.setTextColor(themePrimaryText());
+        input.setHintTextColor(themeSecondaryText());
         input.setPadding(dp(14), 0, dp(14), 0);
-        new AlertDialog.Builder(this)
-                .setTitle("New shelf")
-                .setView(input)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Create", (dialog, which) -> {
-                    String name = input.getText().toString().trim();
-                    if (!LibraryShelfStore.createShelf(prefs, name)) {
-                        Toast.makeText(this, "Enter a shelf name", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    if (bookToAdd != null) LibraryShelfStore.setMembership(prefs, name, bookToAdd.getName(), true);
-                    shelfFilter = name;
-                    refreshLibrary();
-                    maybeAutoGoogleSync();
-                })
-                .show();
+        input.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
+        LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        inputLp.topMargin = dp(5);
+        sheet.addView(input, inputLp);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView cancel = filterChoice("Cancel", false);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        TextView create = filterChoice("Create", true);
+        create.setTextColor(Color.WHITE);
+        create.setBackground(roundRect(themeAccent(), dp(17), 0, 0));
+        create.setOnClickListener(v -> {
+            String name = input.getText().toString().trim();
+            if (!LibraryShelfStore.createShelf(prefs, name)) {
+                Toast.makeText(this, "Enter a shelf name", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (bookToAdd != null) LibraryShelfStore.setMembership(prefs, name, bookToAdd.getName(), true);
+            shelfFilter = name;
+            dialog.dismiss();
+            refreshLibrary();
+            maybeAutoGoogleSync();
+        });
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(94), dp(40)); cancelLp.rightMargin = dp(8);
+        actions.addView(cancel, cancelLp);
+        actions.addView(create, new LinearLayout.LayoutParams(dp(104), dp(40)));
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)); actionsLp.topMargin = dp(9);
+        sheet.addView(actions, actionsLp);
+        presentBottomSheet(dialog, sheet, 0.62f);
+        input.requestFocus();
     }
 
     private void showBookActions(File file) {
-        if (file == null) return;
-        String[] actions = {"Manage shelves", "Remove from WoW Reader"};
-        new AlertDialog.Builder(this)
-                .setTitle(cachedLibraryTitle(file))
-                .setItems(actions, (dialog, which) -> {
-                    if (which == 0) showBookShelves(file);
-                    else confirmDelete(file);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        showBookActions(file, floatingAdd != null ? floatingAdd : libraryRecycler);
+    }
+
+    private void showBookActions(File file, View anchor) {
+        if (file == null || anchor == null) return;
+        final android.widget.PopupWindow popup = new android.widget.PopupWindow(this);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(8), dp(8), dp(8), dp(8));
+        panel.setBackground(roundRect(themeCardSurface(), dp(18), dp(1), themeStroke()));
+        panel.setElevation(dp(12));
+        addCompactPopupAction(panel, popup, "▷", "Continue reading", false, () -> openBook(file));
+        addCompactPopupAction(panel, popup, "▥", "Add to shelf", false, () -> showBookShelves(file));
+        addCompactPopupAction(panel, popup, "✎", "Notes & highlights", false, () -> openBookAnnotations(file));
+        addCompactPopupAction(panel, popup, "Aa", "Reading settings", false, () -> openBookSettings(file));
+        addCompactPopupAction(panel, popup, "↗", "Share", false, () -> shareBookReference(file));
+        addCompactPopupAction(panel, popup, "⌫", "Delete book", true, () -> confirmDelete(file));
+        int width = dp(238);
+        popup.setContentView(panel);
+        popup.setWidth(width);
+        popup.setHeight(ViewGroup.LayoutParams.WRAP_CONTENT);
+        popup.setFocusable(true);
+        popup.setOutsideTouchable(true);
+        popup.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        if (android.os.Build.VERSION.SDK_INT >= 21) popup.setElevation(dp(12));
+
+        int[] loc = new int[2];
+        anchor.getLocationOnScreen(loc);
+        int sw = getResources().getDisplayMetrics().widthPixels;
+        int sh = getResources().getDisplayMetrics().heightPixels;
+        int estimateH = dp(292);
+        int x = Math.max(dp(8), Math.min(sw - width - dp(8), loc[0] + anchor.getWidth() - width));
+        int y = loc[1] + anchor.getHeight() + dp(3);
+        if (y + estimateH > sh - dp(12)) y = Math.max(dp(68), loc[1] - estimateH - dp(3));
+        popup.showAtLocation(anchor, Gravity.TOP | Gravity.START, x, y);
+    }
+
+    private void addCompactPopupAction(LinearLayout panel, android.widget.PopupWindow popup,
+                                       String iconText, String label, boolean danger, Runnable action) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(8), 0, dp(6), 0);
+        row.setClickable(true);
+        if (danger) row.setBackground(roundRect(isBlackAppTheme() ? Color.rgb(55, 35, 38) : Color.rgb(255, 247, 247), dp(12), 0, 0));
+        TextView icon = new TextView(this);
+        icon.setText(iconText);
+        icon.setTextSize(16);
+        icon.setTextColor(danger ? Color.rgb(211, 65, 65) : themeAccent());
+        icon.setGravity(Gravity.CENTER);
+        row.addView(icon, new LinearLayout.LayoutParams(dp(36), dp(42)));
+        TextView textView = new TextView(this);
+        textView.setText(label);
+        textView.setTextSize(12.5f);
+        textView.setTextColor(danger ? Color.rgb(211, 65, 65) : themePrimaryText());
+        textView.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(textView, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        TextView arrow = new TextView(this);
+        arrow.setText("›");
+        arrow.setTextSize(18);
+        arrow.setTextColor(danger ? Color.rgb(211, 65, 65) : themeSecondaryText());
+        arrow.setGravity(Gravity.CENTER);
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(24), dp(42)));
+        row.setOnClickListener(v -> { popup.dismiss(); action.run(); });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        if (panel.getChildCount() > 0) lp.topMargin = dp(2);
+        panel.addView(row, lp);
+    }
+
+    private void openBookSettings(File file) {
+        if (file == null || !file.isFile()) return;
+        prefs.edit().putLong("last_opened_" + file.getName(), System.currentTimeMillis()).apply();
+        Intent i = new Intent(this, BookReaderActivity.class);
+        i.putExtra("path", file.getAbsolutePath());
+        i.putExtra("open_reader_settings", true);
+        startActivity(i);
+        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
+    }
+
+    private void shareBookReference(File file) {
+        try {
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("text/plain");
+            String author = cachedLibraryAuthor(file);
+            String text = cachedLibraryTitle(file) + (author.isEmpty() ? "" : " — " + author) + "\nShared from WoW Reader";
+            send.putExtra(Intent.EXTRA_TEXT, text);
+            startActivity(Intent.createChooser(send, "Share book"));
+        } catch (Exception e) {
+            Toast.makeText(this, "Unable to share", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void showBookShelves(File file) {
         java.util.List<String> shelves = LibraryShelfStore.shelves(prefs);
         if (shelves.isEmpty()) {
-            new AlertDialog.Builder(this)
-                    .setTitle("No shelves yet")
-                    .setMessage("Create a shelf and add this book to it.")
-                    .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Create shelf", (d, w) -> showCreateShelfDialog(file))
-                    .show();
+            showCreateShelfDialog(file);
             return;
         }
-        String[] labels = shelves.toArray(new String[0]);
-        boolean[] checked = new boolean[labels.length];
-        for (int i = 0; i < labels.length; i++) checked[i] = LibraryShelfStore.contains(prefs, labels[i], file.getName());
-        new AlertDialog.Builder(this)
-                .setTitle("Add to shelves")
-                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> checked[which] = isChecked)
-                .setNeutralButton("New shelf", (dialog, which) -> showCreateShelfDialog(file))
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Done", (dialog, which) -> {
-                    for (int i = 0; i < labels.length; i++)
-                        LibraryShelfStore.setMembership(prefs, labels[i], file.getName(), checked[i]);
-                    refreshLibrary();
-                    maybeAutoGoogleSync();
-                })
-                .show();
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Add to shelves", cachedLibraryTitle(file), dialog);
+        boolean[] checked = new boolean[shelves.size()];
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < shelves.size(); i++) {
+            final int which = i;
+            String shelf = shelves.get(i);
+            checked[i] = LibraryShelfStore.contains(prefs, shelf, file.getName());
+            TextView row = new TextView(this);
+            row.setText((checked[i] ? "✓  " : "○  ") + shelf + "   ·   " + LibraryShelfStore.count(prefs, shelf));
+            row.setTextSize(13f);
+            row.setTextColor(checked[i] ? themeAccent() : themePrimaryText());
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(14), 0, dp(12), 0);
+            row.setBackground(roundRect(themeControlSurface(), dp(15), dp(1), checked[i] ? themeAccent() : themeStroke()));
+            row.setOnClickListener(v -> {
+                checked[which] = !checked[which];
+                ((TextView)v).setText((checked[which] ? "✓  " : "○  ") + shelves.get(which) + "   ·   " + LibraryShelfStore.count(prefs, shelves.get(which)));
+                ((TextView)v).setTextColor(checked[which] ? themeAccent() : themePrimaryText());
+                ((TextView)v).setBackground(roundRect(themeControlSurface(), dp(15), dp(1), checked[which] ? themeAccent() : themeStroke()));
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+            lp.topMargin = dp(6);
+            list.addView(row, lp);
+        }
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(list);
+        sheet.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.min(dp(350), shelves.size() * dp(52) + dp(6))));
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView newShelf = filterChoice("＋ New shelf", false);
+        newShelf.setOnClickListener(v -> { dialog.dismiss(); showCreateShelfDialog(file); });
+        TextView done = filterChoice("Done", true);
+        done.setTextColor(Color.WHITE);
+        done.setBackground(roundRect(themeAccent(), dp(17), 0, 0));
+        done.setOnClickListener(v -> {
+            for (int i = 0; i < shelves.size(); i++)
+                LibraryShelfStore.setMembership(prefs, shelves.get(i), file.getName(), checked[i]);
+            dialog.dismiss();
+            refreshLibrary();
+            maybeAutoGoogleSync();
+        });
+        LinearLayout.LayoutParams newLp = new LinearLayout.LayoutParams(dp(116), dp(40)); newLp.rightMargin = dp(8);
+        actions.addView(newShelf, newLp);
+        actions.addView(done, new LinearLayout.LayoutParams(dp(90), dp(40)));
+        LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)); actionLp.topMargin = dp(8);
+        sheet.addView(actions, actionLp);
+        presentBottomSheet(dialog, sheet, 0.84f);
+    }
+
+    private View buildLibraryOnlyHeader() {
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setPadding(dp(14), dp(12), dp(14), dp(5));
+
+        LinearLayout brandRow = new LinearLayout(this);
+        brandRow.setOrientation(LinearLayout.HORIZONTAL);
+        brandRow.setGravity(Gravity.CENTER_VERTICAL);
+        brandRow.setPadding(dp(4), 0, dp(2), 0);
+
+        TextView brand = new TextView(this);
+        brand.setText("WoW");
+        brand.setTextSize(34);
+        brand.setTextColor(themePrimaryText());
+        brand.setTypeface(Typeface.create(Typeface.SERIF, Typeface.BOLD));
+        brand.setGravity(Gravity.CENTER_VERTICAL);
+        brandRow.addView(brand, new LinearLayout.LayoutParams(0, dp(58), 1f));
+
+        accountButton = new ProfileAvatarView(this);
+        accountButton.setContentDescription("Google account & cloud library");
+        accountButton.setOnClickListener(v -> showAccountMenu());
+        brandRow.addView(accountButton, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        updateAccountButton();
+
+        themeButton = iconButton("navy".equals(appTheme) ? "✦" : ("custom".equals(appTheme) ? "◆" : "◐"));
+        themeButton.setTextSize(16);
+        themeButton.setContentDescription("App theme");
+        themeButton.setOnClickListener(v -> showAppThemeDialog());
+        LinearLayout.LayoutParams themeLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        themeLp.leftMargin = dp(8);
+        brandRow.addView(themeButton, themeLp);
+
+        viewModeButton = iconButton(gridMode ? "▦" : "☷");
+        viewModeButton.setTextSize(16);
+        viewModeButton.setContentDescription("Change library view");
+        viewModeButton.setOnClickListener(v -> {
+            gridMode = !gridMode;
+            prefs.edit().putBoolean("library_grid", gridMode).apply();
+            viewModeButton.setText(gridMode ? "▦" : "☷");
+            configureLibraryLayout();
+            if (libraryAdapter != null) libraryAdapter.notifyDataSetChanged();
+        });
+        LinearLayout.LayoutParams viewLp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        viewLp.leftMargin = dp(8);
+        brandRow.addView(viewModeButton, viewLp);
+        outer.addView(brandRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("Library");
+        title.setTextSize(22);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        titleRow.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        TextView home = new TextView(this);
+        home.setText("Home  ›");
+        home.setTextSize(11.5f);
+        home.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        home.setTextColor(themeAccent());
+        home.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        home.setOnClickListener(v -> switchToHome());
+        titleRow.addView(home, new LinearLayout.LayoutParams(dp(78), dp(42)));
+        outer.addView(titleRow);
+
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setPadding(dp(2), 0, dp(2), 0);
+        searchInput = new EditText(this);
+        searchInput.setSingleLine(true);
+        searchInput.setHint("Search title or author");
+        searchInput.setTextSize(14.5f);
+        searchInput.setTextColor(themePrimaryText());
+        searchInput.setHintTextColor(themeSecondaryText());
+        searchInput.setPadding(dp(17), 0, dp(17), 0);
+        searchInput.setBackground(roundRect(themeSearchSurface(), dp(25), dp(1), themeStroke()));
+        if (!searchQuery.isEmpty()) {
+            searchInput.setText(searchQuery);
+            searchInput.setSelection(searchInput.length());
+        }
+        searchInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                searchQuery = s.toString().trim().toLowerCase(Locale.ROOT);
+                refreshLibrary();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        searchRow.addView(searchInput, new LinearLayout.LayoutParams(0, dp(50), 1f));
+        TextView filter = iconButton("⌁");
+        filter.setTextSize(19);
+        filter.setContentDescription("Filter and sort library");
+        filter.setOnClickListener(v -> showLibraryFilterSheet());
+        LinearLayout.LayoutParams filterLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+        filterLp.leftMargin = dp(8);
+        searchRow.addView(filter, filterLp);
+        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        searchLp.topMargin = dp(4);
+        outer.addView(searchRow, searchLp);
+        return outer;
+    }
+
+    private View buildHomeBooksSectionHeader() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(20), dp(10), dp(18), dp(8));
+        TextView title = new TextView(this);
+        title.setText("Recent library");
+        title.setTextSize(17);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(themePrimaryText());
+        row.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        TextView all = new TextView(this);
+        all.setText("View library  ›");
+        all.setTextSize(11.5f);
+        all.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        all.setTextColor(themeAccent());
+        all.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        all.setOnClickListener(v -> switchToLibrary());
+        row.addView(all, new LinearLayout.LayoutParams(dp(112), dp(42)));
+        return row;
     }
 
     private View buildLibrarySectionHeader() {
@@ -1248,20 +2106,33 @@ public class MainActivity extends Activity {
             if (ga != gb) return Integer.compare(ga, gb);
             return ga == 0 ? myanmarCollator.compare(a, b) : englishCollator.compare(a, b);
         });
-        String[] labels = new String[authors.size() + 1];
-        labels[0] = "All authors · " + files.length + " books";
-        for (int i = 0; i < authors.size(); i++) {
-            String name = authors.get(i);
-            labels[i + 1] = name + " · " + counts.get(name) + (counts.get(name) == 1 ? " book" : " books");
+
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Authors", authors.isEmpty() ? "No author metadata yet" : authors.size() + " authors", dialog);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(list);
+        final int totalBooks = files.length;
+        list.addView(premiumChoiceRow("All authors", totalBooks + (totalBooks == 1 ? " book" : " books"), authorFilter.isEmpty(), () -> {
+            authorFilter = "";
+            dialog.dismiss();
+            refreshLibrary();
+        }));
+        for (String author : authors) {
+            int count = counts.get(author);
+            list.addView(premiumChoiceRow(author, count + (count == 1 ? " book" : " books"), author.equals(authorFilter), () -> {
+                authorFilter = author;
+                dialog.dismiss();
+                refreshLibrary();
+            }));
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Authors")
-                .setItems(labels, (dialog, which) -> {
-                    authorFilter = which == 0 ? "" : authors.get(which - 1);
-                    refreshLibrary();
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        int h = Math.min(dp(430), Math.max(dp(110), (authors.size() + 1) * dp(58)));
+        sheet.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
+        presentBottomSheet(dialog, sheet, 0.84f);
         warmSortMetadataIfNeeded(files);
     }
 
@@ -1273,26 +2144,23 @@ public class MainActivity extends Activity {
     }
 
     private void showSortDialog() {
-        String[] labels = {
-                "Recently added",
-                "Recently opened",
-                "Title · က–အ / A–Z",
-                "Title · အ–က / Z–A"
-        };
+        String[] labels = {"Recently added", "Recently opened", "Title · က–အ / A–Z", "Title · အ–က / Z–A"};
         String[] values = {"added", "opened", "title_asc", "title_desc"};
-        int selected = "opened".equals(sortMode) ? 1 :
-                ("title_asc".equals(sortMode) ? 2 : ("title_desc".equals(sortMode) ? 3 : 0));
-        new AlertDialog.Builder(this)
-                .setTitle("Sort library")
-                .setSingleChoiceItems(labels, selected, (dialog, which) -> {
-                    sortMode = values[which];
-                    prefs.edit().putString("library_sort", sortMode).apply();
-                    if (sortButton != null) sortButton.setText(sortButtonLabel());
-                    refreshLibrary();
-                    dialog.dismiss();
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Sort library", "Choose how books are ordered", dialog);
+        for (int i = 0; i < labels.length; i++) {
+            final String value = values[i];
+            sheet.addView(premiumChoiceRow(labels[i], "", value.equals(sortMode), () -> {
+                sortMode = value;
+                prefs.edit().putString("library_sort", sortMode).apply();
+                if (sortButton != null) sortButton.setText(sortButtonLabel());
+                dialog.dismiss();
+                refreshLibrary();
+            }));
+        }
+        presentBottomSheet(dialog, sheet, 0.72f);
     }
 
     private View buildEmptyState() {
@@ -1306,75 +2174,109 @@ public class MainActivity extends Activity {
 
     private boolean isBlackAppTheme() { return "black".equals(appTheme); }
     private boolean isNavyAppTheme() { return "navy".equals(appTheme); }
+    private boolean isCustomAppTheme() { return "custom".equals(appTheme); }
+    private AppThemePalette customPalette() { return AppThemePalette.custom(prefs); }
+    private boolean isDarkAppTheme() {
+        if (isBlackAppTheme() || isNavyAppTheme()) return true;
+        return isCustomAppTheme() && !customPalette().darkSystemIcons;
+    }
+    private boolean themeUsesDarkSystemIcons() { return !isDarkAppTheme(); }
 
     private int themeBackground() {
+        if (isCustomAppTheme()) return customPalette().background;
         if (isBlackAppTheme()) return Color.rgb(12, 13, 16);
         if (isNavyAppTheme()) return Color.rgb(3, 28, 48);
         return Color.rgb(247, 248, 251);
     }
 
     private int themeCardSurface() {
+        if (isCustomAppTheme()) return customPalette().card;
         if (isBlackAppTheme()) return Color.rgb(27, 29, 34);
         if (isNavyAppTheme()) return Color.rgb(7, 44, 70);
         return Color.WHITE;
     }
 
     private int themeControlSurface() {
+        if (isCustomAppTheme()) return customPalette().control;
         if (isBlackAppTheme()) return Color.rgb(35, 37, 43);
         if (isNavyAppTheme()) return Color.rgb(10, 51, 79);
         return Color.argb(232, 255, 255, 255);
     }
 
     private int themeSearchSurface() {
+        if (isCustomAppTheme()) return customPalette().control;
         if (isBlackAppTheme()) return Color.rgb(28, 30, 35);
         if (isNavyAppTheme()) return Color.rgb(6, 42, 67);
         return Color.argb(232, 255, 255, 255);
     }
 
     private int themePrimaryText() {
+        if (isCustomAppTheme()) return customPalette().primary;
         return (isBlackAppTheme() || isNavyAppTheme()) ? Color.rgb(244, 247, 250) : Color.rgb(31, 34, 40);
     }
 
     private int themeSecondaryText() {
+        if (isCustomAppTheme()) return customPalette().secondary;
         if (isBlackAppTheme()) return Color.rgb(178, 183, 192);
         if (isNavyAppTheme()) return Color.rgb(165, 196, 213);
         return Color.rgb(105, 110, 122);
     }
 
     private int themeAccent() {
+        if (isCustomAppTheme()) return customPalette().accent;
         if (isBlackAppTheme()) return Color.rgb(151, 166, 255);
         if (isNavyAppTheme()) return Color.rgb(239, 194, 91);
         return Color.rgb(82, 82, 214);
     }
 
     private int themeStroke() {
+        if (isCustomAppTheme()) return customPalette().stroke;
         if (isBlackAppTheme()) return Color.rgb(55, 59, 68);
         if (isNavyAppTheme()) return Color.rgb(26, 91, 120);
         return Color.rgb(224, 227, 234);
     }
 
     private int themeTrackColor() {
+        if (isCustomAppTheme()) return AppThemePalette.blend(customPalette().control, customPalette().background, 0.45f);
         if (isBlackAppTheme()) return Color.rgb(50, 53, 61);
         if (isNavyAppTheme()) return Color.rgb(18, 67, 91);
         return Color.rgb(236, 238, 243);
     }
 
     private int[] themeHeroColors() {
+        if (isCustomAppTheme()) {
+            AppThemePalette p = customPalette();
+            return p.darkSystemIcons
+                    ? new int[]{AppThemePalette.blend(p.accent, p.background, 0.90f), p.card}
+                    : new int[]{p.control, p.background};
+        }
         if (isBlackAppTheme()) return new int[]{Color.rgb(30, 32, 39), Color.rgb(19, 20, 25)};
         if (isNavyAppTheme()) return new int[]{Color.rgb(4, 45, 73), Color.rgb(2, 29, 51), Color.rgb(4, 52, 74)};
         return new int[]{Color.rgb(239, 243, 255), Color.rgb(255, 247, 242)};
     }
 
     private int[] themeFabColors() {
+        if (isCustomAppTheme()) {
+            AppThemePalette p = customPalette();
+            return new int[]{p.accent, AppThemePalette.blend(p.accent, p.background, 0.28f)};
+        }
         if (isBlackAppTheme()) return new int[]{Color.rgb(104, 91, 226), Color.rgb(63, 79, 170)};
         if (isNavyAppTheme()) return new int[]{Color.rgb(8, 174, 199), Color.rgb(10, 105, 145)};
         return new int[]{Color.rgb(92, 76, 226), Color.rgb(71, 113, 236)};
     }
 
     private int themeDiscoverySurface(int lightFallback) {
+        if (isCustomAppTheme()) return customPalette().control;
         if (isBlackAppTheme()) return Color.rgb(29, 32, 38);
         if (isNavyAppTheme()) return Color.rgb(7, 49, 77);
         return lightFallback;
+    }
+
+    private int themeSelectedSurface() {
+        if (isCustomAppTheme()) return AppThemePalette.blend(themeAccent(), themeCardSurface(), 0.82f);
+        if (isBlackAppTheme()) return Color.rgb(49, 48, 75);
+        if (isNavyAppTheme()) return Color.rgb(18, 48, 75);
+        return Color.rgb(246, 244, 255);
     }
 
     private void applySystemBarTheme() {
@@ -1382,16 +2284,16 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(bg);
         getWindow().setNavigationBarColor(bg);
         int flags = 0;
-        if (!isBlackAppTheme() && !isNavyAppTheme()) flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        if (themeUsesDarkSystemIcons()) flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
         getWindow().getDecorView().setSystemUiVisibility(flags);
     }
 
     // WOW_UX_REFRESH_V214
     private void showAppThemeDialog() {
-        final String[] labels = {"White", "Black", "Navy Premium"};
-        final String[] values = {"white", "black", "navy"};
-        final String[] icons = {"☀", "☾", "✦"};
-        int selected = isBlackAppTheme() ? 1 : (isNavyAppTheme() ? 2 : 0);
+        final String[] labels = {"White", "Black", "Navy Premium", "Custom"};
+        final String[] values = {"white", "black", "navy", "custom"};
+        final String[] icons = {"☀", "☾", "✦", "◆"};
+        int selected = isBlackAppTheme() ? 1 : (isNavyAppTheme() ? 2 : (isCustomAppTheme() ? 3 : 0));
 
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
@@ -1401,7 +2303,7 @@ public class MainActivity extends Activity {
         int text = themePrimaryText();
         int sub = themeSecondaryText();
         int stroke = themeStroke();
-        int accent = Color.rgb(111, 78, 202);
+        int accent = themeAccent();
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -1424,7 +2326,8 @@ public class MainActivity extends Activity {
             int rowAccent = i == 2 ? accent : themeAccent();
             int fill;
             if (active) {
-                fill = isBlackAppTheme() ? Color.rgb(43, 40, 58)
+                fill = isCustomAppTheme() ? themeSelectedSurface()
+                        : isBlackAppTheme() ? Color.rgb(43, 40, 58)
                         : isNavyAppTheme() ? Color.rgb(18, 48, 75)
                         : Color.rgb(248, 246, 255);
             } else fill = themeControlSurface();
@@ -1471,9 +2374,14 @@ public class MainActivity extends Activity {
             row.setOnClickListener(v -> {
                 String chosen = values[which];
                 dialog.dismiss();
+                if ("custom".equals(chosen)) {
+                    showCustomThemeDialog();
+                    return;
+                }
                 if (!chosen.equals(appTheme)) {
                     appTheme = chosen;
-                    prefs.edit().putString("app_theme", appTheme).apply();
+                    prefs.edit().putString("app_theme", appTheme)
+                            .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
                     recreate();
                 }
             });
@@ -1512,6 +2420,143 @@ public class MainActivity extends Activity {
         }
     }
 
+
+    private void showCustomThemeDialog() {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Custom theme", "Choose any colour · readable contrast is generated automatically", dialog);
+
+        int currentSeed = prefs.getInt(AppThemePalette.PREF_CUSTOM_SEED, AppThemePalette.DEFAULT_CUSTOM_SEED);
+
+        LinearLayout preview = new LinearLayout(this);
+        preview.setOrientation(LinearLayout.VERTICAL);
+        preview.setPadding(dp(16), dp(12), dp(16), dp(12));
+        TextView previewTitle = new TextView(this);
+        previewTitle.setText("WoW Reader");
+        previewTitle.setTextSize(18);
+        previewTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        TextView previewSub = new TextView(this);
+        previewSub.setText("Custom theme preview");
+        previewSub.setTextSize(11.5f);
+        previewSub.setPadding(0, dp(3), 0, 0);
+        TextView previewAccent = new TextView(this);
+        previewAccent.setText("Accent · buttons · links");
+        previewAccent.setTextSize(11.5f);
+        previewAccent.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        previewAccent.setPadding(0, dp(8), 0, 0);
+        preview.addView(previewTitle);
+        preview.addView(previewSub);
+        preview.addView(previewAccent);
+        LinearLayout.LayoutParams previewLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(92));
+        previewLp.topMargin = dp(6);
+        sheet.addView(preview, previewLp);
+
+        TextView label = new TextView(this);
+        label.setText("HEX COLOR");
+        label.setTextSize(10.5f);
+        label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        label.setTextColor(themeSecondaryText());
+        label.setPadding(dp(2), dp(12), dp(2), dp(5));
+        sheet.addView(label);
+
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(AppThemePalette.toHex(currentSeed));
+        input.setTextSize(15f);
+        input.setTextColor(themePrimaryText());
+        input.setHintTextColor(themeSecondaryText());
+        input.setPadding(dp(14), 0, dp(14), 0);
+        input.setSelectAllOnFocus(true);
+        input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(7)});
+        input.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
+        sheet.addView(input, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        HorizontalScrollView presetScroll = new HorizontalScrollView(this);
+        presetScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout presets = new LinearLayout(this);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        presets.setPadding(0, dp(10), dp(12), dp(4));
+        int[] presetColors = {
+                Color.rgb(111, 78, 209), Color.rgb(51, 102, 204), Color.rgb(15, 130, 154),
+                Color.rgb(42, 132, 92), Color.rgb(210, 119, 46), Color.rgb(190, 65, 76),
+                Color.rgb(190, 73, 140), Color.rgb(120, 83, 62), Color.rgb(77, 86, 105)
+        };
+        for (int color : presetColors) {
+            TextView swatch = new TextView(this);
+            swatch.setText("●");
+            swatch.setTextSize(31);
+            swatch.setTextColor(color);
+            swatch.setGravity(Gravity.CENTER);
+            swatch.setContentDescription("Use " + AppThemePalette.toHex(color));
+            swatch.setBackground(roundRect(themeCardSurface(), dp(18), dp(1), themeStroke()));
+            swatch.setOnClickListener(v -> {
+                input.setText(AppThemePalette.toHex(color));
+                input.setSelection(input.length());
+            });
+            LinearLayout.LayoutParams swatchLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+            if (presets.getChildCount() > 0) swatchLp.leftMargin = dp(7);
+            presets.addView(swatch, swatchLp);
+        }
+        presetScroll.addView(presets);
+        sheet.addView(presetScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
+
+        TextWatcher previewWatcher = new TextWatcher() {
+            private void update(CharSequence value) {
+                Integer seed = AppThemePalette.parseHex(value == null ? null : value.toString());
+                if (seed == null) return;
+                AppThemePalette p = AppThemePalette.customFromSeed(seed);
+                preview.setBackground(roundRect(p.card, dp(18), dp(1), p.stroke));
+                previewTitle.setTextColor(p.primary);
+                previewSub.setTextColor(p.secondary);
+                previewAccent.setTextColor(p.accent);
+            }
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { update(s); }
+            @Override public void afterTextChanged(Editable s) {}
+        };
+        input.addTextChangedListener(previewWatcher);
+        Integer initial = AppThemePalette.parseHex(input.getText().toString());
+        if (initial != null) {
+            AppThemePalette p = AppThemePalette.customFromSeed(initial);
+            preview.setBackground(roundRect(p.card, dp(18), dp(1), p.stroke));
+            previewTitle.setTextColor(p.primary);
+            previewSub.setTextColor(p.secondary);
+            previewAccent.setTextColor(p.accent);
+        }
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView cancel = filterChoice("Cancel", false);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        TextView apply = filterChoice("Apply theme", true);
+        apply.setTextColor(Color.WHITE);
+        apply.setBackground(roundRect(themeAccent(), dp(17), 0, 0));
+        apply.setOnClickListener(v -> {
+            Integer seed = AppThemePalette.parseHex(input.getText().toString());
+            if (seed == null) {
+                Toast.makeText(this, "Enter a valid HEX colour, for example #6F4ED1", Toast.LENGTH_LONG).show();
+                return;
+            }
+            prefs.edit().putInt(AppThemePalette.PREF_CUSTOM_SEED, seed)
+                    .putString("app_theme", "custom")
+                    .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
+            appTheme = "custom";
+            dialog.dismiss();
+            recreate();
+        });
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(94), dp(40));
+        cancelLp.rightMargin = dp(8);
+        actions.addView(cancel, cancelLp);
+        actions.addView(apply, new LinearLayout.LayoutParams(dp(120), dp(40)));
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        actionsLp.topMargin = dp(8);
+        sheet.addView(actions, actionsLp);
+
+        presentBottomSheet(dialog, sheet, 0.80f);
+    }
+
     private GradientDrawable gradientRoundRect(int[] colors, int radius) {
         GradientDrawable d = new GradientDrawable(GradientDrawable.Orientation.TL_BR, colors);
         d.setCornerRadius(radius);
@@ -1519,10 +2564,12 @@ public class MainActivity extends Activity {
     }
 
     private final class LibraryAdapter extends RecyclerView.Adapter<LibraryHolder> {
-        private static final int HEADER = 0;
-        private static final int SECTION = 1;
+        private static final int HOME_HEADER = 0;
+        private static final int LIBRARY_SECTION = 1;
         private static final int BOOK = 2;
         private static final int EMPTY = 3;
+        private static final int LIBRARY_HEADER = 4;
+        private static final int HOME_SECTION = 5;
         private final List<File> items = new ArrayList<>();
 
         void submit(List<File> next) {
@@ -1531,20 +2578,27 @@ public class MainActivity extends Activity {
             notifyDataSetChanged();
         }
 
+        private int shownBookCount() {
+            return homeMode ? Math.min(4, items.size()) : items.size();
+        }
+
         @Override public int getItemCount() {
-            return 2 + (items.isEmpty() ? 1 : items.size());
+            int shown = shownBookCount();
+            return 2 + (shown == 0 ? 1 : shown);
         }
 
         @Override public int getItemViewType(int position) {
-            if (position == 0) return HEADER;
-            if (position == 1) return SECTION;
-            if (items.isEmpty()) return EMPTY;
+            if (position == 0) return homeMode ? HOME_HEADER : LIBRARY_HEADER;
+            if (position == 1) return homeMode ? HOME_SECTION : LIBRARY_SECTION;
+            if (shownBookCount() == 0) return EMPTY;
             return BOOK;
         }
 
         @Override public LibraryHolder onCreateViewHolder(ViewGroup parent, int viewType) {
-            if (viewType == HEADER) return new LibraryHolder(buildLibraryHeader());
-            if (viewType == SECTION) return new LibraryHolder(buildLibrarySectionHeader());
+            if (viewType == HOME_HEADER) return new LibraryHolder(buildLibraryHeader());
+            if (viewType == LIBRARY_HEADER) return new LibraryHolder(buildLibraryOnlyHeader());
+            if (viewType == HOME_SECTION) return new LibraryHolder(buildHomeBooksSectionHeader());
+            if (viewType == LIBRARY_SECTION) return new LibraryHolder(buildLibrarySectionHeader());
             if (viewType == EMPTY) return new LibraryHolder(buildEmptyState());
             FrameLayout shell = new FrameLayout(MainActivity.this);
             shell.setPadding(dp(7), 0, dp(7), dp(14));
@@ -1553,19 +2607,20 @@ public class MainActivity extends Activity {
 
         @Override public void onBindViewHolder(LibraryHolder holder, int position) {
             int type = getItemViewType(position);
-            if (type == SECTION) {
+            if (type == LIBRARY_SECTION) {
                 if (countView != null) countView.setText(items.size() + (items.size() == 1 ? " book" : " books"));
                 return;
             }
+            if (type == HOME_SECTION || type == HOME_HEADER || type == LIBRARY_HEADER) return;
             if (type == EMPTY) {
                 ((TextView) holder.itemView).setText(searchQuery.isEmpty()
-                        ? "Your library is ready.\nTap ＋ to add an EPUB or PDF."
+                        ? "Your library is ready.\nTap Add book to add an EPUB or PDF."
                         : "No books match your search.");
                 return;
             }
             if (type != BOOK) return;
             int index = position - 2;
-            if (index < 0 || index >= items.size()) return;
+            if (index < 0 || index >= shownBookCount()) return;
             File file = items.get(index);
             FrameLayout shell = (FrameLayout) holder.itemView;
             shell.removeAllViews();
@@ -1589,7 +2644,7 @@ public class MainActivity extends Activity {
 
     private Bitmap placeholderBitmap(String title,int width,int height){ Bitmap b=Bitmap.createBitmap(Math.max(1,width),Math.max(1,height),Bitmap.Config.ARGB_8888); Canvas c=new Canvas(b); Paint p=new Paint(Paint.ANTI_ALIAS_FLAG); p.setColor(colorForName(title)); c.drawRect(0,0,b.getWidth(),b.getHeight(),p); p.setColor(Color.WHITE); p.setTypeface(Typeface.create(pyidaungsuTypeface != null ? pyidaungsuTypeface : Typeface.DEFAULT,Typeface.BOLD)); p.setTextSize(Math.min(width,height)*.25f); p.setTextAlign(Paint.Align.CENTER); String letter=title==null||title.trim().isEmpty()?"W":title.trim().substring(0,1).toUpperCase(Locale.ROOT); Paint.FontMetrics fm=p.getFontMetrics(); float y=height/2f-(fm.ascent+fm.descent)/2f; c.drawText(letter,width/2f,y,p); return b; }
 
-    private void chooseBook(){ Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("*/*"); i.putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"application/epub+zip","application/pdf"}); startActivityForResult(i,REQ_IMPORT); }
+    private void chooseBook(){ Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("*/*"); i.putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"application/epub+zip","application/pdf"}); i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true); i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION); startActivityForResult(i,REQ_IMPORT); }
     private void handleIncomingIntent(Intent intent){
         if(intent==null)return;
         Uri data=null;
@@ -1656,7 +2711,47 @@ public class MainActivity extends Activity {
     private String queryDisplayName(Uri uri){ if("file".equalsIgnoreCase(uri.getScheme()))return new File(uri.getPath()).getName(); Cursor c=null; try{c=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null);if(c!=null&&c.moveToFirst())return c.getString(0);}catch(Exception ignored){}finally{if(c!=null)c.close();}return null; }
     private File uniqueFile(String originalName){ String safe=originalName.replaceAll("[\\\\/:*?\"<>|]","_"); File f=new File(libraryDir,safe);if(!f.exists())return f;int dot=safe.lastIndexOf('.');String base=dot>0?safe.substring(0,dot):safe,ext=dot>0?safe.substring(dot):"";return new File(libraryDir,base+"_"+System.currentTimeMillis()+ext); }
     private void openBook(File file){prefs.edit().putLong("last_opened_"+file.getName(),System.currentTimeMillis()).apply();Intent i=new Intent(this,BookReaderActivity.class);i.putExtra("path",file.getAbsolutePath());startActivity(i);overridePendingTransition(android.R.anim.fade_in,android.R.anim.fade_out);}
-    private void confirmDelete(File file){new AlertDialog.Builder(this).setTitle("Remove from WoW Reader?").setMessage(stripExtension(file.getName())+"\n\nThis deletes WoW Reader's saved local copy. The original file you imported from Downloads or another folder is not changed.").setNegativeButton("Cancel",null).setPositiveButton("Remove",(d,w)->{if(file.delete()){LibraryShelfStore.removeBookFromAll(prefs,file.getName());prefs.edit().remove("percent_"+file.getName()).remove("library_title_"+file.getName()).remove("library_author_"+file.getName()).remove("library_owned_"+file.getName()).remove("added_at_"+file.getName()).remove("last_opened_"+file.getName()).putLong("sync_updated_ms",System.currentTimeMillis()).apply();refreshLibrary();maybeAutoGoogleSync();}}).show();}
+    private void confirmDelete(File file) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Remove from WoW Reader?", cachedLibraryTitle(file), dialog);
+        TextView message = new TextView(this);
+        message.setText("This deletes WoW Reader's saved local copy. The original file you imported from Downloads or another folder is not changed.");
+        message.setTextSize(12f);
+        message.setTextColor(themeSecondaryText());
+        message.setLineSpacing(dp(2), 1.12f);
+        message.setPadding(dp(12), dp(10), dp(12), dp(10));
+        message.setBackground(roundRect(themeControlSurface(), dp(15), dp(1), themeStroke()));
+        sheet.addView(message);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView cancel = filterChoice("Cancel", false);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        TextView remove = filterChoice("Remove", true);
+        remove.setTextColor(Color.WHITE);
+        remove.setBackground(roundRect(Color.rgb(205, 63, 63), dp(17), 0, 0));
+        remove.setOnClickListener(v -> {
+            dialog.dismiss();
+            if (file.delete()) {
+                LibraryShelfStore.removeBookFromAll(prefs, file.getName());
+                prefs.edit().remove("percent_" + file.getName()).remove("library_title_" + file.getName())
+                        .remove("library_author_" + file.getName()).remove("library_owned_" + file.getName())
+                        .remove("added_at_" + file.getName()).remove("last_opened_" + file.getName())
+                        .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
+                refreshLibrary();
+                maybeAutoGoogleSync();
+            }
+        });
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(96), dp(40)); cancelLp.rightMargin = dp(8);
+        actions.addView(cancel, cancelLp);
+        actions.addView(remove, new LinearLayout.LayoutParams(dp(106), dp(40)));
+        LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)); actionLp.topMargin = dp(10);
+        sheet.addView(actions, actionLp);
+        presentBottomSheet(dialog, sheet, 0.62f);
+    }
 
     private void restoreStoredGoogleProfile(){
         GoogleDriveSync.Profile signedIn=googleAccount==null?null:googleAccount.currentProfile();
@@ -2029,7 +3124,7 @@ public class MainActivity extends Activity {
             @Override public void onReady(GoogleDriveSync.Profile driveProfile){
                 GoogleDriveSync.Profile profile=resolvedProfile(driveProfile);
                 rememberGoogleProfile(profile,true);
-                GoogleDriveSync.backup(MainActivity.this,driveProfile.accessToken,libraryDir,readerFontsDir(),prefs,new GoogleDriveSync.SyncCallback(){
+                GoogleDriveSync.smartBackup(MainActivity.this,driveProfile.accessToken,libraryDir,readerFontsDir(),prefs,new GoogleDriveSync.SyncCallback(){
                     @Override public void onSuccess(String message){prefs.edit().putLong("google_last_synced_change_ms",requestedChangeMs).apply();googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();maybeAutoGoogleSync();}
                     @Override public void onError(String message){googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
                 });
@@ -2120,9 +3215,19 @@ public class MainActivity extends Activity {
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
         super.onActivityResult(requestCode,resultCode,data);
         if(googleDrive!=null&&googleDrive.handleActivityResult(requestCode,resultCode,data))return;
-        if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;
-        Uri uri=data.getData();
-        if(requestCode==REQ_IMPORT){importBook(uri,false);return;}
+        if(resultCode!=RESULT_OK||data==null)return;
+        if(requestCode==REQ_IMPORT){
+            ArrayList<Uri> selected=new ArrayList<>();
+            ClipData clip=data.getClipData();
+            if(clip!=null){for(int i=0;i<clip.getItemCount();i++){Uri u=clip.getItemAt(i).getUri();if(u!=null&&!selected.contains(u))selected.add(u);}}
+            else if(data.getData()!=null)selected.add(data.getData());
+            if(selected.isEmpty())return;
+            int flags=data.getFlags()&(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            for(Uri u:selected){try{getContentResolver().takePersistableUriPermission(u,flags);}catch(Exception ignored){} importBook(u,false);}
+            if(selected.size()>1)Toast.makeText(this,"Importing "+selected.size()+" books…",Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Uri uri=data.getData();if(uri==null)return;
         try{getContentResolver().takePersistableUriPermission(uri,data.getFlags()&(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION));}catch(Exception ignored){}
         if(requestCode==REQ_BACKUP)backupLibrary(uri);else if(requestCode==REQ_RESTORE)restoreLibrary(uri);
     }

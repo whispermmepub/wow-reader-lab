@@ -139,6 +139,7 @@ public class SplashActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
         root.addView(center, centerLp);
         setContentView(root);
+        AppWindowInsets.apply(this, root, bg, !black && !navy);
 
         logoCard.animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f)
                 .setDuration(390L).setInterpolator(new OvershootInterpolator(0.82f)).start();

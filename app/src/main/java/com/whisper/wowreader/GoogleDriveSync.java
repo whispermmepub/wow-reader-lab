@@ -177,6 +177,57 @@ final class GoogleDriveSync {
         }, "wow-google-backup").start();
     }
 
+    static void smartBackup(Activity activity, String token, File libraryDir, File fontsDir,
+                           SharedPreferences prefs, SyncCallback callback) {
+        new Thread(() -> {
+            File remoteArchive = null;
+            File temp = null;
+            File mergedArchive = null;
+            try {
+                BackupInfo remote = findBackupInfo(token);
+                String seenRemote = prefs.getString("google_last_seen_remote_modified", "");
+
+                if (remote != null && (seenRemote.isEmpty() || !seenRemote.equals(remote.modifiedTime))) {
+                    remoteArchive = File.createTempFile("wow-smart-sync-", ".zip", activity.getCacheDir());
+                    downloadBackup(token, remote.id, remoteArchive);
+                    temp = new File(activity.getCacheDir(), "wow_smart_merge_" + System.currentTimeMillis());
+                    if (!temp.mkdirs()) throw new Exception("Unable to prepare cloud merge folder");
+                    unzipSafely(remoteArchive, temp);
+                    mergeMissingFiles(new File(temp, "books"), libraryDir);
+                    mergeMissingFiles(new File(temp, "fonts"), fontsDir);
+                    CloudMergePolicy.mergePreferences(readPreferenceValues(new File(temp, "state.json")), prefs);
+                }
+
+                mergedArchive = buildBackup(activity, libraryDir, fontsDir, prefs);
+                BackupInfo latest = findBackupInfo(token);
+                if (remote == null) {
+                    if (latest != null) throw new Exception("Cloud library changed during sync; retrying safely");
+                    createBackup(token, mergedArchive);
+                } else {
+                    if (latest == null || !remote.id.equals(latest.id) ||
+                            !remote.modifiedTime.equals(latest.modifiedTime))
+                        throw new Exception("Cloud library changed during sync; retrying safely");
+                    updateBackup(token, remote.id, mergedArchive);
+                }
+
+                BackupInfo updated = findBackupInfo(token);
+                SharedPreferences.Editor done = prefs.edit()
+                        .putLong("google_last_backup_ms", System.currentTimeMillis());
+                if (updated != null && updated.modifiedTime != null)
+                    done.putString("google_last_seen_remote_modified", updated.modifiedTime);
+                done.apply();
+                activity.runOnUiThread(() -> callback.onSuccess("Google Drive smart sync is up to date"));
+            } catch (Exception e) {
+                String message = friendly(e);
+                activity.runOnUiThread(() -> callback.onError(message));
+            } finally {
+                if (remoteArchive != null) remoteArchive.delete();
+                if (mergedArchive != null) mergedArchive.delete();
+                deleteRecursively(temp);
+            }
+        }, "wow-google-smart-sync").start();
+    }
+
     static void restore(Activity activity, String token, File libraryDir, File fontsDir,
                         SharedPreferences prefs, SyncCallback callback) {
         new Thread(() -> {
@@ -304,6 +355,32 @@ final class GoogleDriveSync {
         }
     }
 
+    private static JSONObject readPreferenceValues(File stateFile) throws Exception {
+        if (stateFile == null || !stateFile.isFile()) return new JSONObject();
+        String json = new String(readAll(new FileInputStream(stateFile)), StandardCharsets.UTF_8);
+        JSONObject values = new JSONObject(json).optJSONObject("prefs");
+        return values == null ? new JSONObject() : values;
+    }
+
+    private static void mergeMissingFiles(File source, File destination) throws Exception {
+        if (source == null || !source.isDirectory()) return;
+        if (!destination.exists() && !destination.mkdirs())
+            throw new Exception("Unable to create cloud merge destination");
+        File[] files = source.listFiles();
+        if (files == null) return;
+        byte[] buffer = new byte[64 * 1024];
+        for (File file : files) {
+            if (!file.isFile()) continue;
+            File out = new File(destination, file.getName());
+            if (out.exists()) continue;
+            try (InputStream in = new BufferedInputStream(new FileInputStream(file));
+                 OutputStream os = new BufferedOutputStream(new FileOutputStream(out))) {
+                int n;
+                while ((n = in.read(buffer)) > 0) os.write(buffer, 0, n);
+            }
+        }
+    }
+
     private static void restoreFiles(File source, File destination) throws Exception {
         if (source == null || !source.isDirectory()) return;
         if (!destination.exists() && !destination.mkdirs()) throw new Exception("Unable to create restore destination");
@@ -344,14 +421,29 @@ final class GoogleDriveSync {
         }
     }
 
-    private static String findBackupId(String token) throws Exception {
+    private static final class BackupInfo {
+        String id = "";
+        String modifiedTime = "";
+    }
+
+    private static BackupInfo findBackupInfo(String token) throws Exception {
         String q = "name='" + BACKUP_NAME + "' and trashed=false";
-        String url = "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&pageSize=10&fields=files(id,name,modifiedTime)&q=" +
+        String url = "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&pageSize=10&orderBy=modifiedTime%20desc&fields=files(id,name,modifiedTime)&q=" +
                 URLEncoder.encode(q, "UTF-8");
         JSONObject result = authorizedJson(url, token);
         JSONArray files = result.optJSONArray("files");
         if (files == null || files.length() == 0) return null;
-        return files.optJSONObject(0).optString("id", null);
+        JSONObject first = files.optJSONObject(0);
+        if (first == null) return null;
+        BackupInfo info = new BackupInfo();
+        info.id = first.optString("id", "");
+        info.modifiedTime = first.optString("modifiedTime", "");
+        return info.id.isEmpty() ? null : info;
+    }
+
+    private static String findBackupId(String token) throws Exception {
+        BackupInfo info = findBackupInfo(token);
+        return info == null ? null : info.id;
     }
 
     private static void createBackup(String token, File archive) throws Exception {

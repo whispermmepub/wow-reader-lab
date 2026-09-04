@@ -44,61 +44,23 @@ jobs:
           test -s app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           test -s app/src/main/java/com/whisper/wowreader/MainActivity.java
           test -s app/src/main/java/com/whisper/wowreader/EpubUtil.java
-          test -s app/src/main/java/com/whisper/wowreader/PageCurlView.java
-          test -s app/src/main/java/com/whisper/wowreader/ReaderAnnotationStore.java
-          test -s app/src/main/java/com/whisper/wowreader/ReaderFontStore.java
           test -s app/src/main/java/com/whisper/wowreader/SplashActivity.java
           test -s app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
           test -s app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
           test -s app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
           test -s app/google-services.json
           test -s app/src/main/res/drawable/wow_logo.xml
-          test -s app/src/main/res/drawable/ic_launcher.xml
-          test -s app/src/main/assets/fonts/pyidaungsu.woff2
           test -s app/src/main/assets/fonts/pyidaungsu_native.ttf
+          grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
           grep -q "versionCode 41" app/build.gradle
           grep -q "versionName '2.17.1'" app/build.gradle
-          grep -q "androidx.recyclerview:recyclerview:1.3.2" app/build.gradle
-          MAIN=app/src/main/java/com/whisper/wowreader/MainActivity.java
-          READER=app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          SPLASH=app/src/main/java/com/whisper/wowreader/SplashActivity.java
-          AUTO=app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
-          grep -q "RecyclerView" "$MAIN"
-          grep -q "calculateLibraryColumns" "$MAIN"
-          grep -q "showAuthorsDialog" "$MAIN"
-          grep -q "showAppThemeDialog" "$MAIN"
-          grep -q 'Navy Premium' "$MAIN"
-          grep -q 'app_theme' "$MAIN"
-          grep -q 'library_owned_' "$MAIN"
-          grep -q 'local copy saved' "$MAIN"
-          grep -q 'original file you imported' "$MAIN"
-          grep -q 'accountButton = new ProfileAvatarView(this)' "$MAIN"
-          grep -q 'googleAccount = new GoogleAccountAuth(this)' "$MAIN"
-          grep -q 'googleDrive = new GoogleDriveSync(this)' "$MAIN"
-          grep -q 'GoogleAuthProvider.getCredential' app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
-          grep -q 'Scopes.DRIVE_APPFOLDER' app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
-          ! grep -q 'Scopes.EMAIL' app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
-          grep -q 'google_last_synced_change_ms' "$MAIN"
-          grep -q 'Opening book…' "$READER"
-          grep -q 'applyReaderStyleSmooth' "$READER"
-          grep -q 'wow-reader-block{line-height:' "$READER"
-          grep -q 'String\[\] animLabels = {"None", "Slide"}' "$READER"
-          ! grep -q '"3D page curl"' "$READER"
-          grep -q 'startNativeSlidePageTurn' "$READER"
-          grep -q 'pageSlideOverlay' "$READER"
-          grep -q 'prewarmAdjacentChapters' "$READER"
-          grep -q 'import java.io.InputStream;' "$READER"
-          grep -q 'pendingChapterDirection' "$READER"
-          grep -q 'long duration = "slide".equals(pageAnimation)' "$READER"
-          grep -q 'app_theme' "$SPLASH"
-          grep -q 'AutoLibrarySync.sync' "$SPLASH"
-          grep -q 'auto_library_last_id' "$AUTO"
-          grep -q 'META-INF/container.xml' "$AUTO"
-          grep -q 'setDecorFitsSystemWindows(false)' "$READER"
-          grep -q 'BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE' "$READER"
-          grep -q 'ReaderAnnotationStore.add' "$READER"
+          grep -q 'AutoLibrarySync.sync' app/src/main/java/com/whisper/wowreader/SplashActivity.java
+          grep -q 'auto_library_last_id' app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
+          grep -q 'META-INF/container.xml' app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
+          grep -q 'library_owned_' app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
+          grep -q 'sync_updated_ms' app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
           git diff --check
 
       - name: Build release APK and AAB

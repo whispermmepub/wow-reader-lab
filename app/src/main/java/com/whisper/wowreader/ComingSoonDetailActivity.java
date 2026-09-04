@@ -158,10 +158,6 @@ public class ComingSoonDetailActivity extends Activity {
 
         TextView body = text("", 15, primary(), false);
         body.setLineSpacing(dp(2), 1.10f);
-        if (Build.VERSION.SDK_INT >= 23) {
-            body.setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY);
-            body.setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE);
-        }
         if (Build.VERSION.SDK_INT >= 26) {
             // Android's layout engine expands available word/phrase spacing so
             // Myanmar review lines read with the same balanced feel as Auto-spacing Justify.

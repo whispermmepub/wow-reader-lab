@@ -1,0 +1,113 @@
+name: WoW Reader Lab v33 Stable Chapter Reveal
+
+on:
+  push:
+    branches: [feature/lab-v33-stable-chapter-reveal]
+    paths:
+      - '.github/workflows/lab-v33-stable-reveal.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Apply v33 stable reveal patch
+        run: python3 scripts/apply_lab_v33_stable_reveal.py
+
+      - name: Verify source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          R=app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          G=app/build.gradle
+          grep -q 'confirmStableChapterReveal(generation, 0, -1, -1)' "$R"
+          grep -q 'private void confirmStableChapterReveal' "$R"
+          grep -q 'private void finishStableChapterReveal' "$R"
+          grep -q 'two consecutive layout samples are stable' "$R"
+          grep -q 'webView.setAlpha(0f)' "$R"
+          grep -q 'finishChapterFadeImmediate()' "$R"
+          grep -q 'setTextZoom' "$R"
+          grep -q 'getSystemWindowInsetTop' "$R"
+          ! grep -q 'boolean paperHandled = handlePaperGesture(event)' "$R"
+          ! grep -q 'pageCurlView = new PageCurlView(this)' "$R"
+          grep -q 'versionCode 33' "$G"
+          grep -q "versionName '2.16.3-lab-v33'" "$G"
+          git diff --check
+
+      - name: Commit clean v33 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'AungSoe Moe'
+          git config user.email '61192036+whispermmepub@users.noreply.github.com'
+          git rm scripts/apply_lab_v33_stable_reveal.py
+          git rm .github/workflows/lab-v33-stable-reveal.yml
+          git add app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/build.gradle
+          git commit -m 'Hold chapter snapshot until layout is stable in v33'
+          git push origin HEAD:feature/lab-v33-stable-chapter-reveal
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+
+      - name: Compile debug release and lint
+        run: gradle :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease --stacktrace
+
+      - name: Smoke check release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -s "$APK"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          "$BT/aapt" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.whisper.wowreader' versionCode='33' versionName='2.16.3-lab-v33'" /tmp/badging.txt
+          grep -q "targetSdkVersion:'36'" /tmp/badging.txt
+
+      - name: Collect unsigned APK and signing tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          cp "$APK" out/WoW-Reader-Lab-v33-unsigned.apk
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          cp "$BT/zipalign" out/zipalign
+          cp "$BT/lib/apksigner.jar" out/apksigner.jar
+          cat > out/ci-verification.txt <<'EOF'
+          WoW Reader Lab v33
+          package=com.whisper.wowreader
+          versionCode=33
+          versionName=2.16.3-lab-v33
+          targetSdk=36
+          v32 navigation inset and Scroll font fixes preserved
+          Chapter boundary: previous chapter snapshot held while new chapter is hidden
+          New chapter requires two stable full-width layout samples before reveal
+          No transient narrow WebView frame should be exposed
+          debug/release compile PASS
+          debug/release lint PASS
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v33-final-unsigned
+          path: out/*
+          retention-days: 2

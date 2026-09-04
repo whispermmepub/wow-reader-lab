@@ -15,12 +15,13 @@ jobs:
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.0.0"'
       - name: Collect tools
         run: |
-          mkdir -p out/lib
+          mkdir -p out/lib out/lib64
           cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" out/apksigner
           cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" out/lib/apksigner.jar
           cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" out/zipalign
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib64/libc++.so" out/lib64/libc++.so
       - uses: actions/upload-artifact@v4
         with:
-          name: v37-signing-tools
+          name: v37-signing-tools-complete
           path: out/
           retention-days: 1

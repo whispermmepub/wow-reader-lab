@@ -5,7 +5,9 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
+import android.text.Layout;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -154,8 +156,17 @@ public class ComingSoonDetailActivity extends Activity {
         dividerLp.bottomMargin = dp(9);
         card.addView(divider, dividerLp);
 
-        TextView body = text("", 16, primary(), false);
+        TextView body = text("", 15, primary(), false);
         body.setLineSpacing(dp(2), 1.10f);
+        if (Build.VERSION.SDK_INT >= 23) {
+            body.setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY);
+            body.setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE);
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            // Android's layout engine expands available word/phrase spacing so
+            // Myanmar review lines read with the same balanced feel as Auto-spacing Justify.
+            body.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD);
+        }
         body.setText(ComingSoonFeed.richText(post.contentHtml));
         body.setMovementMethod(null);
         body.setLinksClickable(false);

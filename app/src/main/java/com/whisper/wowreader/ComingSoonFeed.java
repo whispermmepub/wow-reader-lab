@@ -231,7 +231,7 @@ final class ComingSoonFeed {
         String cleaned = cleanContentHtml(html);
         CharSequence parsed;
         if (android.os.Build.VERSION.SDK_INT >= 24)
-            parsed = Html.fromHtml(cleaned, Html.FROM_HTML_MODE_COMPACT);
+            parsed = Html.fromHtml(cleaned, Html.FROM_HTML_MODE_LEGACY);
         else
             parsed = Html.fromHtml(cleaned);
         SpannableStringBuilder compact = new SpannableStringBuilder(parsed);

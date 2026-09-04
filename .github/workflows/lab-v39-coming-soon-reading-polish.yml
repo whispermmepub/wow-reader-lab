@@ -32,7 +32,8 @@ jobs:
           grep -q "2.16.9-lab-v39" app/build.gradle
           grep -q 'Html.FROM_HTML_MODE_LEGACY' app/src/main/java/com/whisper/wowreader/ComingSoonFeed.java
           grep -q 'TextView body = text("", 15' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
-          grep -q 'JUSTIFICATION_MODE_INTER_WORD' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
+          grep -q 'LineBreaker.JUSTIFICATION_MODE_INTER_CHARACTER' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
+          ! grep -q 'JUSTIFICATION_MODE_INTER_WORD' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
           ! grep -q 'BREAK_STRATEGY_HIGH_QUALITY' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
           grep -q 'AppThemePalette.isSupportedTheme' app/src/main/java/com/whisper/wowreader/ComingSoonDetailActivity.java
           grep -q 'Justify · Auto spacing' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java

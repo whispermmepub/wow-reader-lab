@@ -1,18 +1,26 @@
 const apiBase = "https://api.cloudflare.com/client/v4";
-const cfToken = process.env.CF_TOKEN;
+const cfCredential = process.env.CF_TOKEN;
+const cfEmail = process.env.CF_EMAIL || "";
 const tgToken = process.env.TG_TOKEN;
 const workerName = process.env.CF_WORKER_NAME || "wow-reader-auto-library";
 const channelUsername = (process.env.TG_CHANNEL_USERNAME || "TheBookR").replace(/^@/, "");
 const dbName = "wow-reader-auto-library";
 const rawBase = "https://raw.githubusercontent.com/whispermmepub/wow-reader-lab/main/cloudflare/telegram-auto-library";
 
-if (!cfToken || !tgToken) throw new Error("Missing provisioning credentials");
+if (!cfCredential || !tgToken) throw new Error("Missing provisioning credentials");
+const usingGlobalKey = cfCredential.startsWith("cfk_");
+if (usingGlobalKey && !cfEmail) throw new Error("CF_EMAIL_REQUIRED_FOR_GLOBAL_API_KEY");
 
-const authHeaders = { Authorization: `Bearer ${cfToken}` };
+function cloudflareAuthHeaders() {
+  if (usingGlobalKey) {
+    return { "X-Auth-Email": cfEmail, "X-Auth-Key": cfCredential };
+  }
+  return { Authorization: `Bearer ${cfCredential}` };
+}
 
 async function cf(path, options = {}) {
   const headers = new Headers(options.headers || {});
-  headers.set("Authorization", `Bearer ${cfToken}`);
+  for (const [name, value] of Object.entries(cloudflareAuthHeaders())) headers.set(name, value);
   const response = await fetch(`${apiBase}${path}`, { ...options, headers });
   const text = await response.text();
   let body = null;
@@ -48,12 +56,17 @@ async function fetchText(url) {
 }
 
 async function main() {
-  const verify = await cf("/user/tokens/verify");
-  console.log(`CF token: ${verify?.result?.status || "verified"}`);
+  if (usingGlobalKey) {
+    await cf("/user");
+    console.log("Cloudflare credential: Global API key authenticated");
+  } else {
+    const verify = await cf("/user/tokens/verify");
+    console.log(`Cloudflare credential: API token ${verify?.result?.status || "verified"}`);
+  }
 
   const accounts = await cf("/accounts?per_page=50");
   const accountList = Array.isArray(accounts.result) ? accounts.result : [];
-  if (!accountList.length) throw new Error("No Cloudflare account visible to this API token");
+  if (!accountList.length) throw new Error("No Cloudflare account visible to this credential");
   const account = accountList[0];
   const accountId = account.id;
   console.log(`Cloudflare account: ${account.name || accountId}`);

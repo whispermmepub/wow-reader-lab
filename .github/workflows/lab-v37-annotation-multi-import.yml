@@ -1,0 +1,114 @@
+name: WoW Reader Lab v37 Annotation Multi Import
+
+on:
+  push:
+    branches:
+      - feature/lab-v37-annotation-multi-import
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Apply v37 annotation and multi-import patch
+        run: python3 scripts/apply_lab_v37_annotation_multi_import.py
+
+      - name: Verify v37 source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          R=app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          M=app/src/main/java/com/whisper/wowreader/MainActivity.java
+          G=app/build.gradle
+          grep -q 'versionCode 37' "$G"
+          grep -q "versionName '2.16.7-lab-v37'" "$G"
+          grep -q "a.quote||''" "$R"
+          grep -q 'function resolved(a,ns)' "$R"
+          grep -q 'range.startContainer' "$R"
+          grep -q 'range.endContainer' "$R"
+          grep -q 'Intent.EXTRA_ALLOW_MULTIPLE,true' "$M"
+          grep -q 'ClipData clip=data.getClipData()' "$M"
+          grep -q 'activatePreloadedChapterIfReady' "$R"
+          grep -q 'android.view.PixelCopy.request' "$R"
+          grep -q 'GoogleAutoSync.scheduleSoon' "$R"
+          python3 - <<'PY'
+          from pathlib import Path
+          r=Path('app/src/main/java/com/whisper/wowreader/BookReaderActivity.java').read_text()
+          m=Path('app/src/main/java/com/whisper/wowreader/MainActivity.java').read_text()
+          a=r.index('private void applySavedAnnotations')
+          b=r.index('private void updateAnnotationButton', a)
+          block=r[a:b]
+          assert "p.closest('span.wow-annotation')" not in block
+          assert "tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT'" in block
+          assert 'a.quote' in block
+          w=r.index('private void installSelectionWatcher')
+          x=r.index('private void onWebSelection', w)
+          watcher=r[w:x]
+          assert 'createTreeWalker' in watcher
+          assert 'pre.selectNodeContents(root);pre.setEnd' not in watcher
+          assert 'Intent.EXTRA_ALLOW_MULTIPLE,true' in m
+          assert 'selected.size()>1' in m
+          print('v37 source contract PASS')
+          PY
+          git diff --check
+
+      - name: Commit clean v37 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'AungSoe Moe'
+          git config user.email '61192036+whispermmepub@users.noreply.github.com'
+          git rm scripts/apply_lab_v37_annotation_multi_import.py
+          git rm .github/workflows/lab-v37-annotation-multi-import.yml
+          git add app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/src/main/java/com/whisper/wowreader/MainActivity.java app/build.gradle
+          git commit -m 'Fix annotation offsets and add multi-book import in v37'
+          git push origin HEAD:feature/lab-v37-annotation-multi-import
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+          cache-read-only: true
+
+      - name: Install Android SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+
+      - name: Compile debug release and lint
+        run: gradle :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease --stacktrace
+
+      - name: Smoke check release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.whisper.wowreader' versionCode='37' versionName='2.16.7-lab-v37'" /tmp/badging.txt
+
+      - name: Collect unsigned APK and signing tools
+        shell: bash
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release-unsigned.apk out/WoW-Reader-Lab-v37-unsigned.apk
+          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" out/apksigner
+          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" out/zipalign
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v37-unsigned
+          path: out/
+          retention-days: 2

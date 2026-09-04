@@ -1,0 +1,6 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "cloudflare/telegram-auto-library/Dockerfile"
+
+[deploy]
+restartPolicyType = "NEVER"

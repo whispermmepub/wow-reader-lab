@@ -17,8 +17,8 @@ android {
         applicationId 'com.whisper.wowreader'
         minSdk 23
         targetSdk 36
-        versionCode 37
-        versionName '2.16.7-lab-v37'
+        versionCode 38
+        versionName '2.16.8-lab-v38'
     }
 
     signingConfigs {

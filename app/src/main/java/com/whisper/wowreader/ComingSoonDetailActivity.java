@@ -31,6 +31,7 @@ public class ComingSoonDetailActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
         appTheme = prefs.getString("app_theme", "white");
+        if (!AppThemePalette.isSupportedTheme(appTheme)) appTheme = "white";
         postUrl = getIntent().getStringExtra("url");
         fallbackTitle = safe(getIntent().getStringExtra("title"));
         fallbackSource = safe(getIntent().getStringExtra("source"));
@@ -79,7 +80,7 @@ public class ComingSoonDetailActivity extends Activity {
         root.addView(scroll, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
-        AppWindowInsets.apply(this, root, bg(), !"black".equals(appTheme) && !"navy".equals(appTheme));
+        AppWindowInsets.apply(this, root, bg(), useDarkSystemIcons());
     }
 
     private void renderSkeleton() {
@@ -195,30 +196,40 @@ public class ComingSoonDetailActivity extends Activity {
     private void applyBars() {
         getWindow().setStatusBarColor(bg());
         getWindow().setNavigationBarColor(bg());
-        if (!"black".equals(appTheme) && !"navy".equals(appTheme))
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        if (useDarkSystemIcons())
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         else getWindow().getDecorView().setSystemUiVisibility(0);
     }
 
+    private boolean customTheme() { return "custom".equals(appTheme); }
+    private AppThemePalette customPalette() { return AppThemePalette.custom(prefs); }
+    private boolean useDarkSystemIcons() {
+        if (customTheme()) return customPalette().darkSystemIcons;
+        return !"black".equals(appTheme) && !"navy".equals(appTheme);
+    }
+
     private int bg() {
+        if (customTheme()) return customPalette().background;
         if ("black".equals(appTheme)) return Color.rgb(17, 18, 20);
         if ("navy".equals(appTheme)) return Color.rgb(19, 25, 43);
         return Color.rgb(247, 248, 251);
     }
     private int card() {
+        if (customTheme()) return customPalette().card;
         if ("black".equals(appTheme)) return Color.rgb(28, 29, 32);
         if ("navy".equals(appTheme)) return Color.rgb(28, 36, 59);
         return Color.WHITE;
     }
     private int control() {
+        if (customTheme()) return customPalette().control;
         if ("black".equals(appTheme)) return Color.rgb(38, 39, 43);
         if ("navy".equals(appTheme)) return Color.rgb(38, 47, 73);
         return Color.rgb(244, 245, 249);
     }
-    private int primary() { return ("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(245, 246, 249) : Color.rgb(31, 33, 40); }
-    private int secondary() { return ("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(176, 181, 194) : Color.rgb(104, 109, 124); }
-    private int stroke() { return ("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(55, 60, 74) : Color.rgb(226, 228, 236); }
-    private int accent() { return Color.rgb(111, 78, 209); }
+    private int primary() { return customTheme() ? customPalette().primary : (("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(245, 246, 249) : Color.rgb(31, 33, 40)); }
+    private int secondary() { return customTheme() ? customPalette().secondary : (("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(176, 181, 194) : Color.rgb(104, 109, 124)); }
+    private int stroke() { return customTheme() ? customPalette().stroke : (("black".equals(appTheme) || "navy".equals(appTheme)) ? Color.rgb(55, 60, 74) : Color.rgb(226, 228, 236)); }
+    private int accent() { return customTheme() ? customPalette().accent : Color.rgb(111, 78, 209); }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private String safe(String value) { return value == null ? "" : value; }
 }

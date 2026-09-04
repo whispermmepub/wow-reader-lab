@@ -109,7 +109,7 @@ public class MainActivity extends Activity {
         if (!coverCacheDir.exists()) coverCacheDir.mkdirs();
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
         appTheme = prefs.getString("app_theme", "white");
-        if (!"white".equals(appTheme) && !"black".equals(appTheme) && !"navy".equals(appTheme)) appTheme = "white";
+        if (!AppThemePalette.isSupportedTheme(appTheme)) appTheme = "white";
         applySystemBarTheme();
         googleAccount = new GoogleAccountAuth(this);
         googleDrive = new GoogleDriveSync(this);
@@ -192,7 +192,7 @@ public class MainActivity extends Activity {
         root.addView(premiumBottomNav, bottomNavLp);
 
         setContentView(root);
-        AppWindowInsets.apply(this, root, themeBackground(), !isBlackAppTheme() && !isNavyAppTheme());
+        AppWindowInsets.apply(this, root, themeBackground(), themeUsesDarkSystemIcons());
         refreshLibrary();
     }
 
@@ -865,7 +865,7 @@ public class MainActivity extends Activity {
         brandRow.addView(accountButton, new LinearLayout.LayoutParams(dp(46), dp(46)));
         updateAccountButton();
 
-        themeButton = iconButton("navy".equals(appTheme) ? "✦" : "◐");
+        themeButton = iconButton("navy".equals(appTheme) ? "✦" : ("custom".equals(appTheme) ? "◆" : "◐"));
         themeButton.setTextSize(16);
         themeButton.setContentDescription("App theme");
         themeButton.setOnClickListener(v -> showAppThemeDialog());
@@ -1562,7 +1562,7 @@ public class MainActivity extends Activity {
         chip.setGravity(Gravity.CENTER);
         chip.setPadding(dp(12), 0, dp(12), 0);
         chip.setSingleLine(true);
-        chip.setBackground(roundRect(selected ? (isBlackAppTheme() ? Color.rgb(49, 48, 75) : Color.rgb(245, 243, 255)) : themeControlSurface(),
+        chip.setBackground(roundRect(selected ? themeSelectedSurface() : themeControlSurface(),
                 dp(17), dp(1), selected ? themeAccent() : themeStroke()));
         return chip;
     }
@@ -1665,7 +1665,7 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(12), dp(4), dp(10), dp(4));
-        row.setBackground(roundRect(selected ? (isBlackAppTheme() ? Color.rgb(49, 48, 75) : Color.rgb(246, 244, 255)) : themeControlSurface(),
+        row.setBackground(roundRect(selected ? themeSelectedSurface() : themeControlSurface(),
                 dp(15), dp(1), selected ? themeAccent() : themeStroke()));
         row.setClickable(true);
         LinearLayout copy = new LinearLayout(this);
@@ -1923,7 +1923,7 @@ public class MainActivity extends Activity {
         brandRow.addView(accountButton, new LinearLayout.LayoutParams(dp(46), dp(46)));
         updateAccountButton();
 
-        themeButton = iconButton("navy".equals(appTheme) ? "✦" : "◐");
+        themeButton = iconButton("navy".equals(appTheme) ? "✦" : ("custom".equals(appTheme) ? "◆" : "◐"));
         themeButton.setTextSize(16);
         themeButton.setContentDescription("App theme");
         themeButton.setOnClickListener(v -> showAppThemeDialog());
@@ -2174,75 +2174,109 @@ public class MainActivity extends Activity {
 
     private boolean isBlackAppTheme() { return "black".equals(appTheme); }
     private boolean isNavyAppTheme() { return "navy".equals(appTheme); }
+    private boolean isCustomAppTheme() { return "custom".equals(appTheme); }
+    private AppThemePalette customPalette() { return AppThemePalette.custom(prefs); }
+    private boolean isDarkAppTheme() {
+        if (isBlackAppTheme() || isNavyAppTheme()) return true;
+        return isCustomAppTheme() && !customPalette().darkSystemIcons;
+    }
+    private boolean themeUsesDarkSystemIcons() { return !isDarkAppTheme(); }
 
     private int themeBackground() {
+        if (isCustomAppTheme()) return customPalette().background;
         if (isBlackAppTheme()) return Color.rgb(12, 13, 16);
         if (isNavyAppTheme()) return Color.rgb(3, 28, 48);
         return Color.rgb(247, 248, 251);
     }
 
     private int themeCardSurface() {
+        if (isCustomAppTheme()) return customPalette().card;
         if (isBlackAppTheme()) return Color.rgb(27, 29, 34);
         if (isNavyAppTheme()) return Color.rgb(7, 44, 70);
         return Color.WHITE;
     }
 
     private int themeControlSurface() {
+        if (isCustomAppTheme()) return customPalette().control;
         if (isBlackAppTheme()) return Color.rgb(35, 37, 43);
         if (isNavyAppTheme()) return Color.rgb(10, 51, 79);
         return Color.argb(232, 255, 255, 255);
     }
 
     private int themeSearchSurface() {
+        if (isCustomAppTheme()) return customPalette().control;
         if (isBlackAppTheme()) return Color.rgb(28, 30, 35);
         if (isNavyAppTheme()) return Color.rgb(6, 42, 67);
         return Color.argb(232, 255, 255, 255);
     }
 
     private int themePrimaryText() {
+        if (isCustomAppTheme()) return customPalette().primary;
         return (isBlackAppTheme() || isNavyAppTheme()) ? Color.rgb(244, 247, 250) : Color.rgb(31, 34, 40);
     }
 
     private int themeSecondaryText() {
+        if (isCustomAppTheme()) return customPalette().secondary;
         if (isBlackAppTheme()) return Color.rgb(178, 183, 192);
         if (isNavyAppTheme()) return Color.rgb(165, 196, 213);
         return Color.rgb(105, 110, 122);
     }
 
     private int themeAccent() {
+        if (isCustomAppTheme()) return customPalette().accent;
         if (isBlackAppTheme()) return Color.rgb(151, 166, 255);
         if (isNavyAppTheme()) return Color.rgb(239, 194, 91);
         return Color.rgb(82, 82, 214);
     }
 
     private int themeStroke() {
+        if (isCustomAppTheme()) return customPalette().stroke;
         if (isBlackAppTheme()) return Color.rgb(55, 59, 68);
         if (isNavyAppTheme()) return Color.rgb(26, 91, 120);
         return Color.rgb(224, 227, 234);
     }
 
     private int themeTrackColor() {
+        if (isCustomAppTheme()) return AppThemePalette.blend(customPalette().control, customPalette().background, 0.45f);
         if (isBlackAppTheme()) return Color.rgb(50, 53, 61);
         if (isNavyAppTheme()) return Color.rgb(18, 67, 91);
         return Color.rgb(236, 238, 243);
     }
 
     private int[] themeHeroColors() {
+        if (isCustomAppTheme()) {
+            AppThemePalette p = customPalette();
+            return p.darkSystemIcons
+                    ? new int[]{AppThemePalette.blend(p.accent, p.background, 0.90f), p.card}
+                    : new int[]{p.control, p.background};
+        }
         if (isBlackAppTheme()) return new int[]{Color.rgb(30, 32, 39), Color.rgb(19, 20, 25)};
         if (isNavyAppTheme()) return new int[]{Color.rgb(4, 45, 73), Color.rgb(2, 29, 51), Color.rgb(4, 52, 74)};
         return new int[]{Color.rgb(239, 243, 255), Color.rgb(255, 247, 242)};
     }
 
     private int[] themeFabColors() {
+        if (isCustomAppTheme()) {
+            AppThemePalette p = customPalette();
+            return new int[]{p.accent, AppThemePalette.blend(p.accent, p.background, 0.28f)};
+        }
         if (isBlackAppTheme()) return new int[]{Color.rgb(104, 91, 226), Color.rgb(63, 79, 170)};
         if (isNavyAppTheme()) return new int[]{Color.rgb(8, 174, 199), Color.rgb(10, 105, 145)};
         return new int[]{Color.rgb(92, 76, 226), Color.rgb(71, 113, 236)};
     }
 
     private int themeDiscoverySurface(int lightFallback) {
+        if (isCustomAppTheme()) return customPalette().control;
         if (isBlackAppTheme()) return Color.rgb(29, 32, 38);
         if (isNavyAppTheme()) return Color.rgb(7, 49, 77);
         return lightFallback;
+    }
+
+    private int themeSelectedSurface() {
+        if (isCustomAppTheme()) return AppThemePalette.blend(themeAccent(), themeCardSurface(), 0.82f);
+        if (isBlackAppTheme()) return Color.rgb(49, 48, 75);
+        if (isNavyAppTheme()) return Color.rgb(18, 48, 75);
+        return Color.rgb(246, 244, 255);
     }
 
     private void applySystemBarTheme() {
@@ -2250,16 +2284,16 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(bg);
         getWindow().setNavigationBarColor(bg);
         int flags = 0;
-        if (!isBlackAppTheme() && !isNavyAppTheme()) flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        if (themeUsesDarkSystemIcons()) flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
         getWindow().getDecorView().setSystemUiVisibility(flags);
     }
 
     // WOW_UX_REFRESH_V214
     private void showAppThemeDialog() {
-        final String[] labels = {"White", "Black", "Navy Premium"};
-        final String[] values = {"white", "black", "navy"};
-        final String[] icons = {"☀", "☾", "✦"};
-        int selected = isBlackAppTheme() ? 1 : (isNavyAppTheme() ? 2 : 0);
+        final String[] labels = {"White", "Black", "Navy Premium", "Custom"};
+        final String[] values = {"white", "black", "navy", "custom"};
+        final String[] icons = {"☀", "☾", "✦", "◆"};
+        int selected = isBlackAppTheme() ? 1 : (isNavyAppTheme() ? 2 : (isCustomAppTheme() ? 3 : 0));
 
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
@@ -2269,7 +2303,7 @@ public class MainActivity extends Activity {
         int text = themePrimaryText();
         int sub = themeSecondaryText();
         int stroke = themeStroke();
-        int accent = Color.rgb(111, 78, 202);
+        int accent = themeAccent();
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -2292,7 +2326,8 @@ public class MainActivity extends Activity {
             int rowAccent = i == 2 ? accent : themeAccent();
             int fill;
             if (active) {
-                fill = isBlackAppTheme() ? Color.rgb(43, 40, 58)
+                fill = isCustomAppTheme() ? themeSelectedSurface()
+                        : isBlackAppTheme() ? Color.rgb(43, 40, 58)
                         : isNavyAppTheme() ? Color.rgb(18, 48, 75)
                         : Color.rgb(248, 246, 255);
             } else fill = themeControlSurface();
@@ -2339,9 +2374,14 @@ public class MainActivity extends Activity {
             row.setOnClickListener(v -> {
                 String chosen = values[which];
                 dialog.dismiss();
+                if ("custom".equals(chosen)) {
+                    showCustomThemeDialog();
+                    return;
+                }
                 if (!chosen.equals(appTheme)) {
                     appTheme = chosen;
-                    prefs.edit().putString("app_theme", appTheme).apply();
+                    prefs.edit().putString("app_theme", appTheme)
+                            .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
                     recreate();
                 }
             });
@@ -2378,6 +2418,143 @@ public class MainActivity extends Activity {
                 window.setBackgroundBlurRadius(dp(24));
             }
         }
+    }
+
+
+    private void showCustomThemeDialog() {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Custom theme", "Choose any colour · readable contrast is generated automatically", dialog);
+
+        int currentSeed = prefs.getInt(AppThemePalette.PREF_CUSTOM_SEED, AppThemePalette.DEFAULT_CUSTOM_SEED);
+
+        LinearLayout preview = new LinearLayout(this);
+        preview.setOrientation(LinearLayout.VERTICAL);
+        preview.setPadding(dp(16), dp(12), dp(16), dp(12));
+        TextView previewTitle = new TextView(this);
+        previewTitle.setText("WoW Reader");
+        previewTitle.setTextSize(18);
+        previewTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        TextView previewSub = new TextView(this);
+        previewSub.setText("Custom theme preview");
+        previewSub.setTextSize(11.5f);
+        previewSub.setPadding(0, dp(3), 0, 0);
+        TextView previewAccent = new TextView(this);
+        previewAccent.setText("Accent · buttons · links");
+        previewAccent.setTextSize(11.5f);
+        previewAccent.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        previewAccent.setPadding(0, dp(8), 0, 0);
+        preview.addView(previewTitle);
+        preview.addView(previewSub);
+        preview.addView(previewAccent);
+        LinearLayout.LayoutParams previewLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(92));
+        previewLp.topMargin = dp(6);
+        sheet.addView(preview, previewLp);
+
+        TextView label = new TextView(this);
+        label.setText("HEX COLOR");
+        label.setTextSize(10.5f);
+        label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        label.setTextColor(themeSecondaryText());
+        label.setPadding(dp(2), dp(12), dp(2), dp(5));
+        sheet.addView(label);
+
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(AppThemePalette.toHex(currentSeed));
+        input.setTextSize(15f);
+        input.setTextColor(themePrimaryText());
+        input.setHintTextColor(themeSecondaryText());
+        input.setPadding(dp(14), 0, dp(14), 0);
+        input.setSelectAllOnFocus(true);
+        input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(7)});
+        input.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
+        sheet.addView(input, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        HorizontalScrollView presetScroll = new HorizontalScrollView(this);
+        presetScroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout presets = new LinearLayout(this);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        presets.setPadding(0, dp(10), dp(12), dp(4));
+        int[] presetColors = {
+                Color.rgb(111, 78, 209), Color.rgb(51, 102, 204), Color.rgb(15, 130, 154),
+                Color.rgb(42, 132, 92), Color.rgb(210, 119, 46), Color.rgb(190, 65, 76),
+                Color.rgb(190, 73, 140), Color.rgb(120, 83, 62), Color.rgb(77, 86, 105)
+        };
+        for (int color : presetColors) {
+            TextView swatch = new TextView(this);
+            swatch.setText("●");
+            swatch.setTextSize(31);
+            swatch.setTextColor(color);
+            swatch.setGravity(Gravity.CENTER);
+            swatch.setContentDescription("Use " + AppThemePalette.toHex(color));
+            swatch.setBackground(roundRect(themeCardSurface(), dp(18), dp(1), themeStroke()));
+            swatch.setOnClickListener(v -> {
+                input.setText(AppThemePalette.toHex(color));
+                input.setSelection(input.length());
+            });
+            LinearLayout.LayoutParams swatchLp = new LinearLayout.LayoutParams(dp(48), dp(48));
+            if (presets.getChildCount() > 0) swatchLp.leftMargin = dp(7);
+            presets.addView(swatch, swatchLp);
+        }
+        presetScroll.addView(presets);
+        sheet.addView(presetScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
+
+        TextWatcher previewWatcher = new TextWatcher() {
+            private void update(CharSequence value) {
+                Integer seed = AppThemePalette.parseHex(value == null ? null : value.toString());
+                if (seed == null) return;
+                AppThemePalette p = AppThemePalette.customFromSeed(seed);
+                preview.setBackground(roundRect(p.card, dp(18), dp(1), p.stroke));
+                previewTitle.setTextColor(p.primary);
+                previewSub.setTextColor(p.secondary);
+                previewAccent.setTextColor(p.accent);
+            }
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { update(s); }
+            @Override public void afterTextChanged(Editable s) {}
+        };
+        input.addTextChangedListener(previewWatcher);
+        Integer initial = AppThemePalette.parseHex(input.getText().toString());
+        if (initial != null) {
+            AppThemePalette p = AppThemePalette.customFromSeed(initial);
+            preview.setBackground(roundRect(p.card, dp(18), dp(1), p.stroke));
+            previewTitle.setTextColor(p.primary);
+            previewSub.setTextColor(p.secondary);
+            previewAccent.setTextColor(p.accent);
+        }
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView cancel = filterChoice("Cancel", false);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        TextView apply = filterChoice("Apply theme", true);
+        apply.setTextColor(Color.WHITE);
+        apply.setBackground(roundRect(themeAccent(), dp(17), 0, 0));
+        apply.setOnClickListener(v -> {
+            Integer seed = AppThemePalette.parseHex(input.getText().toString());
+            if (seed == null) {
+                Toast.makeText(this, "Enter a valid HEX colour, for example #6F4ED1", Toast.LENGTH_LONG).show();
+                return;
+            }
+            prefs.edit().putInt(AppThemePalette.PREF_CUSTOM_SEED, seed)
+                    .putString("app_theme", "custom")
+                    .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
+            appTheme = "custom";
+            dialog.dismiss();
+            recreate();
+        });
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(94), dp(40));
+        cancelLp.rightMargin = dp(8);
+        actions.addView(cancel, cancelLp);
+        actions.addView(apply, new LinearLayout.LayoutParams(dp(120), dp(40)));
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        actionsLp.topMargin = dp(8);
+        sheet.addView(actions, actionsLp);
+
+        presentBottomSheet(dialog, sheet, 0.80f);
     }
 
     private GradientDrawable gradientRoundRect(int[] colors, int radius) {

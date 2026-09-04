@@ -3596,7 +3596,6 @@ public class BookReaderActivity extends Activity {
                 "Reading mode · " + readingModeDisplayName(),
                 "Page animation · " + pageAnimationDisplayName(),
                 "Text alignment · " + alignmentDisplayName(),
-                "Auto spacing adjustment · " + onOff(autoSpacingAdjustment),
                 "Font size · " + fontPercent + "%",
                 "Font · " + fontDisplayName(),
                 "Line spacing · " + lineSpacingDisplay(),
@@ -3616,36 +3615,30 @@ public class BookReaderActivity extends Activity {
                         case 0: showReadingModeDialog(); break;
                         case 1: showPageAnimationDialog(); break;
                         case 2: showAlignmentDialog(); break;
-                        case 3:
-                            autoSpacingAdjustment = !autoSpacingAdjustment;
-                            saveReaderPreferences();
-                            applyReaderStyleSmooth(true);
-                            showReaderSettings();
-                            break;
-                        case 4: showFontSizeDialog(); break;
-                        case 5: showFontDialog(); break;
-                        case 6: showLineSpacingDialog(); break;
-                        case 7: showMarginDialog(); break;
-                        case 8: showThemeDialog(); break;
-                        case 9: showBrightnessDialog(); break;
-                        case 10:
+                        case 3: showFontSizeDialog(); break;
+                        case 4: showFontDialog(); break;
+                        case 5: showLineSpacingDialog(); break;
+                        case 6: showMarginDialog(); break;
+                        case 7: showThemeDialog(); break;
+                        case 8: showBrightnessDialog(); break;
+                        case 9:
                             keepScreenOn = !keepScreenOn;
                             saveReaderPreferences();
                             applyWindowPreferences();
                             showReaderSettings();
                             break;
-                        case 11:
+                        case 10:
                             lockOrientation = !lockOrientation;
                             saveReaderPreferences();
                             applyWindowPreferences();
                             showReaderSettings();
                             break;
-                        case 12:
+                        case 11:
                             volumeChapterKeys = !volumeChapterKeys;
                             saveReaderPreferences();
                             showReaderSettings();
                             break;
-                        case 13: resetReaderPreferences(); break;
+                        case 12: resetReaderPreferences(); break;
                     }
                 })
                 .setNegativeButton("Close", null)
@@ -3687,43 +3680,27 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showAlignmentDialog() {
-        String[] labels = {"Justify", "Left", "Right"};
-        String[] values = {"justify", "left", "right"};
-        int selected = "left".equals(textAlignment) ? 1 : ("right".equals(textAlignment) ? 2 : 0);
+        String[] labels = {"Justify · Normal", "Justify · Auto spacing", "Left", "Right"};
+        int selected;
+        if ("left".equals(textAlignment)) selected = 2;
+        else if ("right".equals(textAlignment)) selected = 3;
+        else selected = autoSpacingAdjustment ? 1 : 0;
         new AlertDialog.Builder(this)
                 .setTitle("Text alignment")
-                .setSingleChoiceItems(labels, selected, (dialog, which) -> {
-                    textAlignment = values[which];
+                .setItems(labels, (dialog, which) -> {
+                    if (which == 0) {
+                        textAlignment = "justify";
+                        autoSpacingAdjustment = false;
+                    } else if (which == 1) {
+                        textAlignment = "justify";
+                        autoSpacingAdjustment = true;
+                    } else if (which == 2) {
+                        textAlignment = "left";
+                    } else {
+                        textAlignment = "right";
+                    }
                     saveReaderPreferences();
                     applyReaderStyleSmooth(true);
-                    dialog.dismiss();
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private void showPdfSettings() {
-        String[] options = new String[]{
-                "Brightness · " + brightnessDisplayName(),
-                "Keep screen on · " + onOff(keepScreenOn),
-                "Lock orientation · " + onOff(lockOrientation)
-        };
-
-        new AlertDialog.Builder(this)
-                .setTitle("Reader settings")
-                .setItems(options, (d, which) -> {
-                    if (which == 0) showBrightnessDialog();
-                    else if (which == 1) {
-                        keepScreenOn = !keepScreenOn;
-                        saveReaderPreferences();
-                        applyWindowPreferences();
-                        showPdfSettings();
-                    } else if (which == 2) {
-                        lockOrientation = !lockOrientation;
-                        saveReaderPreferences();
-                        applyWindowPreferences();
-                        showPdfSettings();
-                    }
                 })
                 .setNegativeButton("Close", null)
                 .show();
@@ -3993,7 +3970,7 @@ public class BookReaderActivity extends Activity {
     private String alignmentDisplayName() {
         if ("left".equals(textAlignment)) return "Left";
         if ("right".equals(textAlignment)) return "Right";
-        return "Justify";
+        return autoSpacingAdjustment ? "Justify · Auto spacing" : "Justify · Normal";
     }
 
     private String fontDisplayName() {

@@ -42,8 +42,11 @@ public final class AppThemePalette {
     public static AppThemePalette custom(SharedPreferences prefs) {
         int seed = prefs == null ? DEFAULT_CUSTOM_SEED
                 : prefs.getInt(PREF_CUSTOM_SEED, DEFAULT_CUSTOM_SEED);
-        seed = Color.rgb(Color.red(seed), Color.green(seed), Color.blue(seed));
+        return customFromSeed(seed);
+    }
 
+    public static AppThemePalette customFromSeed(int rawSeed) {
+        int seed = Color.rgb(Color.red(rawSeed), Color.green(rawSeed), Color.blue(rawSeed));
         double seedLum = luminance(seed);
         boolean dark = seedLum < 0.24d;
         if (dark) {

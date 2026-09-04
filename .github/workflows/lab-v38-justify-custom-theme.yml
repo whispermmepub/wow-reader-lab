@@ -4,7 +4,7 @@ on:
     branches:
       - feature/lab-v38-justify-custom-theme
 permissions:
-  contents: read
+  contents: write
 jobs:
   verify:
     runs-on: ubuntu-24.04
@@ -12,6 +12,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/lab-v38-justify-custom-theme
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore PDF settings method if needed
+        run: python scripts/fix_v38_pdf_settings.py
       - name: Verify v38 source contract
         run: |
           set -euxo pipefail
@@ -20,6 +26,7 @@ jobs:
           grep -q 'Justify · Normal' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q 'Justify · Auto spacing' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           ! grep -q 'Auto spacing adjustment ·' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'private void showPdfSettings()' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q 'text-justify:inter-character' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q 'AppThemePalette.isSupportedTheme' app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q 'showCustomThemeDialog' app/src/main/java/com/whisper/wowreader/MainActivity.java
@@ -29,6 +36,15 @@ jobs:
           grep -q 'Intent.EXTRA_ALLOW_MULTIPLE,true' app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q 'function nodes()' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           git diff --check
+      - name: Commit restored v38 source if needed
+        run: |
+          git config user.name "AungSoe Moe"
+          git config user.email "61192036+whispermmepub@users.noreply.github.com"
+          git add app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          if ! git diff --cached --quiet; then
+            git commit -m "Restore PDF reader settings after v38 alignment refactor"
+            git push origin HEAD:feature/lab-v38-justify-custom-theme
+          fi
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

@@ -1235,6 +1235,16 @@ public class BookReaderActivity extends Activity {
     private void handleReaderTap(float x, float y) {
         if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;
         if (webView == null || chapterLoading || tapHitTestPending) return;
+        // Use WebView native hit testing before the async DOM hit test. This is density-safe
+        // and prevents a real anchor/footnote tap from also being treated as an edge page turn.
+        try {
+            android.webkit.WebView.HitTestResult nativeHit = webView.getHitTestResult();
+            if (nativeHit != null) {
+                int hitType = nativeHit.getType();
+                if (hitType == android.webkit.WebView.HitTestResult.SRC_ANCHOR_TYPE ||
+                        hitType == android.webkit.WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) return;
+            }
+        } catch (Exception ignored) {}
 
         final float ratio = x / Math.max(1f, webView.getWidth());
         final int px = Math.round(x);

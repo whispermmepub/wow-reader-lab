@@ -186,6 +186,7 @@ public class BookReaderActivity extends Activity {
     private String footnotePreviewLabel = "";
     private ReaderSearchIndex.Footnote footnotePreviewNote = null;
     private boolean footnoteReturnPending = false;
+    private boolean footnoteExactBacklinkPending = false;
 
     // Search remains transient until the user intentionally closes it on a result page.
     private Dialog bookSearchDialog = null;
@@ -636,6 +637,7 @@ public class BookReaderActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                installReaderLinkNavigation(view);
                 if (view != webView) {
                     handlePreloadPageFinished(view, url);
                     return;
@@ -681,7 +683,11 @@ public class BookReaderActivity extends Activity {
     }
 
     private void installReaderLinkNavigation() {
-        if (webView == null) return;
+        installReaderLinkNavigation(webView);
+    }
+
+    private void installReaderLinkNavigation(WebView targetView) {
+        if (targetView == null) return;
         String js = "(function(){try{" +
                 "if(window.__wowReaderLinkNavInstalled)return true;window.__wowReaderLinkNavInstalled=true;" +
                 "document.addEventListener('click',function(ev){try{" +
@@ -689,11 +695,11 @@ public class BookReaderActivity extends Activity {
                 "var href=a.getAttribute('href')||'',ep=a.getAttribute('epub:type')||a.getAttribute('type')||'';" +
                 "try{ep=ep||a.getAttributeNS('http://www.idpf.org/2007/ops','type')||'';}catch(_e){}" +
                 "var role=a.getAttribute('role')||'',rel=a.getAttribute('rel')||'',cls=(typeof a.className==='string'?a.className:'');" +
-                "var sid='',n=a;for(var i=0;i<5&&n;i++,n=n.parentElement){if(n.id){sid=n.id;break;}}" +
-                "var label=(a.textContent||'').replace(/\s+/g,' ').trim();" +
+                "var sid='',n=a;for(var i=0;i<6&&n;i++,n=n.parentElement){if(n.id){sid=n.id;break;}}" +
+                "var label=(a.textContent||'').replace(/\\s+/g,' ').trim();" +
                 "if(WoW.onReaderLinkTap(href,ep,role,rel,cls,sid,label)){ev.preventDefault();ev.stopImmediatePropagation();return false;}" +
                 "}catch(_e){}},true);return true;}catch(e){return false;}})()";
-        try { webView.evaluateJavascript(js, null); } catch (Exception ignored) {}
+        try { targetView.evaluateJavascript(js, null); } catch (Exception ignored) {}
     }
 
     private void requestFootnotePreview(String href, String label, String sourceId) {
@@ -730,6 +736,14 @@ public class BookReaderActivity extends Activity {
         footnotePreviewOverlay = null;
     }
 
+    private void cancelFootnotePreview() {
+        dismissFootnotePreview();
+        if (!footnoteNavigationActive && !footnoteReturnPending && !footnoteExactBacklinkPending) {
+            footnoteReturnArmed = false;
+            footnoteArmToken++;
+        }
+    }
+
     private void showFootnotePreview(ReaderSearchIndex.Footnote note, String label) {
         if (isFinishing() || note == null || root == null) return;
         dismissFootnotePreview();
@@ -739,7 +753,7 @@ public class BookReaderActivity extends Activity {
         overlay.setClickable(true);
         overlay.setFocusable(true);
         overlay.setBackgroundColor(Color.argb(22, 0, 0, 0));
-        overlay.setOnClickListener(v -> dismissFootnotePreview());
+        overlay.setOnClickListener(v -> cancelFootnotePreview());
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -771,7 +785,7 @@ public class BookReaderActivity extends Activity {
         close.setTextSize(24f);
         close.setTextColor(readerPanelSubText());
         close.setGravity(Gravity.CENTER);
-        close.setOnClickListener(v -> dismissFootnotePreview());
+        close.setOnClickListener(v -> cancelFootnotePreview());
         head.addView(close, new LinearLayout.LayoutParams(dp(42), dp(40)));
         card.addView(head);
 
@@ -787,8 +801,25 @@ public class BookReaderActivity extends Activity {
         body.setLineSpacing(dp(3), 1.08f);
         body.setPadding(dp(2), dp(4), dp(2), dp(8));
         scroll.addView(body, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        int maxBody = Math.max(dp(100), (int) (getResources().getDisplayMetrics().heightPixels * 0.38f));
+        int maxBody = Math.max(dp(100), (int) (getResources().getDisplayMetrics().heightPixels * 0.34f));
         card.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxBody));
+
+        TextView show = new TextView(this);
+        show.setText("Show on page");
+        show.setTextSize(14.5f);
+        show.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+        show.setTextColor(readerAccent());
+        show.setGravity(Gravity.CENTER);
+        show.setBackground(glassPanel(readerSelectedSurface(), dp(20), readerPanelStroke()));
+        show.setOnClickListener(v -> {
+            ReaderSearchIndex.Footnote target = footnotePreviewNote;
+            if (target == null) return;
+            navigateToFootnote(target);
+            dismissFootnotePreview();
+        });
+        LinearLayout.LayoutParams showLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+        showLp.topMargin = dp(8);
+        card.addView(show, showLp);
 
         FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
@@ -822,7 +853,79 @@ public class BookReaderActivity extends Activity {
         return value == null ? "" : value.toLowerCase(Locale.ROOT);
     }
 
+    private String footnoteHrefFragment(String href) {
+        if (href == null) return "";
+        int hash = href.indexOf('#');
+        if (hash < 0 || hash + 1 >= href.length()) return "";
+        try { return Uri.decode(href.substring(hash + 1)).trim(); }
+        catch (Exception ignored) { return href.substring(hash + 1).trim(); }
+    }
+
+    private boolean looksLikeExplicitBacklinkHref(String href) {
+        String frag = navLower(footnoteHrefFragment(href)).replace('-', '_');
+        if (frag.isEmpty()) return false;
+        return frag.startsWith("_ftnref") || frag.startsWith("ftnref") ||
+                frag.startsWith("_fnref") || frag.startsWith("fnref") ||
+                frag.startsWith("_ednref") || frag.startsWith("ednref") ||
+                frag.startsWith("noteref") || frag.startsWith("note_ref") ||
+                frag.contains("footnote_back") || frag.contains("note_back") || frag.contains("backlink");
+    }
+
+    private boolean isNotesSpine(int index) {
+        if (index < 0 || index >= spine.size()) return false;
+        String title = index < chapterTitles.size() ? chapterTitles.get(index) : "";
+        String file = spine.get(index) == null ? "" : spine.get(index).getName();
+        String meta = navLower(title + " " + file).replace('_', ' ').replace('-', ' ').replace('.', ' ');
+        return meta.matches(".*\\b(footnotes?|endnotes?|notes?)\\b.*");
+    }
+
+    private void finishExactFootnoteBacklink() {
+        if (!footnoteExactBacklinkPending) return;
+        footnoteExactBacklinkPending = false;
+        if (webView == null) {
+            footnoteNavigationActive = false;
+            footnoteReturnArmed = false;
+            footnoteReturnPending = false;
+            return;
+        }
+        webView.postDelayed(() -> {
+            footnoteNavigationActive = false;
+            footnoteReturnArmed = false;
+            footnoteReturnPending = false;
+            updateEpubProgress(currentProgressPermille);
+            saveEpubStateOnly();
+            updateBookmarkIcon();
+        }, 150L);
+    }
+
+    private boolean navigateExactFootnoteBacklink(String href) {
+        if (webView == null || spine.isEmpty() || href == null || href.trim().isEmpty()) return false;
+        int target = ReaderSearchIndex.resolveTargetSpine(spine, currentSpine, href);
+        String fragment = footnoteHrefFragment(href);
+        if (target < 0 || target >= spine.size() || fragment.isEmpty()) return false;
+        footnoteNavigationActive = true;
+        footnoteReturnArmed = false;
+        footnoteReturnPending = false;
+        footnoteExactBacklinkPending = true;
+        footnoteArmToken++;
+        pendingTocFragment = fragment;
+        if (target == currentSpine) {
+            jumpToPendingTocFragment(this::finishExactFootnoteBacklink);
+            return true;
+        }
+        currentSpine = target;
+        currentProgressPermille = 0;
+        loadCurrentEpubChapter();
+        return true;
+    }
+
+    private void handleFootnoteBacklink(String href) {
+        if (navigateExactFootnoteBacklink(href)) return;
+        restoreFootnoteReturn();
+    }
+
     private boolean looksLikeFootnoteReference(String href, String epubType, String role, String rel, String cssClass) {
+        if (looksLikeExplicitBacklinkHref(href)) return false;
         String meta = navLower(epubType + " " + role + " " + rel + " " + cssClass);
         if (meta.contains("noteref") || meta.contains("doc-noteref") || meta.contains("footnote-ref") ||
                 meta.contains("footnoteref") || meta.contains("fnref") || meta.contains("endnote-ref")) return true;
@@ -850,20 +953,20 @@ public class BookReaderActivity extends Activity {
         String meta = navLower(epubType + " " + role + " " + rel + " " + cssClass);
         if (meta.contains("backlink") || meta.contains("doc-backlink") || meta.contains("footnote-back") ||
                 meta.contains("note-back") || meta.contains("fnback")) return true;
+        if (looksLikeExplicitBacklinkHref(href)) return true;
+
         String source = footnoteReturnSourceId == null ? "" : footnoteReturnSourceId.trim();
         if (!source.isEmpty() && href != null) {
-            int hash = href.indexOf('#');
-            if (hash >= 0 && hash + 1 < href.length()) {
-                String fragment = Uri.decode(href.substring(hash + 1));
-                if (source.equals(fragment)) return true;
-            }
+            String fragment = footnoteHrefFragment(href);
+            if (source.equals(fragment)) return true;
         }
-        // Dedicated Notes chapters often use opaque backlink ids. If the note is open and
-        // the tapped internal link resolves back to the exact source spine, treat it as Return.
-        if (footnoteNavigationActive && href != null && href.indexOf('#') >= 0 &&
-                currentSpine != footnoteReturnSpine && footnoteReturnSpine >= 0) {
+
+        if (href != null && href.indexOf('#') >= 0 && !spine.isEmpty()) {
             int target = ReaderSearchIndex.resolveTargetSpine(spine, currentSpine, href);
-            if (target == footnoteReturnSpine) return true;
+            if (target >= 0 && target < spine.size()) {
+                if (footnoteNavigationActive && footnoteReturnSpine >= 0 && target == footnoteReturnSpine) return true;
+                if (isNotesSpine(currentSpine) && target != currentSpine && !isNotesSpine(target)) return true;
+            }
         }
         return false;
     }
@@ -873,17 +976,13 @@ public class BookReaderActivity extends Activity {
         footnoteReturnSpine = currentSpine;
         footnoteReturnProgressPermille = currentProgressPermille;
         footnoteReturnPage = currentPageInChapter;
-        footnoteReturnSourceId = sourceId == null ? "" : sourceId;
+        footnoteReturnSourceId = sourceId == null ? "" : sourceId.trim();
         String url = webView.getUrl();
         footnoteReturnSourceUrl = url == null ? "" : url;
         footnoteReturnArmed = true;
-        long token = ++footnoteArmToken;
-        webView.postDelayed(() -> {
-            synchronized (BookReaderActivity.this) {
-                if (token == footnoteArmToken && footnoteReturnArmed && !footnoteNavigationActive)
-                    footnoteReturnArmed = false;
-            }
-        }, 20000L);
+        footnoteReturnPending = false;
+        footnoteExactBacklinkPending = false;
+        footnoteArmToken++;
     }
 
     private synchronized void onReaderVisitedUrl(String url) {
@@ -900,9 +999,8 @@ public class BookReaderActivity extends Activity {
             int targetSpine = Math.max(0, Math.min(spine.size() - 1, footnoteReturnSpine));
             int targetProgress = Math.max(0, Math.min(1000, footnoteReturnProgressPermille));
             int targetPage = Math.max(1, footnoteReturnPage);
-            footnoteNavigationActive = false;
+            String sourceId = footnoteReturnSourceId == null ? "" : footnoteReturnSourceId.trim();
             footnoteReturnArmed = false;
-            footnoteReturnPending = true;
             footnoteArmToken++;
             currentSpine = targetSpine;
             currentProgressPermille = targetProgress;
@@ -911,8 +1009,25 @@ public class BookReaderActivity extends Activity {
             String actual = webView.getUrl();
             if (actual != null) { int hash = actual.indexOf('#'); if (hash >= 0) actual = actual.substring(0, hash); }
             boolean sameDocument = expected.equals(actual);
+
+            if (!sourceId.isEmpty()) {
+                footnoteNavigationActive = true;
+                footnoteReturnPending = false;
+                footnoteExactBacklinkPending = true;
+                pendingTocFragment = sourceId;
+                if (!sameDocument) {
+                    loadCurrentEpubChapter();
+                    return;
+                }
+                jumpToPendingTocFragment(this::finishExactFootnoteBacklink);
+                return;
+            }
+
+            footnoteNavigationActive = false;
+            footnoteReturnPending = true;
+            footnoteExactBacklinkPending = false;
             if (!sameDocument) {
-                pendingTocFragment = footnoteReturnSourceId == null ? "" : footnoteReturnSourceId;
+                pendingTocFragment = "";
                 loadCurrentEpubChapter();
                 return;
             }
@@ -1165,7 +1280,8 @@ public class BookReaderActivity extends Activity {
             }
 
             @Override public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
-                if (!"page".equals(readingMode) || e1 == null || e2 == null || chapterLoading || pageTurnLocked)
+                if (!"page".equals(readingMode) || e1 == null || e2 == null || chapterLoading || pageTurnLocked ||
+                        readerTouchStartedOnLink || android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs)
                     return false;
                 float dx = e2.getX() - e1.getX();
                 float dy = e2.getY() - e1.getY();
@@ -1286,7 +1402,7 @@ public class BookReaderActivity extends Activity {
 
         String hitTest = "(function(){try{" +
                 "if(window.getSelection&&String(window.getSelection()).length>0)return 'selection';" +
-                "var n=document.elementFromPoint(" + px + "," + py + ");" +
+                "var d=window.devicePixelRatio||1,n=document.elementFromPoint((" + px + ")/d,(" + py + ")/d);" +
                 "while(n){if(n.tagName&&n.tagName.toLowerCase()==='a')return 'link';n=n.parentElement;}" +
                 "return 'plain';}catch(e){return 'plain';}})()";
 
@@ -1300,7 +1416,9 @@ public class BookReaderActivity extends Activity {
                     else if (ratio > 0.66f) turnPageFromTap(1, y);
                     else toggleControls();
                 } else {
-                    toggleControls();
+                    if (ratio < 0.24f) navigateChapter(-1, true);
+                    else if (ratio > 0.76f) navigateChapter(1, false);
+                    else toggleControls();
                 }
             });
         } catch (Exception ignored) {
@@ -2715,7 +2833,8 @@ public class BookReaderActivity extends Activity {
         if (generation != chapterLoadGeneration || !chapterLoading) return;
         emptyChapterSkipCount = 0;
         jumpToPendingTocFragment(() -> {
-            if (footnoteReturnPending) finishFootnoteReturnOnReady(footnoteReturnPage, footnoteReturnProgressPermille);
+            if (footnoteExactBacklinkPending) finishExactFootnoteBacklink();
+            else if (footnoteReturnPending) finishFootnoteReturnOnReady(footnoteReturnPage, footnoteReturnProgressPermille);
             if (searchNavigationActive && pendingSearchOccurrence >= 0) applyPendingSearchHit();
             if (paperGestureChapterBoundary && paperGestureReleased && paperGestureCommit) {
                 finishInteractiveChapterBoundary();
@@ -5288,17 +5407,24 @@ public class BookReaderActivity extends Activity {
         public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId, String label) {
             lastReaderLinkTapMs = android.os.SystemClock.elapsedRealtime();
             if (owner != webView) return false;
-            if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) {
-                runOnUiThread(BookReaderActivity.this::restoreFootnoteReturn);
-                return true;
-            }
-            if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) {
-                footnoteTapSuppressUntilMs = android.os.SystemClock.uptimeMillis() + 1600L;
-                final String targetHref = href == null ? "" : href;
-                final String targetLabel = label == null ? "" : label;
-                final String targetSourceId = sourceId == null ? "" : sourceId;
+            final String targetHref = href == null ? "" : href;
+            final String targetLabel = label == null ? "" : label;
+            final String targetSourceId = sourceId == null ? "" : sourceId;
+
+            if (looksLikeFootnoteBacklink(targetHref, epubType, role, rel, cssClass)) {
+                footnoteTapSuppressUntilMs = android.os.SystemClock.uptimeMillis() + 1800L;
                 runOnUiThread(() -> {
                     if (isFinishing() || owner != webView) return;
+                    handleFootnoteBacklink(targetHref);
+                });
+                return true;
+            }
+
+            if (looksLikeFootnoteReference(targetHref, epubType, role, rel, cssClass)) {
+                footnoteTapSuppressUntilMs = android.os.SystemClock.uptimeMillis() + 1800L;
+                runOnUiThread(() -> {
+                    if (isFinishing() || owner != webView) return;
+                    armFootnoteReturn(targetSourceId);
                     requestFootnotePreview(targetHref, targetLabel, targetSourceId);
                 });
                 return true;
@@ -5425,7 +5551,7 @@ public class BookReaderActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (footnotePreviewOverlay != null) { dismissFootnotePreview(); return; }
+        if (footnotePreviewOverlay != null) { cancelFootnotePreview(); return; }
         if (bookSearchDialog != null && bookSearchDialog.isShowing()) { bookSearchDialog.dismiss(); restorePreSearchLocation(); return; }
         if (!isPdf && searchNavigationActive) { showBookSearch(bookSearchQuery, true); return; }
         if (!isPdf && (footnoteNavigationActive || footnoteReturnPending)) { restoreFootnoteReturn(); return; }

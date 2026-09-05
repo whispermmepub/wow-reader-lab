@@ -1,4 +1,4 @@
-name: Build signed WoW Reader production release
+name: Build signed WoW Reader Lab v2.17.1 test release
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  signed-release:
+  signed-lab-release:
     runs-on: ubuntu-latest
     env:
       WOW_RELEASE_STORE_PASSWORD: ${{ secrets.WOW_RELEASE_STORE_PASSWORD }}
@@ -33,6 +33,16 @@ jobs:
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
+      - name: Verify Lab version
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
+          grep -q "versionCode 41" app/build.gradle
+          grep -q "versionName '2.17.1'" app/build.gradle
+          test ! -e app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
+          test ! -d cloudflare/telegram-auto-library
+
       - name: Prepare protected signing key
         env:
           WOW_RELEASE_KEYSTORE_BASE64: ${{ secrets.WOW_RELEASE_KEYSTORE_BASE64 }}
@@ -51,7 +61,7 @@ jobs:
       - name: Build, lint and sign
         run: gradle :app:clean :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
 
-      - name: Verify production signatures
+      - name: Verify signed Lab artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -60,6 +70,9 @@ jobs:
           test -s "$APK"
           test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='41'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.1'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           "$APKSIGNER" verify --verbose --print-certs "$APK"
@@ -67,18 +80,18 @@ jobs:
           keytool -printcert -jarfile "$AAB" | grep -qi '21:17:d3:1e:01:eb:24:ea:e3:fe:4a:26:88:c8:c7:12:cd:76:71:f1'
           "$APKSIGNER" verify --print-certs "$APK" | grep -qi '21:17:d3:1e:01:eb:24:ea:e3:fe:4a:26:88:c8:c7:12:cd:76:71:f1'
 
-      - name: Collect signed release
+      - name: Collect signed Lab release
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release.apk WoW-Reader-v2.14.0-production.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-v2.14.0-production.aab
+          cp app/build/outputs/apk/release/app-release.apk WoW-Reader-Lab-v2.17.1-v41-signed.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.1-v41-signed.aab
 
       - name: Upload signed artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-v2.14.0-production
+          name: WoW-Reader-Lab-v2.17.1-v41-signed
           path: |
-            WoW-Reader-v2.14.0-production.apk
-            WoW-Reader-v2.14.0-production.aab
+            WoW-Reader-Lab-v2.17.1-v41-signed.apk
+            WoW-Reader-Lab-v2.17.1-v41-signed.aab
           if-no-files-found: error
           retention-days: 14

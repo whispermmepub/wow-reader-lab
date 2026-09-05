@@ -1,4 +1,4 @@
-name: Prepare WoW Reader v2.17.8 v48 footnote stability
+name: Harden WoW Reader v2.17.8 v48 footnote stability
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  patch-build:
+  harden-build:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -32,33 +32,18 @@ jobs:
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
-      - name: Sync approved v47 source into Lab
+      - name: Apply v48 hardening
         shell: bash
         run: |
           set -euo pipefail
-          git clone --quiet https://github.com/whispermmepub/wow-reader-app.git /tmp/wow-prod
-          git -C /tmp/wow-prod checkout --quiet e075cb5e0cdcbd73fd6b4860354cd5f8c4617f17
-          cp tools/patch_footnote_v48.py /tmp/patch_footnote_v48.py
-          rm -rf app tools
-          cp -a /tmp/wow-prod/app ./app
-          cp -a /tmp/wow-prod/tools ./tools
-          cp /tmp/wow-prod/build.gradle ./build.gradle
-          cp /tmp/wow-prod/settings.gradle ./settings.gradle
-          cp /tmp/wow-prod/gradle.properties ./gradle.properties
-          cp /tmp/wow-prod/.gitignore ./.gitignore
-          cp /tmp/patch_footnote_v48.py tools/patch_footnote_v48.py
-
-      - name: Patch v48 footnote stability
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 tools/patch_footnote_v48.py
+          python3 tools/harden_footnote_v48.py
           grep -q "versionCode 48" app/build.gradle
           grep -q "versionName '2.17.8'" app/build.gradle
           grep -q 'footnotePreviewOverlay' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q 'SRC_ANCHOR_TYPE' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q 'readerTouchStartedOnLink' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q 'dismissFootnotePreview' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'footnoteTapSuppressUntilMs' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'requestFootnotePreview(targetHref, targetLabel, targetSourceId)' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'cleanFootnoteDisplayText' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           ! grep -q 'Show on page' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           ! grep -q 'armFootnoteReturn(targetSourceId)' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           git diff --check
@@ -84,14 +69,14 @@ jobs:
             "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           done
 
-      - name: Commit v48 Lab source
+      - name: Commit hardened v48 Lab source
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app tools build.gradle settings.gradle gradle.properties .gitignore
-          git commit -m 'Stabilize card-only footnotes in v2.17.8 v48'
+          git add app tools
+          git commit -m 'Harden footnote card stability in v2.17.8 v48'
           git push origin HEAD:main
 
       - name: Collect unsigned Lab artifact
@@ -102,7 +87,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-Lab-v2.17.8-v48
+          name: WoW-Reader-Lab-v2.17.8-v48-hardened
           path: |
             WoW-Reader-Lab-v2.17.8-v48-release-unsigned.apk
             WoW-Reader-Lab-v2.17.8-v48-release-unsigned.aab

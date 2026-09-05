@@ -53,6 +53,12 @@ jobs:
             java -jar input/v52/apksigner.jar verify --verbose --print-certs "$apk" > "$apk.cert.txt"
             grep -qi '29fca29f8db184aaf51335efbea8c50d51769d7748ae535617c2479e3989aca5' "$apk.cert.txt"
           done
+      - name: Upload production-signed v52 APK
+        if: matrix.api == 29
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.18.2-v52-production-signed
+          path: signed-verification/v52.apk
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -72,9 +78,3 @@ jobs:
           path: |
             verification/
             signed-verification/*.cert.txt
-      - name: Upload production-signed v52 APK
-        if: success() && matrix.api == 29
-        uses: actions/upload-artifact@v4
-        with:
-          name: WoW-Reader-Lab-v2.18.2-v52-production-signed
-          path: signed-verification/v52.apk

@@ -21,6 +21,9 @@ Existing preferences and files stay in the same locations; no destructive migrat
 Missing calendar preferences still initialize as empty objects. Empty note markers remain readable by older versions.
 
 One original-production-signed APK serves both fresh install and in-place update.
+Final original-signed verification PASS: GitHub Actions run 33991610151 on API 23, API 29 and API 35.
+Verified paths include exact production-signed v48 -> v52 update, v51 -> v52 update, fresh v52 install, retained preferences/EPUB/custom font, calendar merge/deletion/defaults/shelves, and Page/Scroll with None/Slide reader regression.
+Verified exact signed v52 SHA-256: `c78023f1a6826a95d7d0dabdf555b761645effff12d7f4da89c3bd68cc42d883`.
 CI source build, Android lint and debug reader regression are separate from original-signed install tests.
 See `.github/workflows/verify-signed-v52.yml` and its run artifacts for exact results.
 Private signing material is not in this repository. The verification deltas contain only already-signed APK bytes.

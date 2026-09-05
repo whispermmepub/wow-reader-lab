@@ -1,0 +1,59 @@
+name: Align Lab standard CI with v2.17.9 v49
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/align-ci-v49-temp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  align:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Update build workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/build-apk.yml')
+          s=p.read_text()
+          s=s.replace('Build WoW Reader Lab v2.17.8 APK and AAB','Build WoW Reader Lab v2.17.9 APK and AAB',1)
+          s=s.replace('versionCode 48','versionCode 49')
+          s=s.replace("versionName '2.17.8'","versionName '2.17.9'")
+          s=s.replace("versionCode='48'","versionCode='49'")
+          s=s.replace("versionName='2.17.8'","versionName='2.17.9'")
+          s=s.replace('WoW-Reader-Lab-v2.17.8-v48','WoW-Reader-Lab-v2.17.9-v49')
+          s=s.replace('! grep -q "Show on page" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java',
+                      'grep -q "Show on page" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          s=s.replace('! grep -q "armFootnoteReturn(targetSourceId)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java',
+                      'grep -q "armFootnoteReturn(targetSourceId)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          s=s.replace('! grep -q "ratio < 0.24f" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java',
+                      'grep -q "ratio < 0.24f" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          s=s.replace('! grep -q "ratio > 0.76f" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java',
+                      'grep -q "ratio > 0.76f" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          anchor='          grep -q "onReaderLinkTap" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+          add=(
+              '          grep -q "installReaderLinkNavigation(view)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+              '          grep -q "looksLikeExplicitBacklinkHref" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+              '          grep -q "handleFootnoteBacklink" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+              '          grep -q "footnoteExactBacklinkPending" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+          )
+          if add not in s:
+              s=s.replace(anchor,anchor+add,1)
+          p.write_text(s)
+          PY
+          git diff --check
+          grep -q "versionCode 49" .github/workflows/build-apk.yml
+          grep -q "Show on page" .github/workflows/build-apk.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/build-apk.yml
+          git commit -m 'Align Lab CI with v2.17.9 v49 footnote fix'
+          git push origin HEAD:main

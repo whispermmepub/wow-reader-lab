@@ -1,0 +1,108 @@
+name: Patch WoW Reader Lab v45 search and footnotes final compile retry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-reader-search-footnote-v45d-temp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android 16 SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+      - name: Apply v45 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/v45/apply_patch.py')
+          s=p.read_text()
+          a=s.find("old_bridge = '''")
+          b=s.find("restore_block = '''", a)
+          if a < 0 or b < 0: raise SystemExit('bridge patch-script section not found')
+          replacement = '''bridge_method = """        @JavascriptInterface
+                  public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId, String label) {
+                      if (owner != webView) return false;
+                      if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) {
+                          restoreFootnoteReturn();
+                          return true;
+                      }
+                      if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) {
+                          armFootnoteReturn(sourceId);
+                          requestFootnotePreview(href, label);
+                          return true;
+                      }
+                      return false;
+                  }
+
+          """
+          bridge_start = "        @JavascriptInterface\\n        public boolean onReaderLinkTap("
+          bridge_end = "        @JavascriptInterface\\n        public void onFootnotePreviewResolved("
+          s = between(s, bridge_start, bridge_end, bridge_method, 'footnote bridge method')
+
+          '''
+          p.write_text(s[:a] + replacement + s[b:])
+          PY
+          python3 tools/v45/apply_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          s=p.read_text()
+          bad='searchNavigationLabel.setText(bookSearchQuery + "\n" +'
+          good='searchNavigationLabel.setText(bookSearchQuery + "\\n" +'
+          if bad in s: s=s.replace(bad, good, 1)
+          start='        @JavascriptInterface\n        public void onFootnotePreviewResolved('
+          end='        @JavascriptInterface\n        public void onSelection('
+          a=s.find(start); b=s.find(end,a)
+          if a < 0 or b < 0: raise SystemExit('obsolete footnote preview callback not found')
+          s=s[:a]+s[b:]
+          p.write_text(s)
+          PY
+          grep -q 'versionCode 45' app/build.gradle
+          grep -q "versionName '2.17.5'" app/build.gradle
+          grep -q 'Show on page' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'renderBookSearchResults' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'ReaderSearchIndex.search' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java
+          ! grep -q 'showFindDialog' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          git diff --check
+      - name: Build and lint v45
+        run: gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
+      - name: Smoke check v45
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$APK" && test -s "$AAB"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='45'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.5'"
+          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+      - name: Commit verified v45 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/build.gradle app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java .github/workflows/build-apk.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "Add Play Books style search and footnote navigation"
+          git push origin HEAD:main

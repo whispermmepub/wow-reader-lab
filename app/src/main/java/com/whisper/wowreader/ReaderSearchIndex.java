@@ -80,6 +80,29 @@ final class ReaderSearchIndex {
         return out;
     }
 
+    static int resolveTargetSpine(List<File> spine, int sourceSpine, String href) {
+        if (spine == null || spine.isEmpty() || sourceSpine < 0 || sourceSpine >= spine.size()) return -1;
+        String raw = href == null ? "" : href.trim();
+        int hash = raw.indexOf('#');
+        String filePart = hash >= 0 ? raw.substring(0, hash) : raw;
+        if (filePart.isEmpty()) return sourceSpine;
+        try {
+            String decoded = Uri.decode(filePart);
+            String lower = decoded.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("http://") || lower.startsWith("https://") ||
+                    lower.startsWith("mailto:") || lower.startsWith("tel:")) return -1;
+            File source = spine.get(sourceSpine);
+            File target;
+            if (decoded.startsWith("file://")) target = new File(Uri.parse(decoded).getPath());
+            else target = new File(source.getParentFile(), decoded);
+            String wanted = target.getCanonicalPath();
+            for (int i = 0; i < spine.size(); i++) {
+                if (wanted.equals(spine.get(i).getCanonicalPath())) return i;
+            }
+        } catch (Exception ignored) {}
+        return -1;
+    }
+
     static Footnote resolveFootnote(List<File> spine, int sourceSpine, String href, String sourceId) {
         if (spine == null || spine.isEmpty() || sourceSpine < 0 || sourceSpine >= spine.size())
             return new Footnote(sourceSpine, "", "");

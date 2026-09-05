@@ -824,9 +824,20 @@ public class BookReaderActivity extends Activity {
         int hash = h.indexOf('#');
         String frag = hash >= 0 ? h.substring(hash + 1) : "";
         frag = Uri.decode(frag).toLowerCase(Locale.ROOT);
-        return frag.startsWith("fn") || frag.startsWith("_fn") || frag.startsWith("ftn") || frag.startsWith("_ftn") ||
+        boolean named = frag.startsWith("fn") || frag.startsWith("_fn") || frag.startsWith("ftn") || frag.startsWith("_ftn") ||
                 frag.contains("footnote") || frag.contains("noteref") || frag.startsWith("note") ||
                 frag.startsWith("endnote") || frag.startsWith("_edn");
+        return named || looksLikeFootnoteDestination(href);
+    }
+
+    private boolean looksLikeFootnoteDestination(String href) {
+        if (href == null || href.indexOf('#') < 0 || spine.isEmpty()) return false;
+        int target = ReaderSearchIndex.resolveTargetSpine(spine, currentSpine, href);
+        if (target < 0 || target >= spine.size()) return false;
+        String title = target < chapterTitles.size() ? chapterTitles.get(target) : "";
+        String file = spine.get(target) == null ? "" : spine.get(target).getName();
+        String meta = navLower(title + " " + file).replace('_', ' ').replace('-', ' ').replace('.', ' ');
+        return meta.matches(".*\b(footnotes?|endnotes?|notes?)\b.*");
     }
 
     private boolean looksLikeFootnoteBacklink(String href, String epubType, String role, String rel, String cssClass) {
@@ -840,6 +851,13 @@ public class BookReaderActivity extends Activity {
                 String fragment = Uri.decode(href.substring(hash + 1));
                 if (source.equals(fragment)) return true;
             }
+        }
+        // Dedicated Notes chapters often use opaque backlink ids. If the note is open and
+        // the tapped internal link resolves back to the exact source spine, treat it as Return.
+        if (footnoteNavigationActive && href != null && href.indexOf('#') >= 0 &&
+                currentSpine != footnoteReturnSpine && footnoteReturnSpine >= 0) {
+            int target = ReaderSearchIndex.resolveTargetSpine(spine, currentSpine, href);
+            if (target == footnoteReturnSpine) return true;
         }
         return false;
     }
@@ -4455,16 +4473,17 @@ public class BookReaderActivity extends Activity {
             bookSearchDialog = null;
         }
         hideSearchNavigationBar();
-        final Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        final Dialog dialog = new Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);
         bookSearchDialog = dialog;
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setCanceledOnTouchOutside(false);
 
-        int bg = Color.rgb(22, 23, 26);
-        int surface = Color.rgb(35, 36, 40);
-        int text = Color.rgb(244, 245, 247);
-        int sub = Color.rgb(178, 181, 189);
-        int accent = Color.rgb(128, 203, 196);
+        int bg = readerTheme == 2 ? Color.rgb(18, 18, 18) :
+                (readerTheme == 1 ? Color.rgb(244, 236, 216) : Color.WHITE);
+        int surface = readerPanelBase();
+        int text = readerPanelText();
+        int sub = readerPanelSubText();
+        int accent = readerAccent();
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -4474,7 +4493,7 @@ public class BookReaderActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setBackground(glassPanel(surface, dp(22), Color.rgb(55, 57, 64)));
+        header.setBackground(glassPanel(surface, dp(22), readerPanelStroke()));
         TextView back = new TextView(this);
         back.setText("‹");
         back.setTextSize(32);
@@ -4594,7 +4613,7 @@ public class BookReaderActivity extends Activity {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.VERTICAL);
             row.setPadding(dp(14), dp(13), dp(14), dp(13));
-            row.setBackground(glassPanel(surface, dp(15), Color.rgb(52, 54, 60)));
+            row.setBackground(glassPanel(surface, dp(15), readerPanelStroke()));
 
             TextView snippet = new TextView(this);
             snippet.setTextSize(16f);
@@ -4678,20 +4697,20 @@ public class BookReaderActivity extends Activity {
             bar.setOrientation(LinearLayout.HORIZONTAL);
             bar.setGravity(Gravity.CENTER_VERTICAL);
             bar.setPadding(dp(6), dp(4), dp(6), dp(4));
-            bar.setBackground(glassPanel(Color.rgb(28, 29, 32), dp(20), Color.rgb(70, 72, 78)));
+            bar.setBackground(glassPanel(readerPanelBase(), dp(20), readerPanelStroke()));
             bar.setElevation(dp(18));
 
             TextView close = new TextView(this);
             close.setText("×");
             close.setTextSize(25);
-            close.setTextColor(Color.WHITE);
+            close.setTextColor(readerPanelText());
             close.setGravity(Gravity.CENTER);
             close.setOnClickListener(v -> closeSearchNavigation(false));
             bar.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
             searchNavigationLabel = new TextView(this);
             searchNavigationLabel.setTextSize(13.5f);
-            searchNavigationLabel.setTextColor(Color.WHITE);
+            searchNavigationLabel.setTextColor(readerPanelText());
             searchNavigationLabel.setMaxLines(2);
             searchNavigationLabel.setGravity(Gravity.CENTER_VERTICAL);
             bar.addView(searchNavigationLabel, new LinearLayout.LayoutParams(0, dp(48), 1f));
@@ -4699,7 +4718,7 @@ public class BookReaderActivity extends Activity {
             TextView prev = new TextView(this);
             prev.setText("‹");
             prev.setTextSize(28);
-            prev.setTextColor(Color.WHITE);
+            prev.setTextColor(readerPanelText());
             prev.setGravity(Gravity.CENTER);
             prev.setOnClickListener(v -> {
                 if (!bookSearchResults.isEmpty()) navigateToSearchHit((searchCurrentIndex - 1 + bookSearchResults.size()) % bookSearchResults.size());
@@ -4707,7 +4726,7 @@ public class BookReaderActivity extends Activity {
             TextView next = new TextView(this);
             next.setText("›");
             next.setTextSize(28);
-            next.setTextColor(Color.WHITE);
+            next.setTextColor(readerPanelText());
             next.setGravity(Gravity.CENTER);
             next.setOnClickListener(v -> {
                 if (!bookSearchResults.isEmpty()) navigateToSearchHit((searchCurrentIndex + 1) % bookSearchResults.size());
@@ -4721,6 +4740,8 @@ public class BookReaderActivity extends Activity {
             lp.bottomMargin = dp(18);
             root.addView(bar, lp);
         }
+        searchNavigationBar.setBackground(glassPanel(readerPanelBase(), dp(20), readerPanelStroke()));
+        tintChromeChildren(searchNavigationBar, readerPanelText());
         searchNavigationBar.setVisibility(View.VISIBLE);
         searchNavigationBar.bringToFront();
         updateSearchNavigationLabel();
@@ -5224,12 +5245,18 @@ public class BookReaderActivity extends Activity {
         public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId, String label) {
             if (owner != webView) return false;
             if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) {
-                restoreFootnoteReturn();
+                runOnUiThread(BookReaderActivity.this::restoreFootnoteReturn);
                 return true;
             }
             if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) {
-                armFootnoteReturn(sourceId);
-                requestFootnotePreview(href, label);
+                final String targetHref = href == null ? "" : href;
+                final String targetLabel = label == null ? "" : label;
+                final String targetSourceId = sourceId == null ? "" : sourceId;
+                runOnUiThread(() -> {
+                    if (isFinishing() || owner != webView) return;
+                    armFootnoteReturn(targetSourceId);
+                    requestFootnotePreview(targetHref, targetLabel);
+                });
                 return true;
             }
             return false;

@@ -178,6 +178,9 @@ public class BookReaderActivity extends Activity {
     private String footnoteReturnSourceId = "";
     private String footnoteReturnSourceUrl = "";
     private long footnoteArmToken = 0L;
+    private Dialog footnotePreviewDialog = null;
+    private String footnotePreviewHref = "";
+    private String footnotePreviewLabel = "";
 
     private ParcelFileDescriptor pdfDescriptor;
     private PdfRenderer pdfRenderer;
@@ -668,9 +671,49 @@ public class BookReaderActivity extends Activity {
                 "try{ep=ep||a.getAttributeNS('http://www.idpf.org/2007/ops','type')||'';}catch(_e){}" +
                 "var role=a.getAttribute('role')||'',rel=a.getAttribute('rel')||'',cls=(typeof a.className==='string'?a.className:'');" +
                 "var sid='',n=a;for(var i=0;i<5&&n;i++,n=n.parentElement){if(n.id){sid=n.id;break;}}" +
-                "if(WoW.onReaderLinkTap(href,ep,role,rel,cls,sid)){ev.preventDefault();ev.stopImmediatePropagation();return false;}" +
+                "var label=(a.textContent||'').replace(/\s+/g,' ').trim();" +
+                "if(WoW.onReaderLinkTap(href,ep,role,rel,cls,sid,label)){ev.preventDefault();ev.stopImmediatePropagation();return false;}" +
                 "}catch(_e){}},true);return true;}catch(e){return false;}})()";
         try { webView.evaluateJavascript(js, null); } catch (Exception ignored) {}
+    }
+
+    private void requestFootnotePreview(String href, String label) {
+        if (webView == null || href == null || href.trim().isEmpty()) return;
+        footnotePreviewHref = href.trim();
+        footnotePreviewLabel = label == null ? "" : label.trim();
+        runOnUiThread(() -> {
+            if (webView == null) return;
+            String script = "(function(){var raw=" + jsQuote(footnotePreviewHref) + ";try{" +
+                    "var abs=new URL(raw,location.href).href;var u=new URL(abs);var frag='';" +
+                    "try{frag=decodeURIComponent((u.hash||'').replace(/^#/,''));}catch(_e){frag=(u.hash||'').replace(/^#/,'');}" +
+                    "var textOf=function(doc){try{var n=frag?doc.getElementById(frag):null;if(!n&&frag){var named=doc.getElementsByName(frag);if(named&&named.length)n=named[0];}" +
+                    "if(!n)return '';var c=n.cloneNode(true);var backs=c.querySelectorAll('a[role=doc-backlink],a[href*=ref],a[href*=back]');for(var i=0;i<backs.length;i++)backs[i].remove();" +
+                    "return (c.innerText||c.textContent||'').replace(/\s+/g,' ').trim();}catch(e){return '';}};" +
+                    "var here=location.href.split('#')[0],there=abs.split('#')[0];" +
+                    "if(here===there){WoW.onFootnotePreviewResolved(abs,textOf(document));return true;}" +
+                    "fetch(there).then(function(x){return x.text();}).then(function(t){var d=(new DOMParser()).parseFromString(t,'text/html');WoW.onFootnotePreviewResolved(abs,textOf(d));})" +
+                    ".catch(function(){WoW.onFootnotePreviewResolved(abs,'');});return true;}catch(e){WoW.onFootnotePreviewResolved(raw||'','');return false;}})()";
+            try { webView.evaluateJavascript(script, null); } catch (Exception ignored) { showFootnotePreview(footnotePreviewHref, footnotePreviewLabel, ""); }
+        });
+    }
+
+    private void showFootnotePreview(String href, String label, String bodyText) {
+        if (isFinishing()) return;
+        if (footnotePreviewDialog != null) { try { footnotePreviewDialog.dismiss(); } catch (Exception ignored) {} footnotePreviewDialog = null; }
+        final Dialog dialog = new Dialog(this); footnotePreviewDialog = dialog; dialog.requestWindowFeature(Window.FEATURE_NO_TITLE); dialog.setCanceledOnTouchOutside(true);
+        LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setPadding(dp(20),dp(16),dp(20),dp(18)); card.setBackground(glassPanel(readerPanelBase(),dp(24),readerPanelStroke())); card.setElevation(dp(14));
+        LinearLayout head=new LinearLayout(this); head.setOrientation(LinearLayout.HORIZONTAL); head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title=new TextView(this); String cleanLabel=label==null?"":label.trim(); title.setText(cleanLabel.isEmpty()?"Footnote":"Footnote "+cleanLabel); title.setTextSize(17f); title.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD); title.setTextColor(readerPanelText()); head.addView(title,new LinearLayout.LayoutParams(0,dp(42),1f));
+        TextView close=new TextView(this); close.setText("×"); close.setTextSize(25f); close.setTextColor(readerPanelSubText()); close.setGravity(Gravity.CENTER); close.setContentDescription("Close footnote"); close.setOnClickListener(v -> dialog.dismiss()); head.addView(close,new LinearLayout.LayoutParams(dp(42),dp(42))); card.addView(head);
+        ScrollView scroll=new ScrollView(this); scroll.setVerticalScrollBarEnabled(false); TextView body=new TextView(this); String text=bodyText==null?"":bodyText.replaceAll("\s+"," ").trim(); if(text.length()>6000)text=text.substring(0,6000).trim()+"…"; if(text.isEmpty())text="Open the footnote to read the full note."; body.setText(text); body.setTextSize(15.5f); body.setTextColor(readerPanelText()); body.setLineSpacing(dp(3),1.08f); body.setPadding(dp(2),dp(4),dp(2),dp(10)); scroll.addView(body,new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT)); int maxBody=Math.max(dp(120),(int)(getResources().getDisplayMetrics().heightPixels*0.38f)); card.addView(scroll,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,maxBody));
+        LinearLayout actions=new LinearLayout(this); actions.setOrientation(LinearLayout.HORIZONTAL); actions.setGravity(Gravity.END|Gravity.CENTER_VERTICAL); actions.setPadding(0,dp(10),0,0);
+        TextView dismiss=new TextView(this); dismiss.setText("Close"); dismiss.setTextSize(14f); dismiss.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD); dismiss.setTextColor(readerPanelSubText()); dismiss.setGravity(Gravity.CENTER); dismiss.setPadding(dp(16),0,dp(16),0); dismiss.setOnClickListener(v -> dialog.dismiss()); actions.addView(dismiss,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,dp(44)));
+        TextView go=new TextView(this); go.setText("Go to note  ›"); go.setTextSize(14f); go.setTypeface(android.graphics.Typeface.DEFAULT,android.graphics.Typeface.BOLD); go.setTextColor(readerAccent()); go.setGravity(Gravity.CENTER); go.setPadding(dp(18),0,dp(18),0); go.setBackground(glassPanel(readerSelectedSurface(),dp(20),readerPanelStroke())); go.setOnClickListener(v -> { dialog.dismiss(); navigateToFootnote(href); }); LinearLayout.LayoutParams goLp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,dp(44)); goLp.leftMargin=dp(8); actions.addView(go,goLp); card.addView(actions);
+        dialog.setContentView(card); dialog.setOnDismissListener(d -> { if(footnotePreviewDialog==dialog)footnotePreviewDialog=null; }); dialog.show(); Window w=dialog.getWindow(); if(w!=null){w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);w.setDimAmount(0.30f);WindowManager.LayoutParams lp=w.getAttributes();lp.width=ViewGroup.LayoutParams.MATCH_PARENT;lp.height=ViewGroup.LayoutParams.WRAP_CONTENT;lp.gravity=Gravity.BOTTOM;w.setAttributes(lp);}
+    }
+
+    private void navigateToFootnote(String href) {
+        if(webView==null||href==null||href.trim().isEmpty())return; footnoteNavigationActive=true; footnoteReturnArmed=false; footnoteArmToken++; String script="(function(){try{location.href=new URL("+jsQuote(href.trim())+",location.href).href;return true;}catch(e){return false;}})()"; try{webView.evaluateJavascript(script,null);}catch(Exception ignored){}
     }
 
     private static String navLower(String value) {
@@ -4862,17 +4905,13 @@ public class BookReaderActivity extends Activity {
         }
 
         @JavascriptInterface
-        public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId) {
-            if (owner != webView) return false;
-            if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) {
-                armFootnoteReturn(sourceId);
-                return false;
-            }
-            if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) {
-                restoreFootnoteReturn();
-                return true;
-            }
-            return false;
+        public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId, String label) {
+            if(owner!=webView)return false; if(looksLikeFootnoteReference(href,epubType,role,rel,cssClass)){armFootnoteReturn(sourceId);requestFootnotePreview(href,label);return true;} if(footnoteNavigationActive&&looksLikeFootnoteBacklink(href,epubType,role,rel,cssClass)){restoreFootnoteReturn();return true;} return false;
+        }
+
+        @JavascriptInterface
+        public void onFootnotePreviewResolved(String href, String text) {
+            if(owner!=webView)return; final String target=(href==null||href.trim().isEmpty())?footnotePreviewHref:href.trim(); final String body=text==null?"":text; runOnUiThread(() -> showFootnotePreview(target,footnotePreviewLabel,body));
         }
 
         @JavascriptInterface

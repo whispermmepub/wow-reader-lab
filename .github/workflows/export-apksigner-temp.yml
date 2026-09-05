@@ -1,0 +1,38 @@
+name: Export Android 36 signing tools
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/export-apksigner-temp.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Android 16 build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;36.0.0"
+      - name: Collect signing tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/lib64
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" out/apksigner.jar
+          cp "$ANDROID_HOME/build-tools/36.0.0/zipalign" out/zipalign
+          if [ -f "$ANDROID_HOME/build-tools/36.0.0/lib64/libc++.so" ]; then
+            cp "$ANDROID_HOME/build-tools/36.0.0/lib64/libc++.so" out/lib64/libc++.so
+          fi
+          sha256sum out/apksigner.jar > out/SHA256SUMS.txt
+      - name: Upload tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-36-signing-tools
+          path: out/
+          if-no-files-found: error
+          retention-days: 1

@@ -28,7 +28,9 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Install Android SDK
-        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
       - name: Sync approved v47 source into Lab
         shell: bash
@@ -36,6 +38,7 @@ jobs:
           set -euo pipefail
           git clone --quiet https://github.com/whispermmepub/wow-reader-app.git /tmp/wow-prod
           git -C /tmp/wow-prod checkout --quiet e075cb5e0cdcbd73fd6b4860354cd5f8c4617f17
+          cp tools/patch_footnote_v48.py /tmp/patch_footnote_v48.py
           rm -rf app tools
           cp -a /tmp/wow-prod/app ./app
           cp -a /tmp/wow-prod/tools ./tools
@@ -43,13 +46,12 @@ jobs:
           cp /tmp/wow-prod/settings.gradle ./settings.gradle
           cp /tmp/wow-prod/gradle.properties ./gradle.properties
           cp /tmp/wow-prod/.gitignore ./.gitignore
-          cp tools/patch_footnote_v48.py /tmp/patch_footnote_v48.py
+          cp /tmp/patch_footnote_v48.py tools/patch_footnote_v48.py
 
       - name: Patch v48 footnote stability
         shell: bash
         run: |
           set -euo pipefail
-          cp /tmp/patch_footnote_v48.py tools/patch_footnote_v48.py
           python3 tools/patch_footnote_v48.py
           grep -q "versionCode 48" app/build.gradle
           grep -q "versionName '2.17.8'" app/build.gradle

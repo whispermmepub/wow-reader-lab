@@ -6,24 +6,27 @@ import android.os.SystemClock;
 import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
-/**
- * Lightweight, local-first reading statistics store for WoW Reader Lab.
- *
- * This class is original WoW Reader code inspired only by the general idea of
- * reader statistics. It deliberately uses the app's existing SharedPreferences
- * so the data can travel with the existing reader-data backup pipeline.
- */
+/** Local-first reading statistics plus calendar/memory data. */
 public final class ReadingStatsStore {
     private ReadingStatsStore() {}
 
     private static final String KEY_TOTAL_MS = "reading_stats_total_ms";
     private static final String KEY_DAYS = "reading_stats_days_json";
     private static final String KEY_BOOKS = "reading_stats_books_json";
+    private static final String KEY_DAY_BOOKS = "reading_stats_day_books_json";
+    private static final String KEY_DAY_NOTES = "reading_stats_day_notes_json";
+    private static final String KEY_BOOK_DAY_NOTES = "reading_stats_book_day_notes_json";
     private static final String KEY_CURRENT_STREAK = "reading_stats_current_streak";
     private static final String KEY_LONGEST_STREAK = "reading_stats_longest_streak";
     private static final String KEY_LAST_DAY = "reading_stats_last_day";
@@ -38,6 +41,15 @@ public final class ReadingStatsStore {
         public int currentStreak;
         public int longestStreak;
         public int activeDays;
+    }
+
+    public static final class DayBook {
+        public final String fileName;
+        public final long durationMs;
+        DayBook(String fileName, long durationMs) {
+            this.fileName = fileName;
+            this.durationMs = durationMs;
+        }
     }
 
     public static long beginSession() {
@@ -58,21 +70,25 @@ public final class ReadingStatsStore {
             String today = dayKey(wallClockMs);
             JSONObject days = object(prefs.getString(KEY_DAYS, "{}"));
             JSONObject books = object(prefs.getString(KEY_BOOKS, "{}"));
+            JSONObject dayBooks = object(prefs.getString(KEY_DAY_BOOKS, "{}"));
 
             days.put(today, safeAdd(days.optLong(today, 0L), durationMs));
-            String bookKey = bookKey(bookName);
-            books.put(bookKey, safeAdd(books.optLong(bookKey, 0L), durationMs));
+            String cleanBook = bookName == null ? "" : bookName.trim();
+            if (!cleanBook.isEmpty()) {
+                String hashedBook = bookKey(cleanBook);
+                books.put(hashedBook, safeAdd(books.optLong(hashedBook, 0L), durationMs));
+                JSONObject todayBooks = dayBooks.optJSONObject(today);
+                if (todayBooks == null) todayBooks = new JSONObject();
+                todayBooks.put(cleanBook, safeAdd(todayBooks.optLong(cleanBook, 0L), durationMs));
+                dayBooks.put(today, todayBooks);
+            }
 
             int current = prefs.getInt(KEY_CURRENT_STREAK, 0);
             int longest = prefs.getInt(KEY_LONGEST_STREAK, 0);
             String lastDay = prefs.getString(KEY_LAST_DAY, "");
-
             if (!today.equals(lastDay)) {
-                if (lastDay != null && lastDay.equals(previousDayKey(wallClockMs))) {
-                    current = Math.max(1, current + 1);
-                } else {
-                    current = 1;
-                }
+                if (lastDay != null && lastDay.equals(previousDayKey(wallClockMs))) current = Math.max(1, current + 1);
+                else current = 1;
                 longest = Math.max(longest, current);
                 lastDay = today;
             }
@@ -81,13 +97,13 @@ public final class ReadingStatsStore {
                     .putLong(KEY_TOTAL_MS, safeAdd(prefs.getLong(KEY_TOTAL_MS, 0L), durationMs))
                     .putString(KEY_DAYS, days.toString())
                     .putString(KEY_BOOKS, books.toString())
+                    .putString(KEY_DAY_BOOKS, dayBooks.toString())
                     .putInt(KEY_CURRENT_STREAK, current)
                     .putInt(KEY_LONGEST_STREAK, longest)
                     .putString(KEY_LAST_DAY, lastDay == null ? today : lastDay)
                     .putLong("sync_updated_ms", System.currentTimeMillis())
                     .apply();
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
     }
 
     public static Snapshot snapshot(SharedPreferences prefs, String bookName) {
@@ -102,13 +118,139 @@ public final class ReadingStatsStore {
             s.currentStreak = calculateCurrentStreak(days);
             s.longestStreak = Math.max(prefs.getInt(KEY_LONGEST_STREAK, 0), calculateLongestStreak(days));
             s.activeDays = countPositiveDays(days);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         return s;
     }
 
-    public static Snapshot snapshot(SharedPreferences prefs) {
-        return snapshot(prefs, null);
+    public static Snapshot snapshot(SharedPreferences prefs) { return snapshot(prefs, null); }
+
+    public static String dayKey(int year, int monthOneBased, int day) {
+        Calendar c = Calendar.getInstance();
+        c.clear();
+        c.set(year, Math.max(0, monthOneBased - 1), day, 12, 0, 0);
+        return dayKey(c.getTimeInMillis());
+    }
+
+    public static long dayTime(SharedPreferences prefs, String key) {
+        if (prefs == null || key == null) return 0L;
+        return object(prefs.getString(KEY_DAYS, "{}")).optLong(key, 0L);
+    }
+
+    public static long bookTimeForDay(SharedPreferences prefs, String key, String fileName) {
+        if (prefs == null || key == null || fileName == null) return 0L;
+        JSONObject date = object(prefs.getString(KEY_DAY_BOOKS, "{}")).optJSONObject(key);
+        return date == null ? 0L : date.optLong(fileName, 0L);
+    }
+
+    public static long totalBookTime(SharedPreferences prefs, String fileName) {
+        if (prefs == null || fileName == null) return 0L;
+        return object(prefs.getString(KEY_BOOKS, "{}")).optLong(bookKey(fileName), 0L);
+    }
+
+    public static List<DayBook> booksForDay(SharedPreferences prefs, String key) {
+        List<DayBook> out = new ArrayList<>();
+        if (prefs == null || key == null) return out;
+        JSONObject date = object(prefs.getString(KEY_DAY_BOOKS, "{}")).optJSONObject(key);
+        if (date == null) return out;
+        Iterator<String> names = date.keys();
+        while (names.hasNext()) {
+            String name = names.next();
+            long ms = date.optLong(name, 0L);
+            if (name != null && !name.trim().isEmpty() && ms > 0L) out.add(new DayBook(name, ms));
+        }
+        Collections.sort(out, new Comparator<DayBook>() {
+            @Override public int compare(DayBook a, DayBook b) { return Long.compare(b.durationMs, a.durationMs); }
+        });
+        return out;
+    }
+
+    public static long readingTimeForMonth(SharedPreferences prefs, int year, int monthOneBased) {
+        if (prefs == null) return 0L;
+        String prefix = monthPrefix(year, monthOneBased);
+        JSONObject days = object(prefs.getString(KEY_DAYS, "{}"));
+        long total = 0L;
+        Iterator<String> keys = days.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (key.startsWith(prefix)) total = safeAdd(total, days.optLong(key, 0L));
+        }
+        return total;
+    }
+
+    public static int activeDaysForMonth(SharedPreferences prefs, int year, int monthOneBased) {
+        if (prefs == null) return 0;
+        String prefix = monthPrefix(year, monthOneBased);
+        JSONObject days = object(prefs.getString(KEY_DAYS, "{}"));
+        int count = 0;
+        Iterator<String> keys = days.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (key.startsWith(prefix) && days.optLong(key, 0L) > 0L) count++;
+        }
+        return count;
+    }
+
+    public static int uniqueBooksForMonth(SharedPreferences prefs, int year, int monthOneBased) {
+        if (prefs == null) return 0;
+        String prefix = monthPrefix(year, monthOneBased);
+        JSONObject root = object(prefs.getString(KEY_DAY_BOOKS, "{}"));
+        Set<String> books = new HashSet<>();
+        Iterator<String> days = root.keys();
+        while (days.hasNext()) {
+            String key = days.next();
+            if (!key.startsWith(prefix)) continue;
+            JSONObject item = root.optJSONObject(key);
+            if (item == null) continue;
+            Iterator<String> names = item.keys();
+            while (names.hasNext()) {
+                String name = names.next();
+                if (item.optLong(name, 0L) > 0L) books.add(name);
+            }
+        }
+        return books.size();
+    }
+
+    public static String dailyNote(SharedPreferences prefs, String key) {
+        if (prefs == null || key == null) return "";
+        return object(prefs.getString(KEY_DAY_NOTES, "{}")).optString(key, "");
+    }
+
+    public static void setDailyNote(SharedPreferences prefs, String key, String note) {
+        if (prefs == null || key == null) return;
+        try {
+            JSONObject root = object(prefs.getString(KEY_DAY_NOTES, "{}"));
+            String clean = note == null ? "" : note.trim();
+            if (clean.isEmpty()) root.remove(key); else root.put(key, clean);
+            saveJson(prefs, KEY_DAY_NOTES, root);
+        } catch (Exception ignored) {}
+    }
+
+    public static String bookDayNote(SharedPreferences prefs, String key, String fileName) {
+        if (prefs == null || key == null || fileName == null) return "";
+        JSONObject date = object(prefs.getString(KEY_BOOK_DAY_NOTES, "{}")).optJSONObject(key);
+        return date == null ? "" : date.optString(fileName, "");
+    }
+
+    public static void setBookDayNote(SharedPreferences prefs, String key, String fileName, String note) {
+        if (prefs == null || key == null || fileName == null) return;
+        try {
+            JSONObject root = object(prefs.getString(KEY_BOOK_DAY_NOTES, "{}"));
+            JSONObject date = root.optJSONObject(key);
+            if (date == null) date = new JSONObject();
+            String clean = note == null ? "" : note.trim();
+            if (clean.isEmpty()) date.remove(fileName); else date.put(fileName, clean);
+            if (date.length() == 0) root.remove(key); else root.put(key, date);
+            saveJson(prefs, KEY_BOOK_DAY_NOTES, root);
+        } catch (Exception ignored) {}
+    }
+
+    private static void saveJson(SharedPreferences prefs, String key, JSONObject value) {
+        prefs.edit().putString(key, value.toString())
+                .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
+    }
+
+    private static String monthPrefix(int year, int monthOneBased) {
+        return String.format(Locale.US, "%04d-%02d-", year, monthOneBased);
     }
 
     private static String bookKey(String bookName) {
@@ -152,9 +294,7 @@ public final class ReadingStatsStore {
             if (days.optLong(dayKey(c.getTimeInMillis()), 0L) > 0L) {
                 running++;
                 longest = Math.max(longest, running);
-            } else {
-                running = 0;
-            }
+            } else running = 0;
             c.add(Calendar.DAY_OF_YEAR, 1);
         }
         return longest;

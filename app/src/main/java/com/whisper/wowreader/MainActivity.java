@@ -1414,6 +1414,10 @@ public class MainActivity extends Activity {
         dialog.setCanceledOnTouchOutside(true);
 
         LinearLayout sheet = premiumSheet("Reading statistics", "Your reading activity", dialog);
+        sheet.addView(statSheetActionRow("▦", "Reading calendar", "Myanmar calendar · books and memories by day", "Open  ›", themeAccent(), () -> {
+            dialog.dismiss();
+            startActivity(new Intent(this, ReadingCalendarActivity.class));
+        }));
         sheet.addView(statSheetRow("◷", "Today", "Time spent reading today", formatReadingTimeLong(stats.todayMs), themeAccent()));
         sheet.addView(statSheetRow("♨", "Current streak", "Keep the reading habit going",
                 stats.currentStreak + (stats.currentStreak == 1 ? " day" : " days"), Color.rgb(231, 111, 55)));
@@ -1424,6 +1428,13 @@ public class MainActivity extends Activity {
         sheet.addView(statSheetRow("◷", "Total reading time", "All time spent reading",
                 formatReadingTimeLong(stats.totalMs), themeAccent()));
         presentBottomSheet(dialog, sheet, 0.82f);
+    }
+
+    private View statSheetActionRow(String iconText, String title, String subtitle, String value, int accent, Runnable action) {
+        View row = statSheetRow(iconText, title, subtitle, value, accent);
+        row.setClickable(true);
+        row.setOnClickListener(v -> action.run());
+        return row;
     }
 
     private View statSheetRow(String iconText, String title, String subtitle, String value, int accent) {
@@ -1537,6 +1548,9 @@ public class MainActivity extends Activity {
         TextView newShelf = filterChoice("＋ New", false);
         newShelf.setOnClickListener(v -> { dialog.dismiss(); showCreateShelfDialog(null); });
         LinearLayout.LayoutParams newLp = new LinearLayout.LayoutParams(dp(82), dp(38)); newLp.leftMargin = dp(6); shelfRow.addView(newShelf, newLp);
+        TextView manageShelf = filterChoice("Manage", false);
+        manageShelf.setOnClickListener(v -> { dialog.dismiss(); showShelvesDialog(); });
+        LinearLayout.LayoutParams manageLp = new LinearLayout.LayoutParams(dp(82), dp(38)); manageLp.leftMargin = dp(6); shelfRow.addView(manageShelf, manageLp);
         shelfScroll.addView(shelfRow);
         sheet.addView(shelfScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
 
@@ -1645,11 +1659,7 @@ public class MainActivity extends Activity {
         }));
         for (String shelf : shelves) {
             int count = LibraryShelfStore.count(prefs, shelf);
-            list.addView(premiumChoiceRow(shelf, count + (count == 1 ? " book" : " books"), shelf.equals(shelfFilter), () -> {
-                shelfFilter = shelf;
-                refreshLibrary();
-                dialog.dismiss();
-            }));
+            list.addView(premiumShelfRow(shelf, count, shelf.equals(shelfFilter), dialog));
         }
         list.addView(premiumChoiceRow("＋ New shelf", "Create a collection", false, () -> {
             dialog.dismiss();
@@ -1658,6 +1668,163 @@ public class MainActivity extends Activity {
         int h = Math.min(dp(420), Math.max(dp(120), (shelves.size() + 2) * dp(58)));
         sheet.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
         presentBottomSheet(dialog, sheet, 0.82f);
+    }
+
+    private View premiumShelfRow(String shelf, int count, boolean selected, android.app.Dialog parentDialog) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(4), dp(6), dp(4));
+        row.setBackground(roundRect(selected ? themeSelectedSurface() : themeControlSurface(),
+                dp(15), dp(1), selected ? themeAccent() : themeStroke()));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText(shelf);
+        title.setTextSize(13f);
+        title.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+        title.setTextColor(selected ? themeAccent() : themePrimaryText());
+        copy.addView(title);
+        TextView sub = new TextView(this);
+        sub.setText(count + (count == 1 ? " book" : " books"));
+        sub.setTextSize(9.5f);
+        sub.setTextColor(themeSecondaryText());
+        copy.addView(sub);
+        copy.setClickable(true);
+        copy.setOnClickListener(v -> {
+            shelfFilter = shelf;
+            refreshLibrary();
+            parentDialog.dismiss();
+        });
+        row.addView(copy, new LinearLayout.LayoutParams(0, dp(46), 1f));
+
+        TextView more = new TextView(this);
+        more.setText("⋮");
+        more.setTextSize(20);
+        more.setTextColor(themeSecondaryText());
+        more.setGravity(Gravity.CENTER);
+        more.setContentDescription("Shelf options");
+        more.setBackground(roundRect(themeCardSurface(), dp(15), dp(1), themeStroke()));
+        more.setOnClickListener(v -> {
+            parentDialog.dismiss();
+            showShelfManageDialog(shelf);
+        });
+        row.addView(more, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        lp.topMargin = dp(6);
+        row.setLayoutParams(lp);
+        return row;
+    }
+
+    private void showShelfManageDialog(String shelf) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Shelf options", shelf, dialog);
+        sheet.addView(premiumChoiceRow("Rename shelf", "Keep all books in this shelf", false, () -> {
+            dialog.dismiss();
+            showRenameShelfDialog(shelf);
+        }));
+
+        TextView delete = new TextView(this);
+        delete.setText("⌫   Delete shelf");
+        delete.setTextSize(13f);
+        delete.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        delete.setTextColor(Color.rgb(205, 63, 63));
+        delete.setGravity(Gravity.CENTER_VERTICAL);
+        delete.setPadding(dp(14), 0, dp(14), 0);
+        delete.setBackground(roundRect(isBlackAppTheme() ? Color.rgb(55, 35, 38) : Color.rgb(255, 247, 247), dp(15), dp(1), Color.rgb(222, 150, 150)));
+        delete.setOnClickListener(v -> {
+            dialog.dismiss();
+            confirmDeleteShelf(shelf);
+        });
+        LinearLayout.LayoutParams deleteLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        deleteLp.topMargin = dp(8);
+        sheet.addView(delete, deleteLp);
+        presentBottomSheet(dialog, sheet, 0.62f);
+    }
+
+    private void showRenameShelfDialog(String oldName) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Rename shelf", "Books stay in the shelf", dialog);
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(oldName);
+        input.setSelection(input.length());
+        input.setTextSize(14f);
+        input.setTextColor(themePrimaryText());
+        input.setPadding(dp(14), 0, dp(14), 0);
+        input.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
+        sheet.addView(input, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView cancel = filterChoice("Cancel", false);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        TextView save = filterChoice("Rename", true);
+        save.setTextColor(Color.WHITE);
+        save.setBackground(roundRect(themeAccent(), dp(17), 0, 0));
+        save.setOnClickListener(v -> {
+            String next = input.getText().toString().trim();
+            if (!LibraryShelfStore.renameShelf(prefs, oldName, next)) {
+                Toast.makeText(this, "Use a new, unique shelf name", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (oldName.equals(shelfFilter)) shelfFilter = next;
+            dialog.dismiss();
+            refreshLibrary();
+            maybeAutoGoogleSync();
+            showShelvesDialog();
+        });
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(94), dp(40)); cancelLp.rightMargin = dp(8);
+        actions.addView(cancel, cancelLp);
+        actions.addView(save, new LinearLayout.LayoutParams(dp(104), dp(40)));
+        LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)); actionLp.topMargin = dp(9);
+        sheet.addView(actions, actionLp);
+        presentBottomSheet(dialog, sheet, 0.62f);
+        input.requestFocus();
+    }
+
+    private void confirmDeleteShelf(String shelf) {
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Delete shelf?", shelf, dialog);
+        TextView message = new TextView(this);
+        message.setText("Only this shelf will be deleted. The books inside it will stay safely in your Library.");
+        message.setTextSize(12.5f);
+        message.setTextColor(themeSecondaryText());
+        message.setLineSpacing(dp(2), 1.12f);
+        message.setPadding(dp(12), dp(12), dp(12), dp(12));
+        message.setBackground(roundRect(themeControlSurface(), dp(15), dp(1), themeStroke()));
+        sheet.addView(message);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView cancel = filterChoice("Cancel", false);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        TextView remove = filterChoice("Delete shelf", true);
+        remove.setTextColor(Color.WHITE);
+        remove.setBackground(roundRect(Color.rgb(205, 63, 63), dp(17), 0, 0));
+        remove.setOnClickListener(v -> {
+            if (LibraryShelfStore.deleteShelf(prefs, shelf)) {
+                if (shelf.equals(shelfFilter)) shelfFilter = "";
+                refreshLibrary();
+                maybeAutoGoogleSync();
+            }
+            dialog.dismiss();
+            showShelvesDialog();
+        });
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(96), dp(40)); cancelLp.rightMargin = dp(8);
+        actions.addView(cancel, cancelLp);
+        actions.addView(remove, new LinearLayout.LayoutParams(dp(118), dp(40)));
+        LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)); actionLp.topMargin = dp(10);
+        sheet.addView(actions, actionLp);
+        presentBottomSheet(dialog, sheet, 0.64f);
     }
 
     private View premiumChoiceRow(String titleText, String subtitleText, boolean selected, Runnable action) {

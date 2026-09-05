@@ -12,6 +12,18 @@
         android:theme="@style/AppTheme">
 
         <activity
+            android:name=".ReadingMemoryActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ReadingDayActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ReadingCalendarActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ComingSoonDetailActivity"
             android:exported="false" />
 

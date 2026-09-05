@@ -13,11 +13,11 @@ Read this before modifying the project in a new chat.
 ## Current versions
 
 - Production: **v2.17.0**, `versionCode 40`
-- Lab: **v2.17.1**, `versionCode 41`
+- Lab: **v2.17.2**, `versionCode 42`
 - Package: `com.whisper.wowreader`
 - `minSdk 23`, `targetSdk 36`, Java 17
 
-Lab v41 is based on the approved production v40 source.
+Lab v42 is based on the approved production v40 line. v42 adds a Myanmar Reading Calendar / Reading Memory prototype and custom shelf rename/delete for real-device testing.
 
 ## Important product decision
 
@@ -28,7 +28,8 @@ The Telegram Auto Library experiment was intentionally removed from Lab. It is n
 - Offline EPUB/PDF reading
 - Google account sign-in and private Google Drive appDataFolder backup/restore/auto sync
 - Reading Statistics / streaks
-- Smart Library / shelves
+- Myanmar Reading Calendar + daily/book Reading Memory (v42 Lab test)
+- Smart Library / shelves with custom shelf rename/delete
 - Notes & Highlights Hub
 - Per-book typography
 - Smart Sync Merge

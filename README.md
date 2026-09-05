@@ -11,14 +11,14 @@ This repository is the **experimental / testing track** for WoW Reader.
 
 ## Current state
 
-- Lab: **WoW Reader v2.17.1** (`versionCode 41`)
+- Lab: **WoW Reader v2.17.2** (`versionCode 42`)
 - Production baseline: **WoW Reader v2.17.0** (`versionCode 40`)
 - Package: `com.whisper.wowreader`
 - Minimum Android: 6.0 / API 23
 - Target SDK: 36
 - Java: 17
 
-Lab v41 is based on the approved production v40 source and is the place for future experiments and fixes before promotion.
+Lab v42 is based on the approved production v40 line and adds a test-only Myanmar Reading Calendar / Reading Memory experience plus custom shelf rename/delete.
 
 ## Important decision
 
@@ -29,7 +29,9 @@ The unfinished **Telegram Auto Library** experiment has been removed from this r
 - Offline EPUB/PDF reading
 - Google sign-in + private Google Drive `appDataFolder` backup/restore + auto sync
 - Reading Statistics / streaks
-- Smart Library / shelves
+- Myanmar Reading Calendar with book covers by reading day
+- Daily Reading Notes and per-book Reading Memory
+- Smart Library / shelves, including custom shelf rename/delete
 - Notes & Highlights Hub
 - Per-book typography
 - Smart Sync Merge

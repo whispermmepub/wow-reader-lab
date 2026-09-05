@@ -10,13 +10,9 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
-/**
- * Local-first shelf/collection storage for WoW Reader Lab.
- * Shelf state stays in the existing reader preferences so it follows the current backup pipeline.
- */
+/** Local-first custom shelf storage. Deleting a shelf never deletes its books. */
 public final class LibraryShelfStore {
     private LibraryShelfStore() {}
-
     private static final String KEY = "library_shelves_json";
 
     public static List<String> shelves(SharedPreferences prefs) {
@@ -41,9 +37,37 @@ public final class LibraryShelfStore {
             if (!root.has(name)) root.put(name, new JSONArray());
             save(prefs, root);
             return true;
-        } catch (Exception ignored) {
-            return false;
-        }
+        } catch (Exception ignored) { return false; }
+    }
+
+    public static boolean renameShelf(SharedPreferences prefs, String oldShelfName, String newShelfName) {
+        if (prefs == null) return false;
+        String oldName = cleanName(oldShelfName);
+        String newName = cleanName(newShelfName);
+        if (oldName.isEmpty() || newName.isEmpty()) return false;
+        if (oldName.equals(newName)) return true;
+        try {
+            JSONObject root = object(prefs.getString(KEY, "{}"));
+            if (!root.has(oldName) || root.has(newName)) return false;
+            JSONArray books = root.optJSONArray(oldName);
+            root.remove(oldName);
+            root.put(newName, books == null ? new JSONArray() : books);
+            save(prefs, root);
+            return true;
+        } catch (Exception ignored) { return false; }
+    }
+
+    public static boolean deleteShelf(SharedPreferences prefs, String shelfName) {
+        if (prefs == null) return false;
+        String name = cleanName(shelfName);
+        if (name.isEmpty()) return false;
+        try {
+            JSONObject root = object(prefs.getString(KEY, "{}"));
+            if (!root.has(name)) return false;
+            root.remove(name);
+            save(prefs, root);
+            return true;
+        } catch (Exception ignored) { return false; }
     }
 
     public static boolean contains(SharedPreferences prefs, String shelfName, String bookName) {
@@ -78,8 +102,7 @@ public final class LibraryShelfStore {
             if (included && !found) next.put(bookName);
             root.put(name, next);
             save(prefs, root);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
     }
 
     public static int count(SharedPreferences prefs, String shelfName) {
@@ -109,15 +132,12 @@ public final class LibraryShelfStore {
                 root.put(shelf, next);
             }
             if (changed) save(prefs, root);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
     }
 
     private static void save(SharedPreferences prefs, JSONObject root) {
-        prefs.edit()
-                .putString(KEY, root.toString())
-                .putLong("sync_updated_ms", System.currentTimeMillis())
-                .apply();
+        prefs.edit().putString(KEY, root.toString())
+                .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
     }
 
     private static JSONObject object(String raw) {

@@ -220,7 +220,8 @@ public final class ReadingStatsStore {
         try {
             JSONObject root = object(prefs.getString(KEY_DAY_NOTES, "{}"));
             String clean = note == null ? "" : note.trim();
-            if (clean.isEmpty()) root.remove(key); else root.put(key, clean);
+            // Keep an empty value so Smart Sync does not resurrect a deleted note.
+            root.put(key, clean);
             saveJson(prefs, KEY_DAY_NOTES, root);
         } catch (Exception ignored) {}
     }
@@ -238,8 +239,8 @@ public final class ReadingStatsStore {
             JSONObject date = root.optJSONObject(key);
             if (date == null) date = new JSONObject();
             String clean = note == null ? "" : note.trim();
-            if (clean.isEmpty()) date.remove(fileName); else date.put(fileName, clean);
-            if (date.length() == 0) root.remove(key); else root.put(key, date);
+            date.put(fileName, clean);
+            root.put(key, date);
             saveJson(prefs, KEY_BOOK_DAY_NOTES, root);
         } catch (Exception ignored) {}
     }

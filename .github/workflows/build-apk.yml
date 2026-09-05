@@ -1,8 +1,8 @@
-name: Build WoW Reader Lab v2.18.1 APK and AAB
+name: Build WoW Reader Lab v2.18.2 APK and AAB
 
 on:
   push:
-    branches: [main, play-store-api36]
+    branches: [main, play-store-api36, fix/v52-unified-install]
     paths:
       - 'app/**'
       - 'build.gradle'
@@ -54,8 +54,8 @@ jobs:
           grep -q "minSdk 23" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
-          grep -q "versionCode 51" app/build.gradle
-          grep -q "versionName '2.18.1'" app/build.gradle
+          grep -q "versionCode 52" app/build.gradle
+          grep -q "versionName '2.18.2'" app/build.gradle
           grep -q "Home search submit is consumed" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "IME_ACTION_SEARCH" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "setOnEditorActionListener" app/src/main/java/com/whisper/wowreader/MainActivity.java
@@ -91,7 +91,7 @@ jobs:
           git diff --check
 
       - name: Build release APK and AAB
-        run: gradle :app:assembleRelease :app:bundleRelease --stacktrace
+        run: gradle :app:assembleRelease :app:bundleRelease :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
 
       - name: Android lint
         run: gradle :app:lintRelease --stacktrace
@@ -106,8 +106,8 @@ jobs:
           test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
-          "$AAPT" dump badging "$APK" | grep -q "versionCode='51'"
-          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.1'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='52'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.2'"
           "$AAPT" dump badging "$APK" | grep -q "sdkVersion:'23'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           unzip -l "$APK" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
@@ -116,8 +116,8 @@ jobs:
       - name: Collect APK
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.1-v51-unsigned.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.1-v51-unsigned.aab
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.2-v52-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.2-v52-unsigned.aab
           APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
           test -n "$APKSIGNER_JAR"
           cp "$APKSIGNER_JAR" apksigner.jar
@@ -125,10 +125,12 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-Lab-v2.18.1-v51
+          name: WoW-Reader-Lab-v2.18.2-v52
           path: |
-            WoW-Reader-Lab-v2.18.1-v51-unsigned.apk
-            WoW-Reader-Lab-v2.18.1-v51-unsigned.aab
+            WoW-Reader-Lab-v2.18.2-v52-unsigned.apk
+            WoW-Reader-Lab-v2.18.2-v52-unsigned.aab
             apksigner.jar
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           if-no-files-found: error
           retention-days: 14

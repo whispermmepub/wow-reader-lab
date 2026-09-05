@@ -194,6 +194,7 @@ public class BookReaderActivity extends Activity {
     private String footnoteReturnSourceUrl = "";
     private long footnoteArmToken = 0L;
     private FrameLayout footnotePreviewOverlay = null;
+    private long footnotePreviewRequestToken = 0L;
     private String footnotePreviewHref = "";
     private String footnotePreviewLabel = "";
     private ReaderSearchIndex.Footnote footnotePreviewNote = null;
@@ -722,13 +723,18 @@ public class BookReaderActivity extends Activity {
         footnotePreviewHref = href.trim();
         footnotePreviewLabel = label == null ? "" : label.trim();
         final int sourceSpine = currentSpine;
+        final long requestToken = ++footnotePreviewRequestToken;
+        final String previewHref = footnotePreviewHref;
+        final String previewLabel = footnotePreviewLabel;
+        final java.util.List<File> previewSpine = new java.util.ArrayList<>(spine);
         final String previewSourceId = sourceId == null ? "" : sourceId;
         new Thread(() -> {
-            ReaderSearchIndex.Footnote note = ReaderSearchIndex.resolveFootnote(spine, sourceSpine, footnotePreviewHref, previewSourceId);
+            ReaderSearchIndex.Footnote note = ReaderSearchIndex.resolveFootnote(previewSpine, sourceSpine, previewHref, previewSourceId);
             runOnUiThread(() -> {
-                if (isFinishing()) return;
+                if (isFinishing() || isDestroyed() || requestToken != footnotePreviewRequestToken ||
+                        currentSpine != sourceSpine || footnoteNavigationActive) return;
                 footnotePreviewNote = note;
-                showFootnotePreview(note, footnotePreviewLabel);
+                showFootnotePreview(note, previewLabel);
             });
         }, "wow-footnote-preview").start();
     }
@@ -752,6 +758,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void cancelFootnotePreview() {
+        footnotePreviewRequestToken++;
         dismissFootnotePreview();
         if (!footnoteNavigationActive && !footnoteReturnPending && !footnoteExactBacklinkPending) {
             footnoteReturnArmed = false;
@@ -849,6 +856,7 @@ public class BookReaderActivity extends Activity {
 
     private void navigateToFootnote(ReaderSearchIndex.Footnote note) {
         if (webView == null || note == null || spine.isEmpty()) return;
+        footnotePreviewRequestToken++;
         footnoteNavigationActive = true;
         footnoteReturnPending = false;
         footnoteReturnArmed = false;
@@ -903,7 +911,9 @@ public class BookReaderActivity extends Activity {
             footnoteReturnPending = false;
             return;
         }
+        final long returnToken = footnoteArmToken;
         webView.postDelayed(() -> {
+            if (isFinishing() || isDestroyed() || returnToken != footnoteArmToken) return;
             footnoteNavigationActive = false;
             footnoteReturnArmed = false;
             footnoteReturnPending = false;
@@ -961,7 +971,7 @@ public class BookReaderActivity extends Activity {
         String title = target < chapterTitles.size() ? chapterTitles.get(target) : "";
         String file = spine.get(target) == null ? "" : spine.get(target).getName();
         String meta = navLower(title + " " + file).replace('_', ' ').replace('-', ' ').replace('.', ' ');
-        return meta.matches(".*\b(footnotes?|endnotes?|notes?)\b.*");
+        return meta.matches(".*\\b(footnotes?|endnotes?|notes?)\\b.*");
     }
 
     private boolean looksLikeFootnoteBacklink(String href, String epubType, String role, String rel, String cssClass) {
@@ -5900,6 +5910,7 @@ public class BookReaderActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        footnotePreviewRequestToken++;
         dismissFootnotePreview();
         dismissEyeBreakReminder(false);
         cancelEyeBreakReminder();

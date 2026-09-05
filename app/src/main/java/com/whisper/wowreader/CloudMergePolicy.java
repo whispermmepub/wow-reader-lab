@@ -107,9 +107,37 @@ final class CloudMergePolicy {
         if ("library_shelves_json".equals(key)) return mergeShelves(local, remote);
         if ("reading_stats_days_json".equals(key) || "reading_stats_books_json".equals(key))
             return mergeNumericObjects(local, remote);
+        if ("reading_stats_day_books_json".equals(key)) return mergeCalendarObjects(local, remote, true);
+        if ("reading_stats_day_notes_json".equals(key) || "reading_stats_book_day_notes_json".equals(key))
+            return mergeCalendarObjects(local, remote, false);
         if ("reading_stats_last_day".equals(key)) return local.compareTo(remote) >= 0 ? local : remote;
         // Typography, titles, authors and other scalar choices remain local on conflict.
         return local;
+    }
+
+    // Merge individual dates/books rather than discarding the entire remote calendar.
+    // Existing local note text (including a deletion marker) wins a same-entry conflict.
+    private static String mergeCalendarObjects(String localRaw, String remoteRaw, boolean durations) {
+        try {
+            JSONObject local = new JSONObject(localRaw);
+            mergeCalendarObject(local, new JSONObject(remoteRaw), durations);
+            return local.toString();
+        } catch (Exception ignored) { return localRaw; }
+    }
+
+    private static void mergeCalendarObject(JSONObject local, JSONObject remote, boolean durations) throws Exception {
+        Iterator<String> keys = remote.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            Object incoming = remote.get(key);
+            if (!local.has(key)) {
+                local.put(key, incoming);
+            } else if (incoming instanceof JSONObject && local.opt(key) instanceof JSONObject) {
+                mergeCalendarObject(local.getJSONObject(key), (JSONObject) incoming, durations);
+            } else if (durations && incoming instanceof Number && local.opt(key) instanceof Number) {
+                local.put(key, Math.max(local.getLong(key), ((Number) incoming).longValue()));
+            }
+        }
     }
 
     private static int mergeIntValue(String key, int local, int remote) {

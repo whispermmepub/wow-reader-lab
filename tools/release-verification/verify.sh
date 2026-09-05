@@ -19,7 +19,13 @@ for old in v48 v51; do
   adb shell am force-stop "$PKG"
   adb shell mkdir -p "/data/user/0/$PKG/files/library" "/data/user/0/$PKG/files/reader_fonts" "/data/user/0/$PKG/shared_prefs"
   # Seed data in the old production-signed installation, then use Android's normal update path.
-  adb pull "/data/user/0/$PKG/shared_prefs/wow_reader.xml" verification/old-prefs.xml
+  # Some clean launches do not create wow_reader.xml until a preference is first written.
+  # In that case start from a valid empty SharedPreferences map instead of failing the verifier.
+  if adb shell test -f "/data/user/0/$PKG/shared_prefs/wow_reader.xml"; then
+    adb pull "/data/user/0/$PKG/shared_prefs/wow_reader.xml" verification/old-prefs.xml
+  else
+    printf '%s\n' "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>" '<map />' > verification/old-prefs.xml
+  fi
   python3 tools/release-verification/seed.py
   APP_UID=$(adb shell stat -c %u "/data/user/0/$PKG" | tr -d '\r')
   adb push verification/seed-prefs.xml "/data/user/0/$PKG/shared_prefs/wow_reader.xml"
@@ -35,7 +41,7 @@ for old in v48 v51; do
   adb pull "/data/user/0/$PKG/files/reader_fonts/update-font.ttf" verification/updated-font.ttf
   python3 tools/release-verification/seed.py verify
   echo "$old original-signed -> v52: update, data and launch PASS" | tee -a verification/install-report.txt
- done
+done
 adb uninstall "$PKG"
 adb install signed-verification/v52.apk
 check_launch

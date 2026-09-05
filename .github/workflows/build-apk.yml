@@ -1,4 +1,4 @@
-name: Build WoW Reader Lab v2.17.7 APK and AAB
+name: Build WoW Reader Lab v2.17.8 APK and AAB
 
 on:
   push:
@@ -66,8 +66,8 @@ jobs:
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
-          grep -q "versionCode 47" app/build.gradle
-          grep -q "versionName '2.17.7'" app/build.gradle
+          grep -q "versionCode 48" app/build.gradle
+          grep -q "versionName '2.17.8'" app/build.gradle
           grep -q "myanmar-calendar:1.1.1.RELEASE" app/build.gradle
           grep -q "swiperefreshlayout:1.1.0" app/build.gradle
           grep -q "coreLibraryDesugaringEnabled true" app/build.gradle
@@ -76,16 +76,22 @@ jobs:
           grep -q "setOnRefreshListener" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "readerUiRefreshPending" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "onReaderLinkTap" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          ! grep -q "Show on page" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "cleanFootnoteDisplayText" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "footnotePreviewOverlay" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "dismissFootnotePreview" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "readerTouchStartedOnLink" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "footnoteTapSuppressUntilMs" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "Card-only footnotes" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "SRC_ANCHOR_TYPE" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "SRC_IMAGE_ANCHOR_TYPE" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "requestFootnotePreview(targetHref, targetLabel, targetSourceId)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "cleanFootnoteDisplayText" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "root.addView(overlay" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q "Show on page" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q "footnotePreviewDialog" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q "armFootnoteReturn(targetSourceId)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q "ratio < 0.24f" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q "ratio > 0.76f" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "looksLikeFootnoteDestination" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "resolveTargetSpine" app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java
-          grep -q "Theme_DeviceDefault_NoActionBar_Fullscreen" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          ! grep -q "Theme_Black_NoTitleBar_Fullscreen" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "renderBookSearchResults" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "ReaderSearchIndex.search" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "ReadingProgressStore.set" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
@@ -116,8 +122,8 @@ jobs:
           test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
-          "$AAPT" dump badging "$APK" | grep -q "versionCode='47'"
-          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.7'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='48'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.8'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           unzip -l "$APK" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
           unzip -l "$AAB" | grep -q 'base/assets/fonts/pyidaungsu_native.ttf'
@@ -125,8 +131,8 @@ jobs:
       - name: Collect APK
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.17.7-v47-unsigned.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.7-v47-unsigned.aab
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.17.8-v48-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.8-v48-unsigned.aab
           APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
           test -n "$APKSIGNER_JAR"
           cp "$APKSIGNER_JAR" apksigner.jar
@@ -134,10 +140,10 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-Lab-v2.17.7-v47
+          name: WoW-Reader-Lab-v2.17.8-v48
           path: |
-            WoW-Reader-Lab-v2.17.7-v47-unsigned.apk
-            WoW-Reader-Lab-v2.17.7-v47-unsigned.aab
+            WoW-Reader-Lab-v2.17.8-v48-unsigned.apk
+            WoW-Reader-Lab-v2.17.8-v48-unsigned.aab
             apksigner.jar
           if-no-files-found: error
           retention-days: 14

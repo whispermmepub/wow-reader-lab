@@ -2,6 +2,7 @@ name: Verify v52 reader and installation
 on:
   push:
     branches: [fix/v52-unified-install]
+    paths: ['app/**', 'tools/verify-v52.sh']
   workflow_dispatch:
 permissions:
   contents: read

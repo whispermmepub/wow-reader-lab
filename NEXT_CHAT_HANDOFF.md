@@ -1,54 +1,30 @@
-# WoW Reader Lab — Next Chat Handoff
+# WoW Reader handoff
 
-Read this before modifying the project in a new chat.
+Production stable: v2.18.1 / versionCode 51, user approved in previous chat.
+Current Lab candidate: v2.18.2 / versionCode 52 on `fix/v52-unified-install`.
+Do not promote this candidate without new user real-device approval.
 
-## Working rule
+Package: `com.whisper.wowreader` (unchanged).
+Original signing certificate SHA-256:
+`29:FC:A2:9F:8D:B1:84:AA:F5:13:35:EF:BE:A8:C5:0D:51:76:9D:77:48:AE:53:56:17:C2:47:9E:39:89:AC:A5`
+Never generate a replacement signing key. Increment versionCode above the latest candidate for new releases.
 
-- Experimental/testing repo: `whispermmepub/wow-reader-lab`
-- Production/stable repo: `whispermmepub/wow-reader-app`
-- Test new changes in Lab first.
-- Do not promote to production until the user explicitly approves a real-device-tested Lab build.
-- Preserve existing working behavior and avoid broad rewrites.
+## v52 fixes
+- Footnote destination word-boundary regex corrected.
+- Preview requests snapshot their href/label/spine and reject stale callbacks.
+- Old backlink completion cannot clear a newer navigation session.
+- Legacy WebViews receive prefixed CSS column properties for Page mode.
+- Smart Sync merges calendar dates/books independently. Existing local note conflicts remain local.
+- Empty note deletion markers prevent a local deletion from being resurrected by Smart Sync.
 
-## Current versions
+Existing preferences and files stay in the same locations; no destructive migration or reset.
+Missing calendar preferences still initialize as empty objects. Empty note markers remain readable by older versions.
 
-- Production: **v2.17.0**, `versionCode 40`
-- Lab: **v2.17.2**, `versionCode 42`
-- Package: `com.whisper.wowreader`
-- `minSdk 23`, `targetSdk 36`, Java 17
+One original-production-signed APK serves both fresh install and in-place update.
+CI source build, Android lint and debug reader regression are separate from original-signed install tests.
+See `.github/workflows/verify-signed-v52.yml` and its run artifacts for exact results.
+Private signing material is not in this repository. The verification deltas contain only already-signed APK bytes.
+Artifact-backed installation replay requires the referenced CI artifacts before their retention expires.
+Google authentication and live Drive network sync need account/device checks; emulator merge tests do not prove those services.
 
-Lab v42 is based on the approved production v40 line. v42 adds a Myanmar Reading Calendar / Reading Memory prototype and custom shelf rename/delete for real-device testing.
-
-## Important product decision
-
-The Telegram Auto Library experiment was intentionally removed from Lab. It is not part of the current app or current development plan. Do not reintroduce `AutoLibrarySync`, the Cloudflare Telegram auto-library backend, polling hooks, endpoint config, or related CI checks unless the user explicitly requests that feature again.
-
-## Stable features to preserve
-
-- Offline EPUB/PDF reading
-- Google account sign-in and private Google Drive appDataFolder backup/restore/auto sync
-- Reading Statistics / streaks
-- Myanmar Reading Calendar + daily/book Reading Memory (v42 Lab test)
-- Smart Library / shelves with custom shelf rename/delete
-- Notes & Highlights Hub
-- Per-book typography
-- Smart Sync Merge
-- Home / Library / Notes / Explore navigation
-- Coming Soon / book-review feed
-- Custom App Theme
-- Justify Normal / Auto spacing
-- Fast chapter transitions and adjacent-chapter preloading
-- Multi-book EPUB/PDF import
-- Correct highlight/note text mapping
-- System inset and scroll/font-scaling fixes
-
-## Development flow
-
-1. Inspect current Lab main before changing code.
-2. Make the smallest safe change.
-3. Run Lab CI: source checks, APK/AAB build, lint, smoke checks.
-4. Build a signed Lab APK only when real-device testing is needed.
-5. User tests on a real device.
-6. Promote to production only after explicit approval.
-
-Never commit credentials, signing secrets, private keys, keystores, Telegram tokens, Cloudflare credentials, or Firebase server credentials.
+This chat's abandoned v49 draft was never applied. v51 is the base of this branch.

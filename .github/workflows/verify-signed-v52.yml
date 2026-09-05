@@ -1,0 +1,74 @@
+name: Verify original-signed v52 update and fresh install
+on:
+  push:
+    branches: [fix/v52-unified-install]
+    paths: ['.github/workflows/verify-signed-v52.yml', 'tools/release-verification/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  signed-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api: 23
+            arch: x86
+          - api: 29
+            arch: x86_64
+          - api: 35
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/download-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.17.8-v48
+          run-id: 33959532927
+          github-token: ${{ github.token }}
+          path: input/v48
+      - uses: actions/download-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.18.1-v51
+          run-id: 33984968444
+          github-token: ${{ github.token }}
+          path: input/v51
+      - uses: actions/download-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.18.2-v52
+          run-id: 33990590531
+          github-token: ${{ github.token }}
+          path: input/v52
+      - name: Reconstruct and verify exact signed APKs
+        run: |
+          python3 -m pip install bsdiff4==1.2.6
+          python3 tools/release-verification/reconstruct.py
+          for apk in signed-verification/*.apk; do
+            java -jar input/v52/apksigner.jar verify --verbose --print-certs "$apk" > "$apk.cert.txt"
+            grep -qi '29fca29f8db184aaf51335efbea8c50d51769d7748ae535617c2479e3989aca5' "$apk.cert.txt"
+          done
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.arch }}
+          target: google_apis
+          disable-animations: true
+          script: bash tools/release-verification/verify.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v52-original-signed-api${{ matrix.api }}
+          path: |
+            verification/
+            signed-verification/*.cert.txt

@@ -1,0 +1,30 @@
+[
+  {
+    "name": "v48",
+    "source": "input/v48/WoW-Reader-Lab-v2.17.8-v48-unsigned.apk",
+    "source_sha256": "d3a9a6eb9c42aa7e3729f000155be9316fab1c1be2b468c47433308b64b5af4b",
+    "signed_sha256": "58ed88a7ccf687b4613eed3b894152741b89a83469738732e1d2ed1549e94673",
+    "patch": "v48.patch.b64"
+  },
+  {
+    "name": "v51",
+    "source": "input/v51/WoW-Reader-Lab-v2.18.1-v51-unsigned.apk",
+    "source_sha256": "1df75c5d58acf4bdfdea0b88509de73c86687d1a3ceadcac174f697522ebde89",
+    "signed_sha256": "de3c9f668bcc0e33a23d7c56d67ab53bb8fa2a77bb841f35a2575d24ea359d4d",
+    "patch": "v51.patch.b64"
+  },
+  {
+    "name": "v52",
+    "source": "input/v52/WoW-Reader-Lab-v2.18.2-v52-unsigned.apk",
+    "source_sha256": "b11fa62ca426e40886c771053b0fddde3e1019456e208c9e1f654573ca00de65",
+    "signed_sha256": "c78023f1a6826a95d7d0dabdf555b761645effff12d7f4da89c3bd68cc42d883",
+    "patch": "v52.patch.b64"
+  },
+  {
+    "name": "test",
+    "source": "input/v52/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+    "source_sha256": "cac7c37404afefe307bd2975fd8d81d659ecc51cc25684ae1f3c950d653e533a",
+    "signed_sha256": "180456c94e9cc606885a93a970f7e745475e4a78c15f3a0c46536df6a9941440",
+    "patch": "test.patch.b64"
+  }
+]

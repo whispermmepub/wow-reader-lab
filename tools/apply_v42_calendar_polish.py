@@ -65,4 +65,4 @@ replace_once(memory,
              "    @Override protected void onResume() { super.onResume(); if (ui != null) render(); }",
              "    @Override protected void onRestart() { super.onRestart(); if (ui != null) render(); }")
 
-print("v42 calendar polish patch prepared")
+print("v42 calendar polish patch prepared - run 2")

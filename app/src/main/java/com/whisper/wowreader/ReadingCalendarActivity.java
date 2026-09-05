@@ -13,6 +13,7 @@ import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.File;
@@ -36,6 +37,11 @@ public class ReadingCalendarActivity extends Activity {
         Calendar now = Calendar.getInstance();
         year = now.get(Calendar.YEAR);
         month = now.get(Calendar.MONTH) + 1;
+        render();
+    }
+
+    @Override protected void onRestart() {
+        super.onRestart();
         render();
     }
 
@@ -69,6 +75,15 @@ public class ReadingCalendarActivity extends Activity {
         top.addView(today, new LinearLayout.LayoutParams(ui.dp(68), ui.dp(38)));
         root.addView(top, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(54)));
 
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setFillViewport(true);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(0, ui.dp(2), 0, ui.dp(16));
+        scroll.addView(body, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         LinearLayout monthCard = new LinearLayout(this);
         monthCard.setGravity(Gravity.CENTER_VERTICAL);
         monthCard.setPadding(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3));
@@ -95,7 +110,7 @@ public class ReadingCalendarActivity extends Activity {
         next.setOnClickListener(v -> moveMonth(1));
         monthCard.addView(next, new LinearLayout.LayoutParams(ui.dp(52), ui.dp(54)));
         LinearLayout.LayoutParams monthLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(60));
-        monthLp.topMargin = ui.dp(6); root.addView(monthCard, monthLp);
+        monthLp.topMargin = ui.dp(6); body.addView(monthCard, monthLp);
 
         GridLayout dow = new GridLayout(this);
         dow.setColumnCount(7);
@@ -106,7 +121,7 @@ public class ReadingCalendarActivity extends Activity {
             GridLayout.LayoutParams lp = weightedCell(ui.dp(26));
             dow.addView(dayName, lp);
         }
-        root.addView(dow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(30)));
+        body.addView(dow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(30)));
 
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(7);
@@ -115,13 +130,13 @@ public class ReadingCalendarActivity extends Activity {
         first.clear(); first.set(year, month - 1, 1, 12, 0, 0);
         int offset = first.get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY;
         int days = first.getActualMaximum(Calendar.DAY_OF_MONTH);
-        for (int i = 0; i < offset; i++) grid.addView(new View(this), weightedCell(ui.dp(78)));
+        for (int i = 0; i < offset; i++) grid.addView(new View(this), weightedCell(ui.dp(72)));
         Calendar now = Calendar.getInstance();
-        for (int day = 1; day <= days; day++) grid.addView(dayCell(day, now), weightedCell(ui.dp(78)));
+        for (int day = 1; day <= days; day++) grid.addView(dayCell(day, now), weightedCell(ui.dp(72)));
         int used = offset + days;
         int remaining = (7 - (used % 7)) % 7;
-        for (int i = 0; i < remaining; i++) grid.addView(new View(this), weightedCell(ui.dp(78)));
-        root.addView(grid, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        for (int i = 0; i < remaining; i++) grid.addView(new View(this), weightedCell(ui.dp(72)));
+        body.addView(grid, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         LinearLayout summary = new LinearLayout(this);
         summary.setOrientation(LinearLayout.HORIZONTAL);
@@ -137,8 +152,10 @@ public class ReadingCalendarActivity extends Activity {
         summary.addView(divider(), new LinearLayout.LayoutParams(ui.dp(1), ui.dp(34)));
         summary.addView(metric(ui.formatDuration(time), "Reading time"), new LinearLayout.LayoutParams(0, ui.dp(54), 1f));
         LinearLayout.LayoutParams sumLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(68));
-        sumLp.topMargin = ui.dp(7); root.addView(summary, sumLp);
+        sumLp.topMargin = ui.dp(7); body.addView(summary, sumLp);
 
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         setContentView(root);
         AppWindowInsets.apply(this, root, ui.background, ui.darkSystemIcons);
     }
@@ -158,7 +175,9 @@ public class ReadingCalendarActivity extends Activity {
         cell.setClickable(true);
         cell.setOnClickListener(v -> openDay(day, key));
 
-        TextView number = label(String.valueOf(day), 10.8f, isToday ? ui.accent : ui.primary, true);
+        boolean hasDailyNote = !ReadingStatsStore.dailyNote(prefs, key).isEmpty();
+        String numberText = hasDailyNote ? day + " •" : String.valueOf(day);
+        TextView number = label(numberText, 10.8f, isToday || hasDailyNote ? ui.accent : ui.primary, true);
         number.setGravity(Gravity.CENTER);
         cell.addView(number, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(18)));
         MyanmarCalendarBridge.Info info = MyanmarCalendarBridge.info(year, month, day);

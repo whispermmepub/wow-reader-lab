@@ -37,7 +37,7 @@ public class ReadingMemoryActivity extends Activity {
         render();
     }
 
-    @Override protected void onResume() { super.onResume(); if (ui != null) render(); }
+    @Override protected void onRestart() { super.onRestart(); if (ui != null) render(); }
 
     private void render() {
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(12)); root.setBackgroundColor(ui.background);

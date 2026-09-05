@@ -41,7 +41,7 @@ public class ReadingDayActivity extends Activity {
         render();
     }
 
-    @Override protected void onResume() { super.onResume(); if (ui != null) render(); }
+    @Override protected void onRestart() { super.onRestart(); if (ui != null) render(); }
 
     private void render() {
         LinearLayout root = new LinearLayout(this);

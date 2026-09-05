@@ -1,0 +1,31 @@
+name: Inspect reader navigation and progress
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-reader-nav-progress-temp.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reader navigation snippets
+        shell: bash
+        run: |
+          set -euo pipefail
+          R=app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          echo '=== URL / anchor / navigation ==='
+          grep -n -E 'WebViewClient|shouldOverride|href|fragment|anchor|pendingToc|loadUrl|evaluateJavascript|show.*note|Show on page|foot|noteref|epub:type|role=.doc-noteref|goBack|history' "$R" || true
+          echo '=== reader progress ==='
+          grep -n -E 'currentProgressPermille|saveEpubState|progress_|reading_progress|last_progress|currentPageInChapter|pageCountInChapter|update.*Position|positionView|readingSeek' "$R" || true
+      - name: Main library progress snippets
+        shell: bash
+        run: |
+          set -euo pipefail
+          M=app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -n -E 'Continue Reading|continue|progress_|reading_progress|last_progress|permille|percent|%|onResume|refreshLibrary|openBook|BookReaderActivity' "$M" || true

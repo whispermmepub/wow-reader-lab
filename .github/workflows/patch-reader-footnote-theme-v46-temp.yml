@@ -1,10 +1,13 @@
-name: Patch WoW Reader Lab v46 footnote and search theme
+name: Patch WoW Reader Lab v46
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - '.github/workflows/patch-reader-footnote-theme-v46-temp.yml'
+      - .github/workflows/patch-reader-footnote-theme-v46-temp.yml
+      - tools/v46/apply_patch.py
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,204 +16,32 @@ jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-java@v5
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      - name: Install Android 16 SDK
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
-      - name: Apply v46 patch
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+
+      - name: Apply v46 source patch
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          gradle = Path('app/build.gradle')
-          g = gradle.read_text()
-          g = g.replace('versionCode 45', 'versionCode 46', 1)
-          g = g.replace("versionName '2.17.5'", "versionName '2.17.6'", 1)
-          if 'versionCode 46' not in g or "versionName '2.17.6'" not in g:
-              raise SystemExit('version bump failed')
-          gradle.write_text(g)
-
-          idx = Path('app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java')
-          s = idx.read_text()
-          marker = '    static Footnote resolveFootnote(List<File> spine, int sourceSpine, String href, String sourceId) {'
-          if marker not in s:
-              raise SystemExit('resolveFootnote marker missing')
-          helper = '''    static int resolveTargetSpine(List<File> spine, int sourceSpine, String href) {
-              if (spine == null || spine.isEmpty() || sourceSpine < 0 || sourceSpine >= spine.size()) return -1;
-              String raw = href == null ? "" : href.trim();
-              int hash = raw.indexOf('#');
-              String filePart = hash >= 0 ? raw.substring(0, hash) : raw;
-              if (filePart.isEmpty()) return sourceSpine;
-              try {
-                  String decoded = Uri.decode(filePart);
-                  if (decoded.startsWith("http://") || decoded.startsWith("https://") || decoded.startsWith("mailto:") || decoded.startsWith("tel:")) return -1;
-                  File source = spine.get(sourceSpine);
-                  File target;
-                  if (decoded.startsWith("file://")) target = new File(Uri.parse(decoded).getPath());
-                  else target = new File(source.getParentFile(), decoded);
-                  String wanted = target.getCanonicalPath();
-                  for (int i = 0; i < spine.size(); i++) {
-                      if (wanted.equals(spine.get(i).getCanonicalPath())) return i;
-                  }
-              } catch (Exception ignored) {}
-              return -1;
-          }
-
-'''
-          if 'static int resolveTargetSpine(' not in s:
-              s = s.replace(marker, helper + marker, 1)
-          idx.write_text(s)
-
-          p = Path('app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
-          s = p.read_text()
-
-          old_ref = '''        return frag.startsWith("fn") || frag.startsWith("_fn") || frag.startsWith("ftn") || frag.startsWith("_ftn") ||
-                  frag.contains("footnote") || frag.contains("noteref") || frag.startsWith("note") ||
-                  frag.startsWith("endnote") || frag.startsWith("_edn");
-              }
-
-              private boolean looksLikeFootnoteBacklink'''
-          new_ref = '''        boolean named = frag.startsWith("fn") || frag.startsWith("_fn") || frag.startsWith("ftn") || frag.startsWith("_ftn") ||
-                  frag.contains("footnote") || frag.contains("noteref") || frag.startsWith("note") ||
-                  frag.startsWith("endnote") || frag.startsWith("_edn");
-              return named || looksLikeFootnoteDestination(href);
-          }
-
-          private boolean looksLikeFootnoteDestination(String href) {
-              if (href == null || href.indexOf('#') < 0 || spine.isEmpty()) return false;
-              int target = ReaderSearchIndex.resolveTargetSpine(spine, currentSpine, href);
-              if (target < 0 || target >= spine.size()) return false;
-              String title = target < chapterTitles.size() ? chapterTitles.get(target) : "";
-              String file = spine.get(target) == null ? "" : spine.get(target).getName();
-              String meta = navLower(title + " " + file).replace('_', ' ').replace('-', ' ').replace('.', ' ');
-              return meta.matches(".*\\b(footnotes?|endnotes?|notes?)\\b.*");
-          }
-
-          private boolean looksLikeFootnoteBacklink'''
-          if old_ref not in s:
-              raise SystemExit('footnote reference block missing')
-          s = s.replace(old_ref, new_ref, 1)
-
-          old_back = '''        if (!source.isEmpty() && href != null) {
-                  int hash = href.indexOf('#');
-                  if (hash >= 0 && hash + 1 < href.length()) {
-                      String fragment = Uri.decode(href.substring(hash + 1));
-                      if (source.equals(fragment)) return true;
-                  }
-              }
-              return false;
-          }
-
-          private synchronized void armFootnoteReturn'''
-          new_back = '''        if (!source.isEmpty() && href != null) {
-                  int hash = href.indexOf('#');
-                  if (hash >= 0 && hash + 1 < href.length()) {
-                      String fragment = Uri.decode(href.substring(hash + 1));
-                      if (source.equals(fragment)) return true;
-                  }
-              }
-              if (footnoteNavigationActive && href != null && href.indexOf('#') >= 0 &&
-                      currentSpine != footnoteReturnSpine && footnoteReturnSpine >= 0) {
-                  int target = ReaderSearchIndex.resolveTargetSpine(spine, currentSpine, href);
-                  if (target == footnoteReturnSpine) return true;
-              }
-              return false;
-          }
-
-          private synchronized void armFootnoteReturn'''
-          if old_back not in s:
-              raise SystemExit('footnote backlink block missing')
-          s = s.replace(old_back, new_back, 1)
-
-          old_bridge = '''        @JavascriptInterface
-                  public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId, String label) {
-                      if (owner != webView) return false;
-                      if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) {
-                          restoreFootnoteReturn();
-                          return true;
-                      }
-                      if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) {
-                          armFootnoteReturn(sourceId);
-                          requestFootnotePreview(href, label);
-                          return true;
-                      }
-                      return false;
-                  }
-'''
-          new_bridge = '''        @JavascriptInterface
-                  public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId, String label) {
-                      if (owner != webView) return false;
-                      if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) {
-                          runOnUiThread(BookReaderActivity.this::restoreFootnoteReturn);
-                          return true;
-                      }
-                      if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) {
-                          final String targetHref = href == null ? "" : href;
-                          final String targetLabel = label == null ? "" : label;
-                          final String targetSourceId = sourceId == null ? "" : sourceId;
-                          runOnUiThread(() -> {
-                              if (isFinishing() || owner != webView) return;
-                              armFootnoteReturn(targetSourceId);
-                              requestFootnotePreview(targetHref, targetLabel);
-                          });
-                          return true;
-                      }
-                      return false;
-                  }
-'''
-          if old_bridge not in s:
-              raise SystemExit('ReaderBridge footnote method missing')
-          s = s.replace(old_bridge, new_bridge, 1)
-
-          s = s.replace('final Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);',
-                        'final Dialog dialog = new Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen);', 1)
-          old_colors = '''        int bg = Color.rgb(22, 23, 26);
-                  int surface = Color.rgb(35, 36, 40);
-                  int text = Color.rgb(244, 245, 247);
-                  int sub = Color.rgb(178, 181, 189);
-                  int accent = Color.rgb(128, 203, 196);'''
-          new_colors = '''        int bg = readerTheme == 2 ? Color.rgb(18, 18, 18) :
-                  (readerTheme == 1 ? Color.rgb(244, 236, 216) : Color.WHITE);
-          int surface = readerPanelBase();
-          int text = readerPanelText();
-          int sub = readerPanelSubText();
-          int accent = readerAccent();'''
-          if old_colors not in s:
-              raise SystemExit('search hardcoded color block missing')
-          s = s.replace(old_colors, new_colors, 1)
-          s = s.replace('header.setBackground(glassPanel(surface, dp(22), Color.rgb(55, 57, 64)));',
-                        'header.setBackground(glassPanel(surface, dp(22), readerPanelStroke()));', 1)
-          s = s.replace('row.setBackground(glassPanel(surface, dp(15), Color.rgb(52, 54, 60)));',
-                        'row.setBackground(glassPanel(surface, dp(15), readerPanelStroke()));', 1)
-
-          s = s.replace('bar.setBackground(glassPanel(Color.rgb(28, 29, 32), dp(20), Color.rgb(70, 72, 78)));',
-                        'bar.setBackground(glassPanel(readerPanelBase(), dp(20), readerPanelStroke()));', 1)
-          s = s.replace('close.setTextColor(Color.WHITE);', 'close.setTextColor(readerPanelText());', 1)
-          s = s.replace('searchNavigationLabel.setTextColor(Color.WHITE);', 'searchNavigationLabel.setTextColor(readerPanelText());', 1)
-          s = s.replace('prev.setTextColor(Color.WHITE);', 'prev.setTextColor(readerPanelText());', 1)
-          s = s.replace('next.setTextColor(Color.WHITE);', 'next.setTextColor(readerPanelText());', 1)
-          needle = '''        searchNavigationBar.setVisibility(View.VISIBLE);
-              searchNavigationBar.bringToFront();'''
-          repl = '''        searchNavigationBar.setBackground(glassPanel(readerPanelBase(), dp(20), readerPanelStroke()));
-          tintChromeChildren(searchNavigationBar, readerPanelText());
-          searchNavigationBar.setVisibility(View.VISIBLE);
-          searchNavigationBar.bringToFront();'''
-          if needle not in s:
-              raise SystemExit('search nav visibility block missing')
-          s = s.replace(needle, repl, 1)
-
-          p.write_text(s)
-          PY
+          python3 tools/v46/apply_patch.py
           grep -q 'versionCode 46' app/build.gradle
           grep -q "versionName '2.17.6'" app/build.gradle
           grep -q 'looksLikeFootnoteDestination' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
@@ -219,27 +50,36 @@ jobs:
           grep -q 'Theme_DeviceDefault_NoActionBar_Fullscreen' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           ! grep -q 'Theme_Black_NoTitleBar_Fullscreen' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           git diff --check
-      - name: Build and lint v46
-        run: gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
-      - name: Smoke check v46
+
+      - name: Build and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
+
+      - name: Smoke checks
         shell: bash
         run: |
           set -euo pipefail
           APK=app/build/outputs/apk/release/app-release-unsigned.apk
           AAB=app/build/outputs/bundle/release/app-release.aab
-          test -s "$APK" && test -s "$AAB"
+          test -s "$APK"
+          test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
           "$AAPT" dump badging "$APK" | grep -q "versionCode='46'"
           "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.6'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
-      - name: Commit verified v46 app source
+
+      - name: Commit verified app source
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add app/build.gradle app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java
-          git diff --cached --quiet && exit 0
+          if git diff --cached --quiet; then
+            exit 0
+          fi
           git commit -m "Fix footnote interception and theme book search"
           git push origin HEAD:main

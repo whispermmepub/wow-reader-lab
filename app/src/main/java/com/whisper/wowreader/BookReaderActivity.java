@@ -163,6 +163,8 @@ public class BookReaderActivity extends Activity {
     private int pageCountInChapter = 1;
     private boolean pageTurnLocked = false;
     private boolean tapHitTestPending = false;
+    private volatile long lastReaderLinkTapMs = 0L;
+    private boolean readerTouchStartedOnLink = false;
     private long lastPageTurnMs = 0L;
     private boolean chapterLoading = false;
     private long lastChapterNavMs = 0L;
@@ -178,13 +180,11 @@ public class BookReaderActivity extends Activity {
     private String footnoteReturnSourceId = "";
     private String footnoteReturnSourceUrl = "";
     private long footnoteArmToken = 0L;
-    private Dialog footnotePreviewDialog = null;
+    private FrameLayout footnotePreviewOverlay = null;
     private String footnotePreviewHref = "";
     private String footnotePreviewLabel = "";
     private ReaderSearchIndex.Footnote footnotePreviewNote = null;
     private boolean footnoteReturnPending = false;
-    // A recognized footnote tap must never also trigger page/chapter navigation.
-    private volatile long footnoteTapSuppressUntilMs = 0L;
 
     // Search remains transient until the user intentionally closes it on a result page.
     private Dialog bookSearchDialog = null;
@@ -695,14 +695,14 @@ public class BookReaderActivity extends Activity {
         try { webView.evaluateJavascript(js, null); } catch (Exception ignored) {}
     }
 
-    private void requestFootnotePreview(String href, String label, String sourceId) {
+    private void requestFootnotePreview(String href, String label) {
         if (webView == null || href == null || href.trim().isEmpty() || spine.isEmpty()) return;
         footnotePreviewHref = href.trim();
         footnotePreviewLabel = label == null ? "" : label.trim();
         final int sourceSpine = currentSpine;
-        final String previewSourceId = sourceId == null ? "" : sourceId;
+        final String sourceId = footnoteReturnSourceId;
         new Thread(() -> {
-            ReaderSearchIndex.Footnote note = ReaderSearchIndex.resolveFootnote(spine, sourceSpine, footnotePreviewHref, previewSourceId);
+            ReaderSearchIndex.Footnote note = ReaderSearchIndex.resolveFootnote(spine, sourceSpine, footnotePreviewHref, sourceId);
             runOnUiThread(() -> {
                 if (isFinishing()) return;
                 footnotePreviewNote = note;
@@ -711,31 +711,33 @@ public class BookReaderActivity extends Activity {
         }, "wow-footnote-preview").start();
     }
 
-    private String cleanFootnoteDisplayText(String raw) {
-        if (raw == null) return "";
-        String text = raw.replaceAll("\\s+", " ").trim();
-        text = text.replaceFirst("(?i)^unknown\\s*", "");
-        text = text.replaceFirst("^\\[\\s*[←↩↵]?\\s*-?\\s*\\d+\\s*\\]\\s*", "");
-        text = text.replaceFirst("^[←↩↵]\\s*-?\\s*\\d+\\s*", "");
-        return text.trim();
+    private void dismissFootnotePreview() {
+        if (footnotePreviewOverlay == null) return;
+        try {
+            ViewGroup parent = (ViewGroup) footnotePreviewOverlay.getParent();
+            if (parent != null) parent.removeView(footnotePreviewOverlay);
+        } catch (Exception ignored) {}
+        footnotePreviewOverlay = null;
     }
 
     private void showFootnotePreview(ReaderSearchIndex.Footnote note, String label) {
-        if (isFinishing() || note == null) return;
-        if (footnotePreviewDialog != null) {
-            try { footnotePreviewDialog.dismiss(); } catch (Exception ignored) {}
-            footnotePreviewDialog = null;
-        }
-        final Dialog dialog = new Dialog(this);
-        footnotePreviewDialog = dialog;
-        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        dialog.setCanceledOnTouchOutside(true);
+        if (isFinishing() || note == null || root == null) return;
+        dismissFootnotePreview();
+
+        final FrameLayout overlay = new FrameLayout(this);
+        footnotePreviewOverlay = overlay;
+        overlay.setClickable(true);
+        overlay.setFocusable(true);
+        overlay.setBackgroundColor(Color.argb(22, 0, 0, 0));
+        overlay.setOnClickListener(v -> dismissFootnotePreview());
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(18), dp(10), dp(18), dp(14));
+        card.setPadding(dp(18), dp(10), dp(18), dp(16));
         card.setBackground(glassPanel(readerPanelBase(), dp(24), readerPanelStroke()));
         card.setElevation(dp(16));
+        card.setClickable(true);
+        card.setOnClickListener(v -> { });
 
         View handle = new View(this);
         handle.setBackground(glassPanel(readerPanelStroke(), dp(3), Color.TRANSPARENT));
@@ -759,14 +761,15 @@ public class BookReaderActivity extends Activity {
         close.setTextSize(24f);
         close.setTextColor(readerPanelSubText());
         close.setGravity(Gravity.CENTER);
-        close.setOnClickListener(v -> dialog.dismiss());
+        close.setOnClickListener(v -> dismissFootnotePreview());
         head.addView(close, new LinearLayout.LayoutParams(dp(42), dp(40)));
         card.addView(head);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setVerticalScrollBarEnabled(false);
         TextView body = new TextView(this);
-        String text = cleanFootnoteDisplayText(note.text);
+        String text = note.text == null ? "" : note.text.trim();
+        text = text.replaceFirst("(?i)^\\s*Unknown\\s*", "").trim();
         if (text.length() > 7000) text = text.substring(0, 7000).trim() + "…";
         if (text.isEmpty()) text = "Footnote text could not be previewed.";
         body.setText(text);
@@ -775,24 +778,18 @@ public class BookReaderActivity extends Activity {
         body.setLineSpacing(dp(3), 1.08f);
         body.setPadding(dp(2), dp(4), dp(2), dp(8));
         scroll.addView(body, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        int maxBody = Math.max(dp(100), (int) (getResources().getDisplayMetrics().heightPixels * 0.34f));
+        int maxBody = Math.max(dp(100), (int) (getResources().getDisplayMetrics().heightPixels * 0.38f));
         card.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxBody));
 
-
-        dialog.setContentView(card);
-        dialog.setOnDismissListener(d -> { if (footnotePreviewDialog == dialog) footnotePreviewDialog = null; });
-        dialog.show();
-        Window win = dialog.getWindow();
-        if (win != null) {
-            win.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            win.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            win.setDimAmount(0.10f);
-            WindowManager.LayoutParams lp = win.getAttributes();
-            lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
-            lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
-            lp.gravity = Gravity.BOTTOM;
-            win.setAttributes(lp);
-        }
+        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
+        cardLp.leftMargin = dp(4);
+        cardLp.rightMargin = dp(4);
+        cardLp.bottomMargin = dp(4);
+        overlay.addView(card, cardLp);
+        root.addView(overlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        overlay.bringToFront();
     }
 
     private void navigateToFootnote(ReaderSearchIndex.Footnote note) {
@@ -1173,9 +1170,36 @@ public class BookReaderActivity extends Activity {
         });
 
         readerTouchListener = (v, event) -> {
-            // Legacy v2.4/v2.5 paper-curl gesture is intentionally retired.
-            // None/Slide are the only live page animations.
-            readerTapDetector.onTouchEvent(event);
+            // A WebView link tap must never also become a reader page/edge tap.
+            boolean anchorHit = false;
+            if (v instanceof WebView) {
+                try {
+                    WebView.HitTestResult hit = ((WebView) v).getHitTestResult();
+                    int type = hit == null ? WebView.HitTestResult.UNKNOWN_TYPE : hit.getType();
+                    anchorHit = type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
+                            type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE;
+                } catch (Exception ignored) {}
+            }
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                readerTouchStartedOnLink = anchorHit;
+                if (!anchorHit) readerTapDetector.onTouchEvent(event);
+                return false;
+            }
+            if (action == MotionEvent.ACTION_UP) {
+                boolean linkTap = readerTouchStartedOnLink || anchorHit;
+                readerTouchStartedOnLink = false;
+                if (linkTap) {
+                    lastReaderLinkTapMs = android.os.SystemClock.elapsedRealtime();
+                    return false;
+                }
+                readerTapDetector.onTouchEvent(event);
+                return false;
+            }
+            if (action == MotionEvent.ACTION_CANCEL) {
+                readerTouchStartedOnLink = false;
+            }
+            if (!readerTouchStartedOnLink) readerTapDetector.onTouchEvent(event);
             return false;
         };
         webView.setOnTouchListener(readerTouchListener);
@@ -1233,18 +1257,17 @@ public class BookReaderActivity extends Activity {
     }
 
     private void handleReaderTap(float x, float y) {
-        if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;
+        if (root == null) return;
+        final float tapX = x;
+        final float tapY = y;
+        root.postDelayed(() -> {
+            if (android.os.SystemClock.elapsedRealtime() - lastReaderLinkTapMs < 500L) return;
+            handleReaderTapResolved(tapX, tapY);
+        }, 220L);
+    }
+
+    private void handleReaderTapResolved(float x, float y) {
         if (webView == null || chapterLoading || tapHitTestPending) return;
-        // Use WebView native hit testing before the async DOM hit test. This is density-safe
-        // and prevents a real anchor/footnote tap from also being treated as an edge page turn.
-        try {
-            android.webkit.WebView.HitTestResult nativeHit = webView.getHitTestResult();
-            if (nativeHit != null) {
-                int hitType = nativeHit.getType();
-                if (hitType == android.webkit.WebView.HitTestResult.SRC_ANCHOR_TYPE ||
-                        hitType == android.webkit.WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) return;
-            }
-        } catch (Exception ignored) {}
 
         final float ratio = x / Math.max(1f, webView.getWidth());
         final int px = Math.round(x);
@@ -1260,7 +1283,6 @@ public class BookReaderActivity extends Activity {
         try {
             webView.evaluateJavascript(hitTest, result -> {
                 tapHitTestPending = false;
-                if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;
                 if (result != null && (result.contains("link") || result.contains("selection"))) return;
 
                 if ("page".equals(readingMode)) {
@@ -1268,9 +1290,7 @@ public class BookReaderActivity extends Activity {
                     else if (ratio > 0.66f) turnPageFromTap(1, y);
                     else toggleControls();
                 } else {
-                    if (ratio < 0.24f) navigateChapter(-1, true);
-                    else if (ratio > 0.76f) navigateChapter(1, false);
-                    else toggleControls();
+                    toggleControls();
                 }
             });
         } catch (Exception ignored) {
@@ -3159,7 +3179,6 @@ public class BookReaderActivity extends Activity {
 
 
     private void turnPageFromTap(int delta, float tapY) {
-        if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;
         if (webView == null || chapterLoading || !"page".equals(readingMode) || delta == 0) return;
         long now = System.currentTimeMillis();
         if (pageTurnLocked || now - lastPageTurnMs < 135L) return;
@@ -5256,6 +5275,7 @@ public class BookReaderActivity extends Activity {
 
         @JavascriptInterface
         public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId, String label) {
+            lastReaderLinkTapMs = android.os.SystemClock.elapsedRealtime();
             if (owner != webView) return false;
             if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) {
                 runOnUiThread(BookReaderActivity.this::restoreFootnoteReturn);
@@ -5265,14 +5285,9 @@ public class BookReaderActivity extends Activity {
                 final String targetHref = href == null ? "" : href;
                 final String targetLabel = label == null ? "" : label;
                 final String targetSourceId = sourceId == null ? "" : sourceId;
-                footnoteTapSuppressUntilMs = android.os.SystemClock.uptimeMillis() + 1400L;
                 runOnUiThread(() -> {
                     if (isFinishing() || owner != webView) return;
-                    // Card-only footnotes: never navigate away from the reading page.
-                    footnoteNavigationActive = false;
-                    footnoteReturnPending = false;
-                    footnoteReturnArmed = false;
-                    requestFootnotePreview(targetHref, targetLabel, targetSourceId);
+                    requestFootnotePreview(targetHref, targetLabel);
                 });
                 return true;
             }
@@ -5398,7 +5413,7 @@ public class BookReaderActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (footnotePreviewDialog != null && footnotePreviewDialog.isShowing()) { footnotePreviewDialog.dismiss(); return; }
+        if (footnotePreviewOverlay != null) { dismissFootnotePreview(); return; }
         if (bookSearchDialog != null && bookSearchDialog.isShowing()) { bookSearchDialog.dismiss(); restorePreSearchLocation(); return; }
         if (!isPdf && searchNavigationActive) { showBookSearch(bookSearchQuery, true); return; }
         if (!isPdf && (footnoteNavigationActive || footnoteReturnPending)) { restoreFootnoteReturn(); return; }
@@ -5442,6 +5457,7 @@ public class BookReaderActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        dismissFootnotePreview();
         cancelChromeAutoHide();
         pendingChapterCurlDirection = 0;
         if (pageCurlView != null) pageCurlView.release();

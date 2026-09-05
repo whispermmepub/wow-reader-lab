@@ -1,0 +1,136 @@
+name: Apply and verify WoW Reader Lab v42 reading calendar
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/apply_v42_reading_calendar.py'
+      - '.github/workflows/apply-v42-reading-calendar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-verify:
+    runs-on: ubuntu-latest
+    env:
+      WOW_RELEASE_STORE_PASSWORD: ${{ secrets.WOW_RELEASE_STORE_PASSWORD }}
+      WOW_RELEASE_KEY_ALIAS: ${{ secrets.WOW_RELEASE_KEY_ALIAS }}
+      WOW_RELEASE_KEY_PASSWORD: ${{ secrets.WOW_RELEASE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout Lab main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply v42 source patch
+        run: python3 tools/apply_v42_reading_calendar.py
+
+      - name: Verify patch shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -q "versionCode 42" app/build.gradle
+          grep -q "versionName '2.17.2'" app/build.gradle
+          grep -q "myanmar-calendar:1.1.1.RELEASE" app/build.gradle
+          test -s app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingDayActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingMemoryActivity.java
+          grep -q "ReadingCalendarActivity.class" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "renameShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
+          grep -q "deleteShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
+          test ! -e app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
+          test ! -d cloudflare/telegram-auto-library
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android 16 SDK
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+
+      - name: Prepare official Lab signing when available
+        env:
+          WOW_RELEASE_KEYSTORE_BASE64: ${{ secrets.WOW_RELEASE_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${WOW_RELEASE_KEYSTORE_BASE64:-}" ] && [ -n "${WOW_RELEASE_STORE_PASSWORD:-}" ] && [ -n "${WOW_RELEASE_KEY_ALIAS:-}" ] && [ -n "${WOW_RELEASE_KEY_PASSWORD:-}" ]; then
+            WOW_RELEASE_STORE_FILE="$RUNNER_TEMP/wow-reader-lab-v42.jks"
+            printf '%s' "$WOW_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$WOW_RELEASE_STORE_FILE"
+            chmod 600 "$WOW_RELEASE_STORE_FILE"
+            echo "WOW_RELEASE_STORE_FILE=$WOW_RELEASE_STORE_FILE" >> "$GITHUB_ENV"
+            echo "WOW_V42_SIGNED=true" >> "$GITHUB_ENV"
+          else
+            echo "WOW_V42_SIGNED=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build APK AAB and lint
+        run: gradle :app:clean :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
+
+      - name: Smoke check v42
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$WOW_V42_SIGNED" = "true" ]; then
+            APK=app/build/outputs/apk/release/app-release.apk
+          else
+            APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          fi
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$APK"
+          test -s "$AAB"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='42'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.2'"
+          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+          unzip -l "$APK" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
+          if [ "$WOW_V42_SIGNED" = "true" ]; then
+            APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+            "$APKSIGNER" verify --verbose --print-certs "$APK"
+            "$APKSIGNER" verify --print-certs "$APK" | grep -qi '21:17:d3:1e:01:eb:24:ea:e3:fe:4a:26:88:c8:c7:12:cd:76:71:f1'
+          fi
+
+      - name: Commit verified v42 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app README.md NEXT_CHAT_HANDOFF.md .github/workflows/build-apk.yml .github/workflows/build-production.yml
+          git diff --cached --check
+          git commit -m "Add Myanmar reading calendar and shelf management"
+          git push origin HEAD:main
+
+      - name: Collect test artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$WOW_V42_SIGNED" = "true" ]; then
+            cp app/build/outputs/apk/release/app-release.apk WoW-Reader-Lab-v2.17.2-v42-signed.apk
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.17.2-v42-unsigned.apk
+          fi
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.2-v42.aab
+
+      - name: Upload v42 test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.17.2-v42-test
+          path: |
+            WoW-Reader-Lab-v2.17.2-v42-*.apk
+            WoW-Reader-Lab-v2.17.2-v42.aab
+          if-no-files-found: error
+          retention-days: 14

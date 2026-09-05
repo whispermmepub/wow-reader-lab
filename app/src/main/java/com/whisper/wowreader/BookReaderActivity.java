@@ -165,6 +165,7 @@ public class BookReaderActivity extends Activity {
     private boolean tapHitTestPending = false;
     private volatile long lastReaderLinkTapMs = 0L;
     private boolean readerTouchStartedOnLink = false;
+    private volatile long footnoteTapSuppressUntilMs = 0L;
     private long lastPageTurnMs = 0L;
     private boolean chapterLoading = false;
     private long lastChapterNavMs = 0L;
@@ -695,20 +696,29 @@ public class BookReaderActivity extends Activity {
         try { webView.evaluateJavascript(js, null); } catch (Exception ignored) {}
     }
 
-    private void requestFootnotePreview(String href, String label) {
+    private void requestFootnotePreview(String href, String label, String sourceId) {
         if (webView == null || href == null || href.trim().isEmpty() || spine.isEmpty()) return;
         footnotePreviewHref = href.trim();
         footnotePreviewLabel = label == null ? "" : label.trim();
         final int sourceSpine = currentSpine;
-        final String sourceId = footnoteReturnSourceId;
+        final String previewSourceId = sourceId == null ? "" : sourceId;
         new Thread(() -> {
-            ReaderSearchIndex.Footnote note = ReaderSearchIndex.resolveFootnote(spine, sourceSpine, footnotePreviewHref, sourceId);
+            ReaderSearchIndex.Footnote note = ReaderSearchIndex.resolveFootnote(spine, sourceSpine, footnotePreviewHref, previewSourceId);
             runOnUiThread(() -> {
                 if (isFinishing()) return;
                 footnotePreviewNote = note;
                 showFootnotePreview(note, footnotePreviewLabel);
             });
         }, "wow-footnote-preview").start();
+    }
+
+    private String cleanFootnoteDisplayText(String raw) {
+        if (raw == null) return "";
+        String text = raw.replaceAll("\\s+", " ").trim();
+        text = text.replaceFirst("(?i)^unknown\\s*", "");
+        text = text.replaceFirst("^\\[\\s*[←↩↵]?\\s*-?\\s*\\d+\\s*\\]\\s*", "");
+        text = text.replaceFirst("^[←↩↵]\\s*-?\\s*\\d+\\s*", "");
+        return text.trim();
     }
 
     private void dismissFootnotePreview() {
@@ -768,8 +778,7 @@ public class BookReaderActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setVerticalScrollBarEnabled(false);
         TextView body = new TextView(this);
-        String text = note.text == null ? "" : note.text.trim();
-        text = text.replaceFirst("(?i)^\\s*Unknown\\s*", "").trim();
+        String text = cleanFootnoteDisplayText(note.text);
         if (text.length() > 7000) text = text.substring(0, 7000).trim() + "…";
         if (text.isEmpty()) text = "Footnote text could not be previewed.";
         body.setText(text);
@@ -1257,6 +1266,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void handleReaderTap(float x, float y) {
+        if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;
         if (root == null) return;
         final float tapX = x;
         final float tapY = y;
@@ -3179,6 +3189,7 @@ public class BookReaderActivity extends Activity {
 
 
     private void turnPageFromTap(int delta, float tapY) {
+        if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;
         if (webView == null || chapterLoading || !"page".equals(readingMode) || delta == 0) return;
         long now = System.currentTimeMillis();
         if (pageTurnLocked || now - lastPageTurnMs < 135L) return;
@@ -5282,12 +5293,13 @@ public class BookReaderActivity extends Activity {
                 return true;
             }
             if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) {
+                footnoteTapSuppressUntilMs = android.os.SystemClock.uptimeMillis() + 1600L;
                 final String targetHref = href == null ? "" : href;
                 final String targetLabel = label == null ? "" : label;
                 final String targetSourceId = sourceId == null ? "" : sourceId;
                 runOnUiThread(() -> {
                     if (isFinishing() || owner != webView) return;
-                    requestFootnotePreview(targetHref, targetLabel);
+                    requestFootnotePreview(targetHref, targetLabel, targetSourceId);
                 });
                 return true;
             }

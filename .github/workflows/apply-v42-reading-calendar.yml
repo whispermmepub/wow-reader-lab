@@ -114,7 +114,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app README.md NEXT_CHAT_HANDOFF.md .github/workflows/build-apk.yml .github/workflows/build-production.yml
+          git add app README.md NEXT_CHAT_HANDOFF.md
           git diff --cached --check
           git commit -m "Add Myanmar reading calendar and shelf management"
           git push origin HEAD:main

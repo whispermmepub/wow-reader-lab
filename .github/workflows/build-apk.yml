@@ -1,4 +1,4 @@
-name: Build WoW Reader Lab v2.17.1 APK and AAB
+name: Build WoW Reader Lab v2.17.2 APK and AAB
 
 on:
   push:
@@ -50,17 +50,33 @@ jobs:
           test -s app/src/main/java/com/whisper/wowreader/SplashActivity.java
           test -s app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
           test -s app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingStatsStore.java
+          test -s app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingDayActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingMemoryActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingCalendarUi.java
+          test -s app/src/main/java/com/whisper/wowreader/MyanmarCalendarBridge.java
+          test -s app/src/main/java/com/whisper/wowreader/BookVisualUtil.java
           test -s app/google-services.json
           test -s app/src/main/res/drawable/wow_logo.xml
           test -s app/src/main/assets/fonts/pyidaungsu_native.ttf
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
-          grep -q "versionCode 41" app/build.gradle
-          grep -q "versionName '2.17.1'" app/build.gradle
+          grep -q "versionCode 42" app/build.gradle
+          grep -q "versionName '2.17.2'" app/build.gradle
+          grep -q "myanmar-calendar:1.1.1.RELEASE" app/build.gradle
+          grep -q "coreLibraryDesugaringEnabled true" app/build.gradle
+          grep -q "ReadingCalendarActivity.class" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "renameShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
+          grep -q "deleteShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
+          grep -q "reading_stats_day_books_json" app/src/main/java/com/whisper/wowreader/ReadingStatsStore.java
+          grep -q "reading_stats_day_notes_json" app/src/main/java/com/whisper/wowreader/ReadingStatsStore.java
+          grep -q "reading_stats_book_day_notes_json" app/src/main/java/com/whisper/wowreader/ReadingStatsStore.java
           test ! -e app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
           test ! -d cloudflare/telegram-auto-library
-          ! grep -R -q "AutoLibrarySync\|auto_library_last_id" app/src/main/java || false
+          ! grep -R -q "AutoLibrarySync\|auto_library_last_id" app/src/main/java
           git diff --check
 
       - name: Build release APK and AAB
@@ -79,8 +95,8 @@ jobs:
           test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
-          "$AAPT" dump badging "$APK" | grep -q "versionCode='41'"
-          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.1'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='42'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.2'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           unzip -l "$APK" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
           unzip -l "$AAB" | grep -q 'base/assets/fonts/pyidaungsu_native.ttf'
@@ -88,8 +104,8 @@ jobs:
       - name: Collect APK
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.17.1-v41-unsigned.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.1-v41-unsigned.aab
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.17.2-v42-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.2-v42-unsigned.aab
           APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
           test -n "$APKSIGNER_JAR"
           cp "$APKSIGNER_JAR" apksigner.jar
@@ -97,10 +113,10 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-Lab-v2.17.1-v41
+          name: WoW-Reader-Lab-v2.17.2-v42
           path: |
-            WoW-Reader-Lab-v2.17.1-v41-unsigned.apk
-            WoW-Reader-Lab-v2.17.1-v41-unsigned.aab
+            WoW-Reader-Lab-v2.17.2-v42-unsigned.apk
+            WoW-Reader-Lab-v2.17.2-v42-unsigned.aab
             apksigner.jar
           if-no-files-found: error
           retention-days: 14

@@ -1,4 +1,4 @@
-name: Build signed WoW Reader Lab v2.17.1 test release
+name: Build signed WoW Reader Lab v2.17.2 test release
 
 on:
   workflow_dispatch:
@@ -33,13 +33,19 @@ jobs:
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
-      - name: Verify Lab version
+      - name: Verify Lab version and feature guard
         shell: bash
         run: |
           set -euo pipefail
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
-          grep -q "versionCode 41" app/build.gradle
-          grep -q "versionName '2.17.1'" app/build.gradle
+          grep -q "versionCode 42" app/build.gradle
+          grep -q "versionName '2.17.2'" app/build.gradle
+          grep -q "myanmar-calendar:1.1.1.RELEASE" app/build.gradle
+          test -s app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingDayActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingMemoryActivity.java
+          grep -q "renameShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
+          grep -q "deleteShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
           test ! -e app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
           test ! -d cloudflare/telegram-auto-library
 
@@ -71,8 +77,8 @@ jobs:
           test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
-          "$AAPT" dump badging "$APK" | grep -q "versionCode='41'"
-          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.1'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='42'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.2'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           "$APKSIGNER" verify --verbose --print-certs "$APK"
@@ -83,15 +89,15 @@ jobs:
       - name: Collect signed Lab release
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release.apk WoW-Reader-Lab-v2.17.1-v41-signed.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.1-v41-signed.aab
+          cp app/build/outputs/apk/release/app-release.apk WoW-Reader-Lab-v2.17.2-v42-signed.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.2-v42-signed.aab
 
       - name: Upload signed artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-Lab-v2.17.1-v41-signed
+          name: WoW-Reader-Lab-v2.17.2-v42-signed
           path: |
-            WoW-Reader-Lab-v2.17.1-v41-signed.apk
-            WoW-Reader-Lab-v2.17.1-v41-signed.aab
+            WoW-Reader-Lab-v2.17.2-v42-signed.apk
+            WoW-Reader-Lab-v2.17.2-v42-signed.aab
           if-no-files-found: error
           retention-days: 14

@@ -2,6 +2,10 @@ name: Build signed WoW Reader Lab v2.17.2 test release
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app/SIGNED_V42_TRIGGER.txt'
 
 permissions:
   contents: read

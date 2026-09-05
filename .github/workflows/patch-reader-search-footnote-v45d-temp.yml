@@ -96,13 +96,13 @@ jobs:
           "$AAPT" dump badging "$APK" | grep -q "versionCode='45'"
           "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.5'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
-      - name: Commit verified v45 source
+      - name: Commit verified v45 app source
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add app/build.gradle app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java .github/workflows/build-apk.yml
+          git add app/build.gradle app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java
           git diff --cached --quiet && exit 0
           git commit -m "Add Play Books style search and footnote navigation"
           git push origin HEAD:main

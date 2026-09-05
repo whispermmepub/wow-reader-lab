@@ -50,6 +50,7 @@ import java.util.Locale;
 
 import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 public class MainActivity extends Activity {
     private static final int REQ_IMPORT = 1001;
@@ -59,6 +60,7 @@ public class MainActivity extends Activity {
     private File coverCacheDir;
     private LinearLayout booksContainer;
     private RecyclerView libraryRecycler;
+    private SwipeRefreshLayout swipeRefresh;
     private LibraryAdapter libraryAdapter;
     private final List<File> visibleBooks = new ArrayList<>();
     private EditText searchInput;
@@ -185,7 +187,26 @@ public class MainActivity extends Activity {
             if (width > 0 && width != oldRight - oldLeft)
                 libraryRecycler.post(() -> updateLibraryColumnsForWidth(width));
         });
-        root.addView(libraryRecycler, new FrameLayout.LayoutParams(
+        swipeRefresh = new SwipeRefreshLayout(this);
+        swipeRefresh.setColorSchemeColors(themeAccent());
+        swipeRefresh.setProgressBackgroundColorSchemeColor(themeCardSurface());
+        swipeRefresh.setDistanceToTriggerSync(dp(72));
+        swipeRefresh.setSlingshotDistance(dp(96));
+        swipeRefresh.addView(libraryRecycler, new SwipeRefreshLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        swipeRefresh.setOnRefreshListener(() -> {
+            if (homeMode) {
+                // Rebuild Home so Continue Reading and every progress badge read the latest shared value.
+                swipeRefresh.postDelayed(this::buildUi, 180L);
+            } else {
+                refreshLibrary();
+                maybeAutoGoogleSync();
+                swipeRefresh.postDelayed(() -> {
+                    if (swipeRefresh != null) swipeRefresh.setRefreshing(false);
+                }, 260L);
+            }
+        });
+        root.addView(swipeRefresh, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         View premiumBottomNav = buildBottomNavigation();

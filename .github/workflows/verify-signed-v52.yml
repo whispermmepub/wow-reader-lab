@@ -72,3 +72,9 @@ jobs:
           path: |
             verification/
             signed-verification/*.cert.txt
+      - name: Upload production-signed v52 APK
+        if: success() && matrix.api == 29
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.18.2-v52-production-signed
+          path: signed-verification/v52.apk

@@ -20,9 +20,9 @@ for old in v48 v51; do
   adb shell mkdir -p "/data/user/0/$PKG/files/library" "/data/user/0/$PKG/files/reader_fonts" "/data/user/0/$PKG/shared_prefs"
   # Seed data in the old production-signed installation, then use Android's normal update path.
   # Some clean launches do not create wow_reader.xml until a preference is first written.
-  # In that case start from a valid empty SharedPreferences map instead of failing the verifier.
-  if adb shell test -f "/data/user/0/$PKG/shared_prefs/wow_reader.xml"; then
-    adb pull "/data/user/0/$PKG/shared_prefs/wow_reader.xml" verification/old-prefs.xml
+  # Try the pull directly so this works even on old Android shells where `test -f` is unreliable.
+  if adb pull "/data/user/0/$PKG/shared_prefs/wow_reader.xml" verification/old-prefs.xml; then
+    :
   else
     printf '%s\n' "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>" '<map />' > verification/old-prefs.xml
   fi

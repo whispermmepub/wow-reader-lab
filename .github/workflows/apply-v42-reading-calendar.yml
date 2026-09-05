@@ -25,7 +25,11 @@ jobs:
           fetch-depth: 0
 
       - name: Apply v42 source patch
-        run: python3 tools/apply_v42_reading_calendar.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/apply_v42_reading_calendar.py
+          sed -i '/import android.view.Gravity;/a import android.view.View;' app/src/main/java/com/whisper/wowreader/ReadingMemoryActivity.java
 
       - name: Verify patch shape
         shell: bash
@@ -38,6 +42,7 @@ jobs:
           test -s app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
           test -s app/src/main/java/com/whisper/wowreader/ReadingDayActivity.java
           test -s app/src/main/java/com/whisper/wowreader/ReadingMemoryActivity.java
+          grep -q "import android.view.View;" app/src/main/java/com/whisper/wowreader/ReadingMemoryActivity.java
           grep -q "ReadingCalendarActivity.class" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "renameShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
           grep -q "deleteShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java

@@ -1,0 +1,97 @@
+name: Fix WoW Reader v2.17.9 v49 footnote navigation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-footnote-v49-temp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+
+      - name: Apply v49 footnote fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/fix_footnote_v49.py
+          grep -q "versionCode 49" app/build.gradle
+          grep -q "versionName '2.17.9'" app/build.gradle
+          grep -q 'Show on page' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'installReaderLinkNavigation(view)' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'looksLikeExplicitBacklinkHref' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'footnoteExactBacklinkPending' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'handleFootnoteBacklink' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'armFootnoteReturn(targetSourceId)' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'requestFootnotePreview(targetHref, targetLabel, targetSourceId)' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'if (ratio < 0.24f) navigateChapter(-1, true)' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          git diff --check
+
+      - name: Build and lint v49
+        run: gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintDebug :app:lintRelease --stacktrace
+
+      - name: Smoke checks v49
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEBUG=app/build/outputs/apk/debug/app-debug.apk
+          RELEASE=app/build/outputs/apk/release/app-release-unsigned.apk
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$DEBUG"; test -s "$RELEASE"; test -s "$AAB"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          for APK in "$DEBUG" "$RELEASE"; do
+            "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+            "$AAPT" dump badging "$APK" | grep -q "versionCode='49'"
+            "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.9'"
+            "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+          done
+          unzip -l "$RELEASE" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
+          unzip -l "$AAB" | grep -q 'base/assets/fonts/pyidaungsu_native.ttf'
+
+      - name: Commit v49 Lab source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app tools
+          git commit -m 'Fix exact Play Books-style footnote navigation in v2.17.9 v49'
+          git push origin HEAD:main
+
+      - name: Collect unsigned artifacts
+        shell: bash
+        run: |
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.17.9-v49-release-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.9-v49-release-unsigned.aab
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.17.9-v49
+          path: |
+            WoW-Reader-Lab-v2.17.9-v49-release-unsigned.apk
+            WoW-Reader-Lab-v2.17.9-v49-release-unsigned.aab
+          if-no-files-found: error
+          retention-days: 14

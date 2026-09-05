@@ -1,1 +1,0 @@
-Trigger one signed WoW Reader Lab v2.17.2 / versionCode 42 verification build after calendar polish.

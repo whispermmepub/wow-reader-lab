@@ -1,0 +1,521 @@
+name: Patch WoW Reader v2.18.0 v50 search auto-scroll eye-care
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-v50-search-autoscroll-eyecare-temp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+      - name: Apply v50 source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def one(s, old, new, label):
+              if old not in s:
+                  raise SystemExit(f'missing anchor: {label}')
+              return s.replace(old, new, 1)
+
+          # Version bump.
+          p = Path('app/build.gradle')
+          s = p.read_text()
+          s = one(s, 'versionCode 49', 'versionCode 50', 'versionCode')
+          s = one(s, "versionName '2.17.9'", "versionName '2.18.0'", 'versionName')
+          p.write_text(s)
+
+          # Home search: explicitly consume IME Search/Enter so Home cannot fall through/finish.
+          p = Path('app/src/main/java/com/whisper/wowreader/MainActivity.java')
+          s = p.read_text()
+          anchor = '        searchRow.addView(searchInput, new LinearLayout.LayoutParams(0, dp(50), 1f));'
+          home_search = '''        searchInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+          searchInput.setOnEditorActionListener((v, actionId, event) -> {
+              boolean submit = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH ||
+                      actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
+                      (event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER &&
+                              event.getAction() == android.view.KeyEvent.ACTION_UP);
+              if (!submit) return false;
+              CharSequence raw = v.getText();
+              searchQuery = raw == null ? "" : raw.toString().trim().toLowerCase(Locale.ROOT);
+              refreshLibrary();
+              android.view.inputmethod.InputMethodManager imm =
+                      (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+              if (imm != null) imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+              v.clearFocus();
+              return true;
+          });
+'''
+          if 'Home search submit is consumed' not in s:
+              s = one(s, anchor, '        // Home search submit is consumed; it must never finish the Activity.\n' + home_search + anchor, 'home search row')
+          p.write_text(s)
+
+          p = Path('app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          s = p.read_text()
+
+          # State.
+          fields = '''    private long readingSessionStartedElapsedMs = 0L;
+          private boolean autoScrollEnabled = false;
+          private int autoScrollSpeed = 4;
+          private long autoScrollResumeToken = 0L;
+          private boolean autoScrollAdvancePending = false;
+          private boolean eyeBreakReminderEnabled = true;
+          private Runnable eyeBreakReminderRunnable;
+          private FrameLayout eyeBreakOverlay;
+          private static final long EYE_BREAK_INTERVAL_MS = 30L * 60L * 1000L;
+'''
+          s = one(s, '    private long readingSessionStartedElapsedMs = 0L;\n', fields, 'reader feature fields')
+
+          # Preferences.
+          pref_old = '''        volumeChapterKeys = prefs.getBoolean("reader_volume_chapter", false);
+
+          readingMode = prefs.getString("epub_reading_mode", "page");'''
+          pref_new = '''        volumeChapterKeys = prefs.getBoolean("reader_volume_chapter", false);
+          autoScrollEnabled = prefs.getBoolean("reader_auto_scroll_enabled", false);
+          autoScrollSpeed = Math.max(1, Math.min(10, prefs.getInt("reader_auto_scroll_speed", 4)));
+          eyeBreakReminderEnabled = prefs.getBoolean("reader_eye_break_reminder", true);
+
+          readingMode = prefs.getString("epub_reading_mode", "page");'''
+          s = one(s, pref_old, pref_new, 'reader preferences load')
+
+          # Resume/pause lifecycle.
+          resume_old = '''        applyWindowPreferences();
+          updateNightLightOverlay();
+          GoogleAutoSync.schedule(this);'''
+          resume_new = '''        applyWindowPreferences();
+          updateNightLightOverlay();
+          scheduleEyeBreakReminder();
+          if (!isPdf && root != null) root.postDelayed(this::updateAutoScrollState, 260L);
+          GoogleAutoSync.schedule(this);'''
+          s = one(s, resume_old, resume_new, 'onResume reader helpers')
+
+          pause_old = '''        ReadingStatsStore.finishSession(prefs, bookFile == null ? null : bookFile.getName(), readingSessionStartedElapsedMs);
+          readingSessionStartedElapsedMs = 0L;
+          if (!isPdf) saveEpubState();'''
+          pause_new = '''        ReadingStatsStore.finishSession(prefs, bookFile == null ? null : bookFile.getName(), readingSessionStartedElapsedMs);
+          readingSessionStartedElapsedMs = 0L;
+          cancelEyeBreakReminder();
+          stopAutoScrollEngine();
+          if (!isPdf) saveEpubState();'''
+          s = one(s, pause_old, pause_new, 'onPause reader helpers')
+
+          # Core auto-scroll + eye-care methods.
+          destroy_anchor = '''    @Override
+          protected void onDestroy() {'''
+          helpers = r'''    private int autoScrollPixelsPerSecond() {
+              return 8 + Math.max(1, Math.min(10, autoScrollSpeed)) * 8;
+          }
+
+          private void stopAutoScrollEngine() {
+              if (isPdf || webView == null) return;
+              try {
+                  webView.evaluateJavascript("(function(){try{var a=window.__wowAutoScroll;if(a){a.running=false;if(a.raf)cancelAnimationFrame(a.raf);a.raf=0;}return true;}catch(e){return false;}})()", null);
+              } catch (Exception ignored) {}
+          }
+
+          private void updateAutoScrollState() {
+              if (isPdf || webView == null) return;
+              boolean canRun = autoScrollEnabled && "scroll".equals(readingMode) && !chapterLoading &&
+                      !footnoteNavigationActive && !footnoteReturnPending && !footnoteExactBacklinkPending &&
+                      footnotePreviewOverlay == null && eyeBreakOverlay == null && !searchNavigationActive;
+              if (!canRun) {
+                  stopAutoScrollEngine();
+                  return;
+              }
+              autoScrollAdvancePending = false;
+              int speed = autoScrollPixelsPerSecond();
+              String js = "(function(){try{" +
+                      "var a=window.__wowAutoScroll||{};window.__wowAutoScroll=a;" +
+                      "if(a.raf)cancelAnimationFrame(a.raf);a.running=true;a.speed=" + speed + ";a.last=0;a.sent=false;" +
+                      "a.tick=function(t){if(!a.running)return;if(!a.last)a.last=t;var dt=Math.min(80,Math.max(0,t-a.last));a.last=t;" +
+                      "var max=Math.max(0,document.documentElement.scrollHeight-window.innerHeight);" +
+                      "if(max<=1||window.scrollY>=max-1){a.running=false;if(!a.sent){a.sent=true;setTimeout(function(){try{WoW.onAutoScrollEnd();}catch(e){}},350);}return;}" +
+                      "window.scrollBy(0,(a.speed*dt)/1000);a.raf=requestAnimationFrame(a.tick);};" +
+                      "a.raf=requestAnimationFrame(a.tick);return true;}catch(e){return false;}})()";
+              try { webView.evaluateJavascript(js, null); } catch (Exception ignored) {}
+          }
+
+          private void pauseAutoScrollForUserInteraction() {
+              if (!autoScrollEnabled || !"scroll".equals(readingMode) || root == null) return;
+              stopAutoScrollEngine();
+              final long token = ++autoScrollResumeToken;
+              root.postDelayed(() -> {
+                  if (token == autoScrollResumeToken && !isFinishing()) updateAutoScrollState();
+              }, 2800L);
+          }
+
+          private String autoScrollSpeedDisplay() {
+              return Math.max(1, Math.min(10, autoScrollSpeed)) + " / 10";
+          }
+
+          private void showAutoScrollSpeedDialog() {
+              LinearLayout box = new LinearLayout(this);
+              box.setOrientation(LinearLayout.VERTICAL);
+              box.setPadding(dp(22), dp(8), dp(22), dp(4));
+              TextView value = new TextView(this);
+              value.setText("Speed · " + autoScrollSpeedDisplay());
+              value.setTextSize(15f);
+              value.setTextColor(readerPanelText());
+              value.setGravity(Gravity.CENTER);
+              box.addView(value, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+              SeekBar seek = new SeekBar(this);
+              seek.setMax(9);
+              seek.setProgress(Math.max(0, Math.min(9, autoScrollSpeed - 1)));
+              seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                  @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                      if (!fromUser) return;
+                      autoScrollSpeed = progress + 1;
+                      value.setText("Speed · " + autoScrollSpeedDisplay());
+                      saveReaderPreferences();
+                      updateAutoScrollState();
+                  }
+                  @Override public void onStartTrackingTouch(SeekBar bar) { stopAutoScrollEngine(); }
+                  @Override public void onStopTrackingTouch(SeekBar bar) { updateAutoScrollState(); }
+              });
+              box.addView(seek, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+              new AlertDialog.Builder(this)
+                      .setTitle("Auto scroll speed")
+                      .setMessage("1 is slowest · 10 is fastest")
+                      .setView(box)
+                      .setPositiveButton("Done", (d, w) -> updateAutoScrollState())
+                      .show();
+          }
+
+          private void cancelEyeBreakReminder() {
+              if (root != null && eyeBreakReminderRunnable != null) root.removeCallbacks(eyeBreakReminderRunnable);
+              eyeBreakReminderRunnable = null;
+          }
+
+          private void scheduleEyeBreakReminder() {
+              cancelEyeBreakReminder();
+              if (!eyeBreakReminderEnabled || root == null || isFinishing()) return;
+              eyeBreakReminderRunnable = () -> {
+                  eyeBreakReminderRunnable = null;
+                  if (isFinishing() || !eyeBreakReminderEnabled) return;
+                  if (footnotePreviewOverlay != null || (bookSearchDialog != null && bookSearchDialog.isShowing())) {
+                      eyeBreakReminderRunnable = this::showEyeBreakReminder;
+                      root.postDelayed(eyeBreakReminderRunnable, 60_000L);
+                      return;
+                  }
+                  showEyeBreakReminder();
+              };
+              root.postDelayed(eyeBreakReminderRunnable, EYE_BREAK_INTERVAL_MS);
+          }
+
+          private void dismissEyeBreakReminder(boolean reschedule) {
+              if (eyeBreakOverlay != null) {
+                  ViewParentSafe.remove(eyeBreakOverlay);
+                  eyeBreakOverlay = null;
+              }
+              if (reschedule) scheduleEyeBreakReminder();
+              if (!isFinishing()) updateAutoScrollState();
+          }
+
+          private void showEyeBreakReminder() {
+              if (!eyeBreakReminderEnabled || root == null || isFinishing() || eyeBreakOverlay != null) return;
+              stopAutoScrollEngine();
+              FrameLayout overlay = new FrameLayout(this);
+              overlay.setClickable(true);
+              overlay.setFocusable(true);
+              overlay.setBackgroundColor(Color.argb(112, 0, 0, 0));
+
+              LinearLayout card = new LinearLayout(this);
+              card.setOrientation(LinearLayout.VERTICAL);
+              card.setPadding(dp(24), dp(20), dp(24), dp(20));
+              card.setBackground(glassPanel(readerPanelBase(), dp(26), readerPanelStroke()));
+              card.setElevation(dp(14));
+
+              LinearLayout head = new LinearLayout(this);
+              head.setOrientation(LinearLayout.HORIZONTAL);
+              head.setGravity(Gravity.CENTER_VERTICAL);
+              TextView icon = new TextView(this);
+              icon.setText("◉");
+              icon.setTextSize(24f);
+              icon.setTextColor(readerAccent());
+              icon.setGravity(Gravity.CENTER);
+              head.addView(icon, new LinearLayout.LayoutParams(dp(44), dp(44)));
+              TextView title = new TextView(this);
+              title.setText("Eye break");
+              title.setTextSize(21f);
+              title.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+              title.setTextColor(readerPanelText());
+              title.setGravity(Gravity.CENTER_VERTICAL);
+              head.addView(title, new LinearLayout.LayoutParams(0, dp(44), 1f));
+              TextView close = new TextView(this);
+              close.setText("×");
+              close.setTextSize(24f);
+              close.setTextColor(readerPanelSubText());
+              close.setGravity(Gravity.CENTER);
+              close.setOnClickListener(v -> dismissEyeBreakReminder(true));
+              head.addView(close, new LinearLayout.LayoutParams(dp(42), dp(44)));
+              card.addView(head);
+
+              TextView body = new TextView(this);
+              body.setText("You’ve been reading for 30 minutes.\nLook away at something far away for a moment, blink slowly, and let your eyes rest.");
+              body.setTextSize(15f);
+              body.setTextColor(readerPanelText());
+              body.setLineSpacing(dp(3), 1.08f);
+              body.setPadding(dp(4), dp(12), dp(4), dp(14));
+              card.addView(body, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+              TextView button = new TextView(this);
+              button.setText("Rest my eyes");
+              button.setTextSize(15f);
+              button.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+              button.setTextColor(readerAccent());
+              button.setGravity(Gravity.CENTER);
+              button.setBackground(glassPanel(readerSelectedSurface(), dp(22), readerPanelStroke()));
+              button.setOnClickListener(v -> dismissEyeBreakReminder(true));
+              card.addView(button, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
+
+              FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                      ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+              lp.leftMargin = dp(20);
+              lp.rightMargin = dp(20);
+              overlay.addView(card, lp);
+              eyeBreakOverlay = overlay;
+              root.addView(overlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              overlay.bringToFront();
+          }
+
+          private static final class ViewParentSafe {
+              static void remove(View view) {
+                  if (view == null) return;
+                  android.view.ViewParent parent = view.getParent();
+                  if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(view);
+              }
+          }
+
+'''
+          s = one(s, destroy_anchor, helpers + destroy_anchor, 'helper insertion')
+
+          # onDestroy cleanup.
+          s = one(s, '        dismissFootnotePreview();\n        cancelChromeAutoHide();',
+                  '        dismissFootnotePreview();\n        dismissEyeBreakReminder(false);\n        cancelEyeBreakReminder();\n        stopAutoScrollEngine();\n        cancelChromeAutoHide();', 'onDestroy cleanup')
+
+          # Touch pauses auto scroll without changing the persisted setting.
+          touch_old = '''            if (action == MotionEvent.ACTION_DOWN) {
+              readerTouchStartedOnLink = anchorHit;
+              if (!anchorHit) readerTapDetector.onTouchEvent(event);
+              return false;
+          }'''
+          touch_new = '''            if (action == MotionEvent.ACTION_DOWN) {
+              readerTouchStartedOnLink = anchorHit;
+              if ("scroll".equals(readingMode) && autoScrollEnabled) pauseAutoScrollForUserInteraction();
+              if (!anchorHit) readerTapDetector.onTouchEvent(event);
+              return false;
+          }'''
+          s = one(s, touch_old, touch_new, 'reader touch auto-scroll pause')
+
+          # Restart auto-scroll only after the chapter is fully stable.
+          s = one(s, '        scheduleAdjacentChapterPreload(preferredPreloadDirection);\n    }',
+                  '        scheduleAdjacentChapterPreload(preferredPreloadDirection);\n        autoScrollAdvancePending = false;\n        updateAutoScrollState();\n    }', 'stable chapter auto-scroll restart')
+
+          # JS bridge chapter continuation.
+          bridge_anchor = '''        @JavascriptInterface
+          public void onEmptyChapter() {'''
+          bridge = '''        @JavascriptInterface
+          public void onAutoScrollEnd() {
+              if (owner != webView) return;
+              runOnUiThread(() -> {
+                  if (!autoScrollEnabled || !"scroll".equals(readingMode) || chapterLoading || autoScrollAdvancePending ||
+                          footnoteNavigationActive || footnotePreviewOverlay != null || eyeBreakOverlay != null) return;
+                  if (currentSpine >= 0 && currentSpine < spine.size() - 1) {
+                      autoScrollAdvancePending = true;
+                      navigateChapter(1, false);
+                  } else {
+                      autoScrollAdvancePending = false;
+                      stopAutoScrollEngine();
+                  }
+              });
+          }
+
+'''
+          s = one(s, bridge_anchor, bridge + bridge_anchor, 'auto-scroll JS bridge')
+
+          # Custom reader settings sheet: Auto scroll toggle/speed + eye reminder toggle.
+          mode_anchor = '''        card.addView(modeRow);
+
+          addSheetLabel(card, "Page animation", sub);'''
+          mode_new = '''        card.addView(modeRow);
+
+          addSheetLabel(card, "Auto scroll", sub);
+          LinearLayout autoScrollRow = sheetRow();
+          TextView autoToggle = sheetChip(autoScrollEnabled ? "On" : "Off", autoScrollEnabled);
+          TextView autoSpeed = sheetChip("Speed · " + autoScrollSpeedDisplay(), false);
+          autoToggle.setOnClickListener(v -> {
+              autoScrollEnabled = !autoScrollEnabled;
+              autoToggle.setText(autoScrollEnabled ? "On" : "Off");
+              styleSheetChip(autoToggle, autoScrollEnabled);
+              saveReaderPreferences();
+              if (autoScrollEnabled && !"scroll".equals(readingMode))
+                  Toast.makeText(this, "Auto scroll runs in Scroll mode", Toast.LENGTH_SHORT).show();
+              autoScrollResumeToken++;
+              updateAutoScrollState();
+          });
+          autoSpeed.setOnClickListener(v -> { dialog.dismiss(); showAutoScrollSpeedDialog(); });
+          autoScrollRow.addView(autoToggle, sheetChipLp(false));
+          autoScrollRow.addView(autoSpeed, sheetChipLp(true));
+          card.addView(autoScrollRow);
+
+          addSheetLabel(card, "Eye care", sub);
+          LinearLayout eyeRow = sheetRow();
+          TextView eyeToggle = sheetChip(eyeBreakReminderEnabled ? "30 min reminder · On" : "30 min reminder · Off", eyeBreakReminderEnabled);
+          eyeToggle.setOnClickListener(v -> {
+              eyeBreakReminderEnabled = !eyeBreakReminderEnabled;
+              eyeToggle.setText(eyeBreakReminderEnabled ? "30 min reminder · On" : "30 min reminder · Off");
+              styleSheetChip(eyeToggle, eyeBreakReminderEnabled);
+              saveReaderPreferences();
+              if (eyeBreakReminderEnabled) scheduleEyeBreakReminder(); else cancelEyeBreakReminder();
+          });
+          eyeRow.addView(eyeToggle, sheetChipLp(false));
+          card.addView(eyeRow);
+
+          addSheetLabel(card, "Page animation", sub);'''
+          s = one(s, mode_anchor, mode_new, 'custom settings controls')
+
+          # Reader mode chip also updates auto-scroll state immediately.
+          old_chip = 'modeChips[i].setOnClickListener(v -> { readingMode = idx == 0 ? "page" : "scroll"; pageTurnLocked = false; saveReaderPreferences(); applyReaderStyleSmooth(true); selectSheetChip(modeChips, idx); });'
+          new_chip = 'modeChips[i].setOnClickListener(v -> { readingMode = idx == 0 ? "page" : "scroll"; pageTurnLocked = false; saveReaderPreferences(); applyReaderStyleSmooth(true); selectSheetChip(modeChips, idx); autoScrollResumeToken++; updateAutoScrollState(); });'
+          s = one(s, old_chip, new_chip, 'mode chip auto-scroll update')
+
+          # Legacy reader settings list kept in sync.
+          options_old = '''                "Volume keys navigate · " + onOff(volumeChapterKeys),
+                "Reset reader settings"'''
+          options_new = '''                "Volume keys navigate · " + onOff(volumeChapterKeys),
+                "Auto scroll · " + onOff(autoScrollEnabled),
+                "Auto scroll speed · " + autoScrollSpeedDisplay(),
+                "30-minute eye reminder · " + onOff(eyeBreakReminderEnabled),
+                "Reset reader settings"'''
+          if options_old in s:
+              s = s.replace(options_old, options_new, 1)
+              switch_old = '''                        case 11:
+                            volumeChapterKeys = !volumeChapterKeys;
+                            saveReaderPreferences();
+                            showReaderSettings();
+                            break;
+                        case 12: resetReaderPreferences(); break;'''
+              switch_new = '''                        case 11:
+                            volumeChapterKeys = !volumeChapterKeys;
+                            saveReaderPreferences();
+                            showReaderSettings();
+                            break;
+                        case 12:
+                            autoScrollEnabled = !autoScrollEnabled;
+                            saveReaderPreferences();
+                            autoScrollResumeToken++;
+                            updateAutoScrollState();
+                            showReaderSettings();
+                            break;
+                        case 13: showAutoScrollSpeedDialog(); break;
+                        case 14:
+                            eyeBreakReminderEnabled = !eyeBreakReminderEnabled;
+                            saveReaderPreferences();
+                            if (eyeBreakReminderEnabled) scheduleEyeBreakReminder(); else cancelEyeBreakReminder();
+                            showReaderSettings();
+                            break;
+                        case 15: resetReaderPreferences(); break;'''
+              s = one(s, switch_old, switch_new, 'legacy settings switch')
+
+          # Reading-mode dialog immediately stops/restarts auto-scroll.
+          s = one(s, '                        saveReaderPreferences();\n                        applyReaderStyle(true);',
+                  '                        saveReaderPreferences();\n                        applyReaderStyle(true);\n                        autoScrollResumeToken++;\n                        updateAutoScrollState();', 'reading mode dialog')
+
+          # Reset and persistence.
+          reset_old = '''        volumeChapterKeys = false;
+          readingMode = "page";
+          pageTurnLocked = false;'''
+          reset_new = '''        volumeChapterKeys = false;
+          autoScrollEnabled = false;
+          autoScrollSpeed = 4;
+          eyeBreakReminderEnabled = true;
+          autoScrollResumeToken++;
+          stopAutoScrollEngine();
+          scheduleEyeBreakReminder();
+          readingMode = "page";
+          pageTurnLocked = false;'''
+          s = one(s, reset_old, reset_new, 'reader reset new prefs')
+
+          save_old = '''                .putBoolean("reader_volume_chapter", volumeChapterKeys)
+                  .putString("epub_reading_mode", readingMode)'''
+          save_new = '''                .putBoolean("reader_volume_chapter", volumeChapterKeys)
+                  .putBoolean("reader_auto_scroll_enabled", autoScrollEnabled)
+                  .putInt("reader_auto_scroll_speed", Math.max(1, Math.min(10, autoScrollSpeed)))
+                  .putBoolean("reader_eye_break_reminder", eyeBreakReminderEnabled)
+                  .putString("epub_reading_mode", readingMode)'''
+          s = one(s, save_old, save_new, 'save reader new prefs')
+
+          p.write_text(s)
+          PY
+
+          git diff --check
+          grep -q "versionCode 50" app/build.gradle
+          grep -q "versionName '2.18.0'" app/build.gradle
+          grep -q "Home search submit is consumed" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "reader_auto_scroll_enabled" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "onAutoScrollEnd" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "EYE_BREAK_INTERVAL_MS" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "30 min reminder" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+      - name: Build and lint v50
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
+      - name: Smoke checks v50
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$APK"
+          test -s "$AAB"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='50'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.0'"
+          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+      - name: Commit verified v50 app source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/build.gradle app/src/main/java/com/whisper/wowreader/MainActivity.java app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          git commit -m 'Add reliable Home search, auto scroll and eye-care reminder in v2.18.0 v50'
+          git push origin HEAD:main
+      - name: Collect v50 unsigned artifacts
+        shell: bash
+        run: |
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.0-v50-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.0-v50-unsigned.aab
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.18.0-v50-patch-build
+          path: |
+            WoW-Reader-Lab-v2.18.0-v50-unsigned.apk
+            WoW-Reader-Lab-v2.18.0-v50-unsigned.aab
+          if-no-files-found: error
+          retention-days: 14

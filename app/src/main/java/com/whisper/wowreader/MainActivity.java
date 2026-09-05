@@ -939,6 +939,23 @@ public class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable s) {}
         });
+        // Home search submit is consumed; Enter/Search must never finish the Activity.
+        searchInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        searchInput.setOnEditorActionListener((v, actionId, event) -> {
+            boolean submit = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH ||
+                    actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
+                    (event != null && event.getKeyCode() == android.view.KeyEvent.KEYCODE_ENTER &&
+                            event.getAction() == android.view.KeyEvent.ACTION_UP);
+            if (!submit) return false;
+            CharSequence raw = v.getText();
+            searchQuery = raw == null ? "" : raw.toString().trim().toLowerCase(Locale.ROOT);
+            refreshLibrary();
+            android.view.inputmethod.InputMethodManager imm =
+                    (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+            v.clearFocus();
+            return true;
+        });
         searchRow.addView(searchInput, new LinearLayout.LayoutParams(0, dp(50), 1f));
 
         TextView filter = iconButton("⌁");

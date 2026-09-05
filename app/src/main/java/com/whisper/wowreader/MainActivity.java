@@ -95,6 +95,7 @@ public class MainActivity extends Activity {
     private Runnable googleSyncRetryRunnable;
     private volatile boolean metadataWarmupRunning = false;
     private boolean homeMode = true;
+    private boolean readerUiRefreshPending = false;
     private final Collator myanmarCollator = Collator.getInstance(new Locale("my", "MM"));
     private final Collator englishCollator = Collator.getInstance(Locale.ENGLISH);
 
@@ -133,7 +134,11 @@ public class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); handleIncomingIntent(intent); }
     @Override protected void onResume() {
         super.onResume();
-        if (libraryRecycler != null) refreshLibrary();
+        if (readerUiRefreshPending) {
+            readerUiRefreshPending = false;
+            if (homeMode) buildUi();
+            else if (libraryRecycler != null) refreshLibrary();
+        } else if (libraryRecycler != null) refreshLibrary();
         maybeAutoGoogleSync();
     }
 
@@ -513,7 +518,7 @@ public class MainActivity extends Activity {
             String author = cachedLibraryAuthor(f);
             String authorLower = author.toLowerCase(Locale.ROOT);
             if (!authorFilter.isEmpty() && !authorFilter.equals(author)) continue;
-            int progress = prefs.getInt("percent_" + f.getName(), 0);
+            int progress = ReadingProgressStore.get(prefs, f.getName());
             if (!matchesLibraryStatus(progress)) continue;
             if (!shelfFilter.isEmpty() && !LibraryShelfStore.contains(prefs, shelfFilter, f.getName())) continue;
             if (searchQuery.isEmpty() || cachedTitle.contains(searchQuery) || fileTitle.contains(searchQuery) || authorLower.contains(searchQuery))
@@ -698,7 +703,7 @@ public class MainActivity extends Activity {
         title.setPadding(dp(2), dp(9), dp(2), 0);
         card.addView(title);
 
-        int progress = prefs.getInt("percent_" + file.getName(), 0);
+        int progress = ReadingProgressStore.get(prefs, file.getName());
         TextView meta = new TextView(this);
         meta.setText((file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf") ? "PDF" : "EPUB") + " · " + progress + "%");
         meta.setTextSize(10.5f);
@@ -762,7 +767,7 @@ public class MainActivity extends Activity {
         title.setMaxLines(2);
         text.addView(title);
 
-        int progress = prefs.getInt("percent_" + file.getName(), 0);
+        int progress = ReadingProgressStore.get(prefs, file.getName());
         TextView meta = new TextView(this);
         meta.setText((file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf") ? "PDF" : "EPUB") + " · " + progress + "% read");
         meta.setTextSize(12);
@@ -963,7 +968,7 @@ public class MainActivity extends Activity {
         });
         java.util.List<File> preferred = new java.util.ArrayList<>();
         for (File f : books) {
-            int p = prefs.getInt("percent_" + f.getName(), 0);
+            int p = ReadingProgressStore.get(prefs, f.getName());
             if (p > 0 && p < 100) preferred.add(f);
         }
         if (preferred.isEmpty()) {
@@ -1052,7 +1057,7 @@ public class MainActivity extends Activity {
         meta.setPadding(0, dp(5), 0, 0);
         copy.addView(meta);
 
-        int progress = prefs.getInt("percent_" + file.getName(), 0);
+        int progress = ReadingProgressStore.get(prefs, file.getName());
         TextView progressText = new TextView(this);
         progressText.setText(progress + (featured ? "% complete" : "%"));
         progressText.setTextSize(featured ? 11.5f : 10.5f);
@@ -2804,7 +2809,7 @@ public class MainActivity extends Activity {
     private void loadBookVisual(File file,ImageView cover,TextView titleView,TextView metaView){
         new Thread(()->{ String title=stripExtension(file.getName()),author=cachedLibraryAuthor(file); Bitmap bitmap=null; try{ if(file.getName().toLowerCase(Locale.ROOT).endsWith(".epub")){ EpubUtil.Summary s=EpubUtil.extractSummary(file,coverCacheDir); if(s.title!=null&&!s.title.isEmpty()) title=s.title; if(s.author!=null&&!s.author.trim().isEmpty()) author=s.author.trim(); if(s.cover!=null&&s.cover.isFile()) bitmap=BitmapFactory.decodeFile(s.cover.getAbsolutePath()); } else bitmap=renderPdfCover(file); }catch(Exception ignored){}
             prefs.edit().putString("library_title_" + file.getName(), title).putString("library_author_" + file.getName(), author).apply();
-            String ft=title,fa=author; Bitmap fb=bitmap; int progress=prefs.getInt("percent_"+file.getName(),0); runOnUiThread(()->{ if(fb!=null) cover.setImageBitmap(fb); titleView.setText(ft); applyBookTitleTypeface(titleView); String type=file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")?"PDF":"EPUB"; metaView.setText(fa.isEmpty()?type+" · "+progress+"%":fa+" · "+progress+"%"); if(!fa.isEmpty()){ if(pyidaungsuTypeface!=null) metaView.setTypeface(pyidaungsuTypeface); metaView.setClickable(true); metaView.setOnClickListener(v->{authorFilter=fa;refreshLibrary();}); } }); }).start();
+            String ft=title,fa=author; Bitmap fb=bitmap; int progress=ReadingProgressStore.get(prefs, file.getName()); runOnUiThread(()->{ if(fb!=null) cover.setImageBitmap(fb); titleView.setText(ft); applyBookTitleTypeface(titleView); String type=file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")?"PDF":"EPUB"; metaView.setText(fa.isEmpty()?type+" · "+progress+"%":fa+" · "+progress+"%"); if(!fa.isEmpty()){ if(pyidaungsuTypeface!=null) metaView.setTypeface(pyidaungsuTypeface); metaView.setClickable(true); metaView.setOnClickListener(v->{authorFilter=fa;refreshLibrary();}); } }); }).start();
     }
 
     private Bitmap renderPdfCover(File file){ ParcelFileDescriptor pfd=null; PdfRenderer renderer=null; PdfRenderer.Page page=null; try{ pfd=ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY); renderer=new PdfRenderer(pfd); if(renderer.getPageCount()==0)return null; page=renderer.openPage(0); int width=360,height=Math.max(1,Math.round(width*(page.getHeight()/(float)page.getWidth()))); Bitmap b=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888); b.eraseColor(Color.WHITE); page.render(b,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY); return b; }catch(Exception e){return null;} finally{try{if(page!=null)page.close();}catch(Exception ignored){} try{if(renderer!=null)renderer.close();}catch(Exception ignored){} try{if(pfd!=null)pfd.close();}catch(Exception ignored){}} }
@@ -2877,7 +2882,7 @@ public class MainActivity extends Activity {
 
     private String queryDisplayName(Uri uri){ if("file".equalsIgnoreCase(uri.getScheme()))return new File(uri.getPath()).getName(); Cursor c=null; try{c=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null);if(c!=null&&c.moveToFirst())return c.getString(0);}catch(Exception ignored){}finally{if(c!=null)c.close();}return null; }
     private File uniqueFile(String originalName){ String safe=originalName.replaceAll("[\\\\/:*?\"<>|]","_"); File f=new File(libraryDir,safe);if(!f.exists())return f;int dot=safe.lastIndexOf('.');String base=dot>0?safe.substring(0,dot):safe,ext=dot>0?safe.substring(dot):"";return new File(libraryDir,base+"_"+System.currentTimeMillis()+ext); }
-    private void openBook(File file){prefs.edit().putLong("last_opened_"+file.getName(),System.currentTimeMillis()).apply();Intent i=new Intent(this,BookReaderActivity.class);i.putExtra("path",file.getAbsolutePath());startActivity(i);overridePendingTransition(android.R.anim.fade_in,android.R.anim.fade_out);}
+    private void openBook(File file){prefs.edit().putLong("last_opened_"+file.getName(),System.currentTimeMillis()).apply();readerUiRefreshPending=true;Intent i=new Intent(this,BookReaderActivity.class);i.putExtra("path",file.getAbsolutePath());startActivity(i);overridePendingTransition(android.R.anim.fade_in,android.R.anim.fade_out);}
     private void confirmDelete(File file) {
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);

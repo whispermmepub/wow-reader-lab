@@ -169,6 +169,16 @@ public class BookReaderActivity extends Activity {
     private int chapterLoadGeneration = 0;
     private long readingSessionStartedElapsedMs = 0L;
 
+    // Footnote/endnote navigation is transient reading UI, not a new reading position.
+    private volatile boolean footnoteReturnArmed = false;
+    private volatile boolean footnoteNavigationActive = false;
+    private int footnoteReturnSpine = -1;
+    private int footnoteReturnProgressPermille = 0;
+    private int footnoteReturnPage = 1;
+    private String footnoteReturnSourceId = "";
+    private String footnoteReturnSourceUrl = "";
+    private long footnoteArmToken = 0L;
+
     private ParcelFileDescriptor pdfDescriptor;
     private PdfRenderer pdfRenderer;
     private PdfRenderer.Page pdfPage;
@@ -610,6 +620,7 @@ public class BookReaderActivity extends Activity {
                 }
                 final int generation = chapterLoadGeneration;
                 applyReaderStyle(true);
+                installReaderLinkNavigation();
                 webView.postDelayed(() -> {
                     if (generation == chapterLoadGeneration) applySavedAnnotations();
                 }, 520L);
@@ -638,7 +649,122 @@ public class BookReaderActivity extends Activity {
                     }, 3900L);
                 }
             }
+
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                super.doUpdateVisitedHistory(view, url, isReload);
+                if (view == webView) onReaderVisitedUrl(url);
+            }
         };
+    }
+
+    private void installReaderLinkNavigation() {
+        if (webView == null) return;
+        String js = "(function(){try{" +
+                "if(window.__wowReaderLinkNavInstalled)return true;window.__wowReaderLinkNavInstalled=true;" +
+                "document.addEventListener('click',function(ev){try{" +
+                "var t=ev.target,a=t&&t.closest?t.closest('a[href]'):null;if(!a)return;" +
+                "var href=a.getAttribute('href')||'',ep=a.getAttribute('epub:type')||a.getAttribute('type')||'';" +
+                "try{ep=ep||a.getAttributeNS('http://www.idpf.org/2007/ops','type')||'';}catch(_e){}" +
+                "var role=a.getAttribute('role')||'',rel=a.getAttribute('rel')||'',cls=(typeof a.className==='string'?a.className:'');" +
+                "var sid='',n=a;for(var i=0;i<5&&n;i++,n=n.parentElement){if(n.id){sid=n.id;break;}}" +
+                "if(WoW.onReaderLinkTap(href,ep,role,rel,cls,sid)){ev.preventDefault();ev.stopImmediatePropagation();return false;}" +
+                "}catch(_e){}},true);return true;}catch(e){return false;}})()";
+        try { webView.evaluateJavascript(js, null); } catch (Exception ignored) {}
+    }
+
+    private static String navLower(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT);
+    }
+
+    private boolean looksLikeFootnoteReference(String href, String epubType, String role, String rel, String cssClass) {
+        String meta = navLower(epubType + " " + role + " " + rel + " " + cssClass);
+        if (meta.contains("noteref") || meta.contains("doc-noteref") || meta.contains("footnote-ref") ||
+                meta.contains("footnoteref") || meta.contains("fnref") || meta.contains("endnote-ref")) return true;
+        String h = navLower(href);
+        int hash = h.indexOf('#');
+        String frag = hash >= 0 ? h.substring(hash + 1) : "";
+        return frag.startsWith("fn") || frag.startsWith("ftn") || frag.contains("footnote") ||
+                frag.startsWith("note-") || frag.startsWith("note_") || frag.startsWith("endnote");
+    }
+
+    private boolean looksLikeFootnoteBacklink(String href, String epubType, String role, String rel, String cssClass) {
+        String meta = navLower(epubType + " " + role + " " + rel + " " + cssClass);
+        if (meta.contains("backlink") || meta.contains("doc-backlink") || meta.contains("footnote-back") ||
+                meta.contains("note-back") || meta.contains("fnback")) return true;
+        String source = footnoteReturnSourceId == null ? "" : footnoteReturnSourceId.trim();
+        if (!source.isEmpty() && href != null) {
+            int hash = href.indexOf('#');
+            if (hash >= 0 && hash + 1 < href.length()) {
+                String fragment = Uri.decode(href.substring(hash + 1));
+                if (source.equals(fragment)) return true;
+            }
+        }
+        return false;
+    }
+
+    private synchronized void armFootnoteReturn(String sourceId) {
+        if (webView == null || spine.isEmpty() || footnoteNavigationActive) return;
+        footnoteReturnSpine = currentSpine;
+        footnoteReturnProgressPermille = currentProgressPermille;
+        footnoteReturnPage = currentPageInChapter;
+        footnoteReturnSourceId = sourceId == null ? "" : sourceId;
+        String url = webView.getUrl();
+        footnoteReturnSourceUrl = url == null ? "" : url;
+        footnoteReturnArmed = true;
+        long token = ++footnoteArmToken;
+        webView.postDelayed(() -> {
+            synchronized (BookReaderActivity.this) {
+                if (token == footnoteArmToken && footnoteReturnArmed && !footnoteNavigationActive)
+                    footnoteReturnArmed = false;
+            }
+        }, 20000L);
+    }
+
+    private synchronized void onReaderVisitedUrl(String url) {
+        if (!footnoteReturnArmed || footnoteNavigationActive || url == null || url.isEmpty()) return;
+        if (!url.equals(footnoteReturnSourceUrl)) {
+            footnoteNavigationActive = true;
+            footnoteReturnArmed = false;
+        }
+    }
+
+    private void restoreFootnoteReturn() {
+        runOnUiThread(() -> {
+            if ((!footnoteNavigationActive && !footnoteReturnArmed) || webView == null || spine.isEmpty()) return;
+            int targetSpine = Math.max(0, Math.min(spine.size() - 1, footnoteReturnSpine));
+            int targetProgress = Math.max(0, Math.min(1000, footnoteReturnProgressPermille));
+            int targetPage = Math.max(1, footnoteReturnPage);
+            footnoteNavigationActive = false;
+            footnoteReturnArmed = false;
+            footnoteArmToken++;
+
+            String expected = Uri.fromFile(spine.get(targetSpine)).toString();
+            String actual = webView.getUrl();
+            if (actual != null) { int hash = actual.indexOf('#'); if (hash >= 0) actual = actual.substring(0, hash); }
+            boolean sameDocument = expected.equals(actual);
+            currentSpine = targetSpine;
+            currentProgressPermille = targetProgress;
+
+            if (!sameDocument) {
+                saveEpubStateOnly();
+                loadCurrentEpubChapter();
+                return;
+            }
+
+            if ("page".equals(readingMode)) {
+                final int pageZero = targetPage - 1;
+                String jump = "(function(){var st=window.__wowPageEngine;if(!st||st.mode!=='page')return false;" +
+                        "st.page=st.clamp(" + pageZero + ",0,(st.count||1)-1);st.apply(false);st.report();return true;})()";
+                try { webView.evaluateJavascript(jump, null); } catch (Exception ignored) {}
+            } else {
+                String jump = "(function(){var h=Math.max(0,document.documentElement.scrollHeight-window.innerHeight);" +
+                        "window.scrollTo(0,h*" + (targetProgress / 1000.0) + ");return true;})()";
+                try { webView.evaluateJavascript(jump, null); } catch (Exception ignored) {}
+            }
+            updateEpubProgress(targetProgress);
+            saveEpubStateOnly();
+        });
     }
 
 
@@ -4095,7 +4221,7 @@ public class BookReaderActivity extends Activity {
             positionView.setText(chapter + " · " + percent + "%");
         if (readingSeek != null && !readingSeekDragging)
             readingSeek.setProgress(Math.max(0, Math.min(1000, (int) Math.round(overall * 1000.0))));
-        prefs.edit().putInt("percent_" + bookFile.getName(), percent).apply();
+        if (!footnoteNavigationActive) ReadingProgressStore.set(prefs, bookFile.getName(), percent);
     }
 
     private void updateEpubPageProgress(int page, int count, int p) {
@@ -4106,6 +4232,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void saveEpubStateOnly() {
+        if (footnoteNavigationActive) return;
         prefs.edit()
                 .putInt("epub_chapter_" + bookFile.getName(), currentSpine)
                 .putInt("epub_scroll_" + bookFile.getName(), currentProgressPermille)
@@ -4735,6 +4862,20 @@ public class BookReaderActivity extends Activity {
         }
 
         @JavascriptInterface
+        public boolean onReaderLinkTap(String href, String epubType, String role, String rel, String cssClass, String sourceId) {
+            if (owner != webView) return false;
+            if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) {
+                armFootnoteReturn(sourceId);
+                return false;
+            }
+            if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) {
+                restoreFootnoteReturn();
+                return true;
+            }
+            return false;
+        }
+
+        @JavascriptInterface
         public void onSelection(String text, int start, int end) {
             if (owner != webView) return;
             runOnUiThread(() -> onWebSelection(text, start, end));
@@ -4853,6 +4994,7 @@ public class BookReaderActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (!isPdf && footnoteNavigationActive) { restoreFootnoteReturn(); return; }
         if (!isPdf) saveEpubState();
         finish();
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);

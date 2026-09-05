@@ -27,8 +27,11 @@ jobs:
         with:
           gradle-version: '8.11.1'
       - name: Install Android SDK
-        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
       - name: Apply source patch
+        shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/patch_v50.py
@@ -40,8 +43,11 @@ jobs:
           grep -q "onAutoScrollEnd" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "EYE_BREAK_INTERVAL_MS" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
       - name: Build and lint
-        run: gradle :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
+        shell: bash
+        run: |
+          gradle :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
       - name: Smoke checks
+        shell: bash
         run: |
           set -euo pipefail
           APK=app/build/outputs/apk/release/app-release-unsigned.apk
@@ -54,6 +60,7 @@ jobs:
           "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.0'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
       - name: Commit verified source
+        shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
@@ -62,6 +69,7 @@ jobs:
           git commit -m 'Add Home search fix, auto scroll and eye care in v2.18.0 v50'
           git push origin HEAD:main
       - name: Collect artifacts
+        shell: bash
         run: |
           cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.0-v50-unsigned.apk
           cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.0-v50-unsigned.aab

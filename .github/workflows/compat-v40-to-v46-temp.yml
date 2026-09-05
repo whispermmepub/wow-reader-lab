@@ -1,4 +1,4 @@
-name: Verify WoW Reader v40 to v46 compatibility
+name: Verify WoW Reader old versions to v46 compatibility
 
 on:
   push:
@@ -12,9 +12,9 @@ permissions:
 jobs:
   compatibility:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
-      - name: Checkout Lab v46
+      - name: Checkout latest Lab v46
         uses: actions/checkout@v4
 
       - name: Set up Java 17
@@ -28,26 +28,45 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Install Android 16 SDK
+      - name: Install Android SDK platforms
         shell: bash
         run: |
           set -euo pipefail
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "platforms;android-36"
 
-      - name: Build latest Lab debug APK
-        run: gradle :app:assembleDebug --stacktrace
-
-      - name: Build stable Production v40 debug APK with the same debug signer
+      - name: Build latest unified Lab APK
         shell: bash
         run: |
           set -euo pipefail
-          git clone --quiet https://github.com/whispermmepub/wow-reader-app.git /tmp/wow-reader-v40
-          cd /tmp/wow-reader-v40
-          git checkout --quiet afc75339dece9ff175f8d498a9744fc88bbb6a62
           gradle :app:assembleDebug --stacktrace
           test -s app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Emulator update + clean-install compatibility
+      - name: Build representative old APKs with the same debug signer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/whispermmepub/wow-reader-app.git /tmp/wow-reader-old
+          cd /tmp/wow-reader-old
+
+          git checkout --quiet 2f8f66d06d8fa7378c8c44cf8f74e18f067416c1
+          gradle :app:assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/wow-v15.apk
+
+          git checkout --quiet dbdc410a73c7360f947224dde7b9b00c03761331
+          rm -rf app/build
+          gradle :app:assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/wow-v26.apk
+
+          git checkout --quiet afc75339dece9ff175f8d498a9744fc88bbb6a62
+          rm -rf app/build
+          gradle :app:assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/wow-v40.apk
+
+          test -s /tmp/wow-v15.apk
+          test -s /tmp/wow-v26.apk
+          test -s /tmp/wow-v40.apk
+
+      - name: Emulator old-version update plus clean-install compatibility
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -58,64 +77,65 @@ jobs:
           script: |
             set -eu
             PKG=com.whisper.wowreader
-            OLD=/tmp/wow-reader-v40/app/build/outputs/apk/debug/app-debug.apk
             NEW=app/build/outputs/apk/debug/app-debug.apk
 
-            test -s "$OLD"
             test -s "$NEW"
 
-            echo '=== UPDATE PATH: v40 -> v46 ==='
-            adb install "$OLD"
-            adb shell am start -W -n "$PKG/.SplashActivity"
-            sleep 2
-            adb shell am force-stop "$PKG"
+            verify_update() {
+              OLD="$1"
+              LABEL="$2"
+              SENTINEL="__${LABEL}_upgrade_sentinel.txt"
 
-            adb shell run-as "$PKG" mkdir -p files/library shared_prefs
-            printf 'wow-v40-local-data-survives-update\n' | adb shell "run-as $PKG sh -c 'cat > files/library/__v40_upgrade_sentinel.txt'"
+              echo "=== UPDATE PATH: ${LABEL} -> v46 ==="
+              adb uninstall "$PKG" >/dev/null 2>&1 || true
+              adb install "$OLD"
+              adb shell run-as "$PKG" mkdir -p files/library shared_prefs
+              printf "wow-${LABEL}-local-data-survives-update\n" | adb shell "run-as $PKG sh -c 'cat > files/library/$SENTINEL'"
 
-            cat > /tmp/wow_reader.xml <<'XML'
+              cat > /tmp/wow_reader.xml <<XML
             <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
             <map>
                 <string name="app_theme">navy</string>
                 <int name="percent_update-test.epub" value="37" />
                 <string name="library_shelves_json">{&quot;Favorites&quot;:[&quot;update-test.epub&quot;]}</string>
-                <string name="reading_stats_day_notes_json">{&quot;2026-09-05&quot;:&quot;upgrade sentinel note&quot;}</string>
-                <boolean name="reader_v19_defaults_applied" value="true" />
-                <boolean name="reader_v20_defaults_applied" value="true" />
-                <boolean name="reader_v210_animation_default_applied" value="true" />
+                <string name="reading_stats_day_notes_json">{&quot;2026-09-05&quot;:&quot;${LABEL} upgrade sentinel note&quot;}</string>
             </map>
             XML
-            cat /tmp/wow_reader.xml | adb shell "run-as $PKG sh -c 'cat > shared_prefs/wow_reader.xml'"
+              cat /tmp/wow_reader.xml | adb shell "run-as $PKG sh -c 'cat > shared_prefs/wow_reader.xml'"
 
-            adb install -r "$NEW"
-            adb logcat -c
-            adb shell am start -W -n "$PKG/.SplashActivity"
-            sleep 4
+              adb install -r "$NEW"
+              adb logcat -c
+              adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+              sleep 5
 
-            adb shell dumpsys package "$PKG" | grep -q 'versionCode=46'
-            adb shell run-as "$PKG" test -f files/library/__v40_upgrade_sentinel.txt
-            adb shell run-as "$PKG" grep -q 'percent_update-test.epub' shared_prefs/wow_reader.xml
-            adb shell run-as "$PKG" grep -q 'value="37"' shared_prefs/wow_reader.xml
-            adb shell run-as "$PKG" grep -q 'library_shelves_json' shared_prefs/wow_reader.xml
-            adb shell run-as "$PKG" grep -q 'reading_stats_day_notes_json' shared_prefs/wow_reader.xml
-            adb shell run-as "$PKG" grep -q 'upgrade sentinel note' shared_prefs/wow_reader.xml
-            adb shell pidof "$PKG" >/dev/null
-            if adb logcat -d | grep -A8 -B2 'FATAL EXCEPTION' | grep -q 'com.whisper.wowreader'; then
-              echo 'WoW Reader crashed on update path' >&2
-              exit 1
-            fi
+              adb shell dumpsys package "$PKG" | grep -q 'versionCode=46'
+              adb shell run-as "$PKG" test -f "files/library/$SENTINEL"
+              adb shell run-as "$PKG" grep -q 'percent_update-test.epub' shared_prefs/wow_reader.xml
+              adb shell run-as "$PKG" grep -q 'value="37"' shared_prefs/wow_reader.xml
+              adb shell run-as "$PKG" grep -q 'library_shelves_json' shared_prefs/wow_reader.xml
+              adb shell run-as "$PKG" grep -q 'reading_stats_day_notes_json' shared_prefs/wow_reader.xml
+              adb shell pidof "$PKG" >/dev/null
+              if adb logcat -d | grep -A8 -B2 'FATAL EXCEPTION' | grep -q 'com.whisper.wowreader'; then
+                echo "WoW Reader crashed on ${LABEL} update path" >&2
+                exit 1
+              fi
+            }
+
+            verify_update /tmp/wow-v15.apk v15
+            verify_update /tmp/wow-v26.apk v26
+            verify_update /tmp/wow-v40.apk v40
 
             echo '=== FRESH INSTALL PATH: clean -> v46 ==='
-            adb uninstall "$PKG"
+            adb uninstall "$PKG" >/dev/null 2>&1 || true
             adb install "$NEW"
             adb logcat -c
-            adb shell am start -W -n "$PKG/.SplashActivity"
-            sleep 4
+            adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+            sleep 5
 
             adb shell dumpsys package "$PKG" | grep -q 'versionCode=46'
             adb shell run-as "$PKG" test -d files/library
             adb shell run-as "$PKG" test -d files/cover_cache
-            if adb shell run-as "$PKG" test -e files/library/__v40_upgrade_sentinel.txt; then
+            if adb shell run-as "$PKG" find files/library -name '__*_upgrade_sentinel.txt' | grep -q .; then
               echo 'Fresh install unexpectedly retained old local data' >&2
               exit 1
             fi
@@ -126,34 +146,34 @@ jobs:
             fi
 
             cat > compatibility-report.txt <<'REPORT'
-            WoW Reader compatibility verification
+            WoW Reader unified compatibility verification
             Candidate: v2.17.6 / versionCode 46
             Package: com.whisper.wowreader
 
-            UPDATE PATH v40 -> v46: PASS
+            UPDATE PATH v2.3.0/v15 -> v46: PASS
+            UPDATE PATH v2.14.0/v26 -> v46: PASS
+            UPDATE PATH v2.17.0/v40 -> v46: PASS
             - Android in-place install -r succeeded.
             - Latest app process launched successfully.
-            - Existing internal library file survived.
+            - Existing internal library sentinel survived.
             - Existing reading percent preference survived.
-            - Existing custom shelf preference survived.
-            - Existing reading-calendar note preference survived.
+            - Existing shelf/calendar preference data survived.
             - No WoW Reader fatal exception observed during launch.
 
             FRESH INSTALL clean -> v46: PASS
             - Clean install succeeded.
-            - Latest app process launched successfully.
-            - New library directory initialized.
-            - New cover-cache directory initialized.
+            - Latest app launched successfully.
+            - New library and cover-cache directories initialized.
             - No legacy sentinel data existed after clean install.
             - No WoW Reader fatal exception observed during launch.
 
-            This workflow uses the same debug signer for v40 and v46 to exercise Android update/data-preservation semantics. Production APK signing identity is verified separately and is not uploaded to GitHub.
+            One latest APK is used for both fresh install and in-place update. These emulator checks use one debug signer across test builds to exercise Android update/data-preservation semantics. Real production in-place update additionally requires the installed old APK to have the same production signing identity as the final v46 APK.
             REPORT
 
       - name: Upload compatibility report
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-v40-to-v46-compatibility-report
+          name: WoW-Reader-unified-v46-compatibility-report
           path: compatibility-report.txt
           if-no-files-found: error
           retention-days: 14

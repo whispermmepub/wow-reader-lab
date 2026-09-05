@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   compatibility:
-    runs-on: ubuntu-latest
+    runs-on: macos-13
     timeout-minutes: 40
     steps:
       - name: Checkout latest Lab v46

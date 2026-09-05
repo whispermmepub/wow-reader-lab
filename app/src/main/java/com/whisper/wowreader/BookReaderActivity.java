@@ -175,6 +175,10 @@ public class BookReaderActivity extends Activity {
     private int autoScrollSpeed = 4;
     private long autoScrollResumeToken = 0L;
     private boolean autoScrollAdvancePending = false;
+    // Remembers a user-initiated Scroll-mode Next so Previous can return to the prior reading point.
+    private int autoScrollManualReturnSpine = -1;
+    private int autoScrollManualReturnProgress = 0;
+    private int autoScrollManualReturnFromSpine = -1;
     private boolean eyeBreakReminderEnabled = true;
     private Runnable eyeBreakReminderRunnable;
     private FrameLayout eyeBreakOverlay;
@@ -237,7 +241,7 @@ public class BookReaderActivity extends Activity {
         isPdf = bookFile.getName().toLowerCase(Locale.ROOT).endsWith(".pdf");
 
         readerTheme = prefs.getInt("reader_theme", 0);
-        fontPercent = prefs.getInt("epub_font", 115);
+        fontPercent = Math.max(80, Math.min(300, prefs.getInt("epub_font", 115)));
         fontChoice = prefs.getString("epub_font_choice", "publisher");
         lineSpacing = prefs.getInt("epub_line_spacing", 170);
         marginPercent = prefs.getInt("epub_margin", 7);
@@ -294,7 +298,7 @@ public class BookReaderActivity extends Activity {
             BookTypographyStore.Values bookStyle = BookTypographyStore.load(
                     prefs, bookFile.getName(), fontPercent, fontChoice, lineSpacing,
                     marginPercent, textAlignment, autoSpacingAdjustment);
-            fontPercent = bookStyle.fontPercent;
+            fontPercent = Math.max(80, Math.min(300, bookStyle.fontPercent));
             fontChoice = bookStyle.fontChoice;
             lineSpacing = bookStyle.lineSpacing;
             marginPercent = bookStyle.marginPercent;
@@ -2323,11 +2327,41 @@ public class BookReaderActivity extends Activity {
             return;
         }
 
+        int targetProgressPermille = restoreEnd ? 1000 : 0;
+        if ("scroll".equals(readingMode) && autoScrollEnabled) {
+            final boolean automaticForward = delta > 0 && autoScrollAdvancePending;
+            if (delta > 0 && !automaticForward) {
+                // User pressed Next: remember this exact location for a possible immediate Previous.
+                autoScrollManualReturnSpine = currentSpine;
+                autoScrollManualReturnProgress = currentProgressPermille;
+                autoScrollManualReturnFromSpine = target;
+            } else if (delta > 0) {
+                // Automatic chapter advance must not leave stale manual-return history behind.
+                autoScrollManualReturnSpine = -1;
+                autoScrollManualReturnProgress = 0;
+                autoScrollManualReturnFromSpine = -1;
+            } else if (delta < 0) {
+                if (currentSpine == autoScrollManualReturnFromSpine && target == autoScrollManualReturnSpine) {
+                    int remembered = Math.max(0, Math.min(1000, autoScrollManualReturnProgress));
+                    // A remembered literal chapter end would immediately bounce forward again.
+                    targetProgressPermille = remembered >= 995 ? 0 : remembered;
+                } else {
+                    // With Auto scroll enabled, Previous opens from the chapter start instead of its end.
+                    targetProgressPermille = 0;
+                }
+                autoScrollManualReturnSpine = -1;
+                autoScrollManualReturnProgress = 0;
+                autoScrollManualReturnFromSpine = -1;
+            }
+            autoScrollResumeToken++;
+            stopAutoScrollEngine();
+        }
+
         preferredPreloadDirection = delta < 0 ? -1 : 1;
         prepareChapterTransition(delta);
         lastChapterNavMs = now;
         currentSpine = target;
-        currentProgressPermille = restoreEnd ? 1000 : 0;
+        currentProgressPermille = targetProgressPermille;
         saveEpubStateOnly();
         loadCurrentEpubChapter();
     }
@@ -3875,7 +3909,7 @@ public class BookReaderActivity extends Activity {
         TextView fontValue = sheetChip(fontPercent + "%", true);
         TextView plusFont = sheetChip("A+", false);
         minusFont.setOnClickListener(v -> { fontPercent = Math.max(80, fontPercent - 10); fontValue.setText(fontPercent + "%"); saveReaderPreferences(); applyReaderStyleSmooth(true); });
-        plusFont.setOnClickListener(v -> { fontPercent = Math.min(200, fontPercent + 10); fontValue.setText(fontPercent + "%"); saveReaderPreferences(); applyReaderStyleSmooth(true); });
+        plusFont.setOnClickListener(v -> { fontPercent = Math.min(300, fontPercent + 10); fontValue.setText(fontPercent + "%"); saveReaderPreferences(); applyReaderStyleSmooth(true); });
         fontSizeRow.addView(minusFont, sheetChipLp(false));
         fontSizeRow.addView(fontValue, sheetChipLp(true));
         fontSizeRow.addView(plusFont, sheetChipLp(true));
@@ -4253,7 +4287,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showFontSizeDialog() {
-        final int[] values = {80, 90, 100, 110, 115, 125, 140, 160, 180, 200};
+        final int[] values = {80, 90, 100, 110, 115, 125, 140, 160, 180, 200, 220, 240, 260, 280, 300};
         String[] labels = new String[values.length];
         int selected = 0;
         for (int i = 0; i < values.length; i++) {

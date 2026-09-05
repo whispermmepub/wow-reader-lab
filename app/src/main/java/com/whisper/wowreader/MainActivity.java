@@ -1968,6 +1968,7 @@ public class MainActivity extends Activity {
         panel.setElevation(dp(12));
         addCompactPopupAction(panel, popup, "▷", "Continue reading", false, () -> openBook(file));
         addCompactPopupAction(panel, popup, "▥", "Add to shelf", false, () -> showBookShelves(file));
+        addCompactPopupAction(panel, popup, "✐", "Edit title & author", false, () -> showEditBookMetadata(file));
         addCompactPopupAction(panel, popup, "✎", "Notes & highlights", false, () -> openBookAnnotations(file));
         addCompactPopupAction(panel, popup, "Aa", "Reading settings", false, () -> openBookSettings(file));
         addCompactPopupAction(panel, popup, "↗", "Share", false, () -> shareBookReference(file));
@@ -2032,6 +2033,119 @@ public class MainActivity extends Activity {
         i.putExtra("open_reader_settings", true);
         startActivity(i);
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
+    }
+
+    private String customMetadataFlag(File file) {
+        return "library_metadata_custom_" + (file == null ? "" : file.getName());
+    }
+
+    private void showEditBookMetadata(File file) {
+        if (file == null) return;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(4), dp(22), dp(2));
+
+        TextView titleLabel = new TextView(this);
+        titleLabel.setText("Book title");
+        titleLabel.setTextSize(12.5f);
+        titleLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        titleLabel.setTextColor(themeSecondaryText());
+        box.addView(titleLabel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
+
+        EditText titleInput = new EditText(this);
+        titleInput.setSingleLine(true);
+        titleInput.setText(cachedLibraryTitle(file));
+        titleInput.setSelection(titleInput.length());
+        titleInput.setTextSize(15f);
+        titleInput.setTextColor(themePrimaryText());
+        titleInput.setHintTextColor(themeSecondaryText());
+        titleInput.setHint("Book title");
+        applyBookTitleTypeface(titleInput);
+        box.addView(titleInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+
+        TextView authorLabel = new TextView(this);
+        authorLabel.setText("Author name");
+        authorLabel.setTextSize(12.5f);
+        authorLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        authorLabel.setTextColor(themeSecondaryText());
+        LinearLayout.LayoutParams authorLabelLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30));
+        authorLabelLp.topMargin = dp(8);
+        box.addView(authorLabel, authorLabelLp);
+
+        EditText authorInput = new EditText(this);
+        authorInput.setSingleLine(true);
+        authorInput.setText(cachedLibraryAuthor(file));
+        authorInput.setSelection(authorInput.length());
+        authorInput.setTextSize(15f);
+        authorInput.setTextColor(themePrimaryText());
+        authorInput.setHintTextColor(themeSecondaryText());
+        authorInput.setHint("Author name (optional)");
+        if (pyidaungsuTypeface != null) authorInput.setTypeface(pyidaungsuTypeface);
+        box.addView(authorInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Edit book details")
+                .setMessage("Custom title and author are saved in WoW Reader and included in backup/restore.")
+                .setView(box)
+                .setNeutralButton("Use book metadata", null)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save", null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String title = titleInput.getText() == null ? "" : titleInput.getText().toString().trim();
+                String author = authorInput.getText() == null ? "" : authorInput.getText().toString().trim();
+                if (title.isEmpty()) {
+                    titleInput.setError("Book title is required");
+                    titleInput.requestFocus();
+                    return;
+                }
+                prefs.edit()
+                        .putString("library_title_" + file.getName(), title)
+                        .putString("library_author_" + file.getName(), author)
+                        .putBoolean(customMetadataFlag(file), true)
+                        .putLong("sync_updated_ms", System.currentTimeMillis())
+                        .apply();
+                dialog.dismiss();
+                if (homeMode) buildUi(); else refreshLibrary();
+                maybeAutoGoogleSync();
+                Toast.makeText(this, "Book details saved", Toast.LENGTH_SHORT).show();
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                dialog.dismiss();
+                resetBookMetadataFromSource(file);
+            });
+        });
+        dialog.show();
+    }
+
+    private void resetBookMetadataFromSource(File file) {
+        if (file == null) return;
+        new Thread(() -> {
+            String title = stripExtension(file.getName());
+            String author = "";
+            try {
+                if (file.getName().toLowerCase(Locale.ROOT).endsWith(".epub")) {
+                    EpubUtil.Summary summary = EpubUtil.extractSummary(file, coverCacheDir);
+                    if (summary.title != null && !summary.title.trim().isEmpty()) title = summary.title.trim();
+                    if (summary.author != null && !summary.author.trim().isEmpty()) author = summary.author.trim();
+                }
+            } catch (Exception ignored) {}
+            final String resolvedTitle = title;
+            final String resolvedAuthor = author;
+            prefs.edit()
+                    .putString("library_title_" + file.getName(), resolvedTitle)
+                    .putString("library_author_" + file.getName(), resolvedAuthor)
+                    .remove(customMetadataFlag(file))
+                    .putLong("sync_updated_ms", System.currentTimeMillis())
+                    .apply();
+            runOnUiThread(() -> {
+                if (isFinishing()) return;
+                if (homeMode) buildUi(); else refreshLibrary();
+                maybeAutoGoogleSync();
+                Toast.makeText(this, "Book metadata restored", Toast.LENGTH_SHORT).show();
+            });
+        }, "wow-book-metadata-reset").start();
     }
 
     private void shareBookReference(File file) {
@@ -2844,10 +2958,56 @@ public class MainActivity extends Activity {
         LibraryHolder(View itemView) { super(itemView); }
     }
 
-    private void loadBookVisual(File file,ImageView cover,TextView titleView,TextView metaView){
-        new Thread(()->{ String title=stripExtension(file.getName()),author=cachedLibraryAuthor(file); Bitmap bitmap=null; try{ if(file.getName().toLowerCase(Locale.ROOT).endsWith(".epub")){ EpubUtil.Summary s=EpubUtil.extractSummary(file,coverCacheDir); if(s.title!=null&&!s.title.isEmpty()) title=s.title; if(s.author!=null&&!s.author.trim().isEmpty()) author=s.author.trim(); if(s.cover!=null&&s.cover.isFile()) bitmap=BitmapFactory.decodeFile(s.cover.getAbsolutePath()); } else bitmap=renderPdfCover(file); }catch(Exception ignored){}
-            prefs.edit().putString("library_title_" + file.getName(), title).putString("library_author_" + file.getName(), author).apply();
-            String ft=title,fa=author; Bitmap fb=bitmap; int progress=ReadingProgressStore.get(prefs, file.getName()); runOnUiThread(()->{ if(fb!=null) cover.setImageBitmap(fb); titleView.setText(ft); applyBookTitleTypeface(titleView); String type=file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")?"PDF":"EPUB"; metaView.setText(fa.isEmpty()?type+" · "+progress+"%":fa+" · "+progress+"%"); if(!fa.isEmpty()){ if(pyidaungsuTypeface!=null) metaView.setTypeface(pyidaungsuTypeface); metaView.setClickable(true); metaView.setOnClickListener(v->{authorFilter=fa;refreshLibrary();}); } }); }).start();
+    private void loadBookVisual(File file, ImageView cover, TextView titleView, TextView metaView) {
+        new Thread(() -> {
+            boolean customMetadata = prefs.getBoolean(customMetadataFlag(file), false);
+            String title = cachedLibraryTitle(file);
+            String author = cachedLibraryAuthor(file);
+            Bitmap bitmap = null;
+            try {
+                if (file.getName().toLowerCase(Locale.ROOT).endsWith(".epub")) {
+                    EpubUtil.Summary summary = EpubUtil.extractSummary(file, coverCacheDir);
+                    if (!customMetadata) {
+                        if (summary.title != null && !summary.title.trim().isEmpty()) title = summary.title.trim();
+                        if (summary.author != null && !summary.author.trim().isEmpty()) author = summary.author.trim();
+                    }
+                    if (summary.cover != null && summary.cover.isFile())
+                        bitmap = BitmapFactory.decodeFile(summary.cover.getAbsolutePath());
+                } else {
+                    bitmap = renderPdfCover(file);
+                }
+            } catch (Exception ignored) {}
+
+            if (!customMetadata) {
+                prefs.edit()
+                        .putString("library_title_" + file.getName(), title)
+                        .putString("library_author_" + file.getName(), author)
+                        .apply();
+            }
+
+            final String finalTitle = title;
+            final String finalAuthor = author;
+            final Bitmap finalBitmap = bitmap;
+            final int progress = ReadingProgressStore.get(prefs, file.getName());
+            runOnUiThread(() -> {
+                if (finalBitmap != null) cover.setImageBitmap(finalBitmap);
+                titleView.setText(finalTitle);
+                applyBookTitleTypeface(titleView);
+                String type = file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf") ? "PDF" : "EPUB";
+                metaView.setText(finalAuthor.isEmpty() ? type + " · " + progress + "%" : finalAuthor + " · " + progress + "%");
+                if (!finalAuthor.isEmpty()) {
+                    if (pyidaungsuTypeface != null) metaView.setTypeface(pyidaungsuTypeface);
+                    metaView.setClickable(true);
+                    metaView.setOnClickListener(v -> {
+                        authorFilter = finalAuthor;
+                        refreshLibrary();
+                    });
+                } else {
+                    metaView.setClickable(false);
+                    metaView.setOnClickListener(null);
+                }
+            });
+        }, "wow-book-visual").start();
     }
 
     private Bitmap renderPdfCover(File file){ ParcelFileDescriptor pfd=null; PdfRenderer renderer=null; PdfRenderer.Page page=null; try{ pfd=ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY); renderer=new PdfRenderer(pfd); if(renderer.getPageCount()==0)return null; page=renderer.openPage(0); int width=360,height=Math.max(1,Math.round(width*(page.getHeight()/(float)page.getWidth()))); Bitmap b=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888); b.eraseColor(Color.WHITE); page.render(b,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY); return b; }catch(Exception e){return null;} finally{try{if(page!=null)page.close();}catch(Exception ignored){} try{if(renderer!=null)renderer.close();}catch(Exception ignored){} try{if(pfd!=null)pfd.close();}catch(Exception ignored){}} }
@@ -2948,7 +3108,7 @@ public class MainActivity extends Activity {
             if (file.delete()) {
                 LibraryShelfStore.removeBookFromAll(prefs, file.getName());
                 prefs.edit().remove("percent_" + file.getName()).remove("library_title_" + file.getName())
-                        .remove("library_author_" + file.getName()).remove("library_owned_" + file.getName())
+                        .remove("library_author_" + file.getName()).remove(customMetadataFlag(file)).remove("library_owned_" + file.getName())
                         .remove("added_at_" + file.getName()).remove("last_opened_" + file.getName())
                         .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
                 refreshLibrary();

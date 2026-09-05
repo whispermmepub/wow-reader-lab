@@ -1,0 +1,222 @@
+name: Patch WoW Reader v47 footnote card only
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-footnote-card-only-v47-temp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout Lab
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android 16 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+
+      - name: Patch card-only footnotes and bump v47
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          s = p.read_text()
+
+          def once(old, new, label):
+              global s
+              n = s.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 match, got {n}')
+              s = s.replace(old, new, 1)
+
+          once('    private boolean footnoteReturnPending = false;\n',
+               '    private boolean footnoteReturnPending = false;\n    // A recognized footnote tap must never also trigger page/chapter navigation.\n    private volatile long footnoteTapSuppressUntilMs = 0L;\n',
+               'footnote suppression field')
+
+          once('    private void requestFootnotePreview(String href, String label) {\n',
+               '    private void requestFootnotePreview(String href, String label, String sourceId) {\n',
+               'preview signature')
+          once('        final String sourceId = footnoteReturnSourceId;\n',
+               '        final String previewSourceId = sourceId == null ? "" : sourceId;\n',
+               'preview source id')
+          once('ReaderSearchIndex.resolveFootnote(spine, sourceSpine, footnotePreviewHref, sourceId)',
+               'ReaderSearchIndex.resolveFootnote(spine, sourceSpine, footnotePreviewHref, previewSourceId)',
+               'preview resolver source')
+
+          old_body = '''        String text = note.text == null ? "" : note.text.trim();
+        if (text.length() > 7000) text = text.substring(0, 7000).trim() + "…";
+        if (text.isEmpty()) text = "Footnote text could not be previewed. You can still open it on the page.";
+        body.setText(text);
+'''
+          new_body = '''        String text = cleanFootnoteDisplayText(note.text);
+        if (text.length() > 7000) text = text.substring(0, 7000).trim() + "…";
+        if (text.isEmpty()) text = "Footnote text could not be previewed.";
+        body.setText(text);
+'''
+          once(old_body, new_body, 'footnote body cleanup')
+
+          old_show = '''        TextView show = new TextView(this);
+        show.setText("Show on page");
+        show.setTextSize(14.5f);
+        show.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+        show.setTextColor(readerAccent());
+        show.setGravity(Gravity.CENTER);
+        show.setBackground(glassPanel(readerSelectedSurface(), dp(20), readerPanelStroke()));
+        show.setOnClickListener(v -> { dialog.dismiss(); navigateToFootnote(note); });
+        LinearLayout.LayoutParams showLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+        showLp.topMargin = dp(8);
+        card.addView(show, showLp);
+
+'''
+          once(old_show, '', 'remove Show on page')
+
+          marker = '    private void showFootnotePreview(ReaderSearchIndex.Footnote note, String label) {\n'
+          if s.count(marker) != 1:
+              raise SystemExit('showFootnotePreview marker missing')
+          cleaner = '''    private String cleanFootnoteDisplayText(String raw) {
+        if (raw == null) return "";
+        String text = raw.replaceAll("\\\\s+", " ").trim();
+        text = text.replaceFirst("(?i)^unknown\\\\s*", "");
+        text = text.replaceFirst("^\\\\[\\\\s*[←↩↵]?\\\\s*-?\\\\s*\\\\d+\\\\s*\\\\]\\\\s*", "");
+        text = text.replaceFirst("^[←↩↵]\\\\s*-?\\\\s*\\\\d+\\\\s*", "");
+        return text.trim();
+    }
+
+'''
+          s = s.replace(marker, cleaner + marker, 1)
+
+          old_bridge = '''                final String targetLabel = label == null ? "" : label;
+                final String targetSourceId = sourceId == null ? "" : sourceId;
+                runOnUiThread(() -> {
+                    if (isFinishing() || owner != webView) return;
+                    armFootnoteReturn(targetSourceId);
+                    requestFootnotePreview(targetHref, targetLabel);
+                });
+                return true;
+'''
+          new_bridge = '''                final String targetLabel = label == null ? "" : label;
+                final String targetSourceId = sourceId == null ? "" : sourceId;
+                footnoteTapSuppressUntilMs = android.os.SystemClock.uptimeMillis() + 1400L;
+                runOnUiThread(() -> {
+                    if (isFinishing() || owner != webView) return;
+                    // Card-only footnotes: never navigate away from the reading page.
+                    footnoteNavigationActive = false;
+                    footnoteReturnPending = false;
+                    footnoteReturnArmed = false;
+                    requestFootnotePreview(targetHref, targetLabel, targetSourceId);
+                });
+                return true;
+'''
+          once(old_bridge, new_bridge, 'bridge card-only path')
+
+          once('    private void handleReaderTap(float x, float y) {\n        if (webView == null || chapterLoading || tapHitTestPending) return;\n',
+               '    private void handleReaderTap(float x, float y) {\n        if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;\n        if (webView == null || chapterLoading || tapHitTestPending) return;\n',
+               'tap early suppression')
+          once('                tapHitTestPending = false;\n                if (result != null && (result.contains("link") || result.contains("selection"))) return;\n',
+               '                tapHitTestPending = false;\n                if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;\n                if (result != null && (result.contains("link") || result.contains("selection"))) return;\n',
+               'tap callback suppression')
+          once('    private void turnPageFromTap(int delta, float tapY) {\n        if (webView == null || chapterLoading || !"page".equals(readingMode) || delta == 0) return;\n',
+               '    private void turnPageFromTap(int delta, float tapY) {\n        if (android.os.SystemClock.uptimeMillis() < footnoteTapSuppressUntilMs) return;\n        if (webView == null || chapterLoading || !"page".equals(readingMode) || delta == 0) return;\n',
+               'page turn suppression')
+
+          once('    public void onBackPressed() {\n        if (bookSearchDialog != null && bookSearchDialog.isShowing())',
+               '    public void onBackPressed() {\n        if (footnotePreviewDialog != null && footnotePreviewDialog.isShowing()) { footnotePreviewDialog.dismiss(); return; }\n        if (bookSearchDialog != null && bookSearchDialog.isShowing())',
+               'footnote dialog back')
+
+          if 'Show on page' in s:
+              raise SystemExit('Show on page still present')
+          if 'requestFootnotePreview(targetHref, targetLabel);' in s:
+              raise SystemExit('old preview call still present')
+          p.write_text(s)
+
+          g = Path('app/build.gradle')
+          gs = g.read_text()
+          if gs.count('versionCode 46') != 1 or gs.count("versionName '2.17.6'") != 1:
+              raise SystemExit('unexpected current version')
+          gs = gs.replace('versionCode 46', 'versionCode 47', 1)
+          gs = gs.replace("versionName '2.17.6'", "versionName '2.17.7'", 1)
+          g.write_text(gs)
+
+          w = Path('.github/workflows/build-apk.yml')
+          ws = w.read_text()
+          ws = ws.replace('v2.17.6', 'v2.17.7').replace('v46', 'v47')
+          ws = ws.replace('versionCode 46', 'versionCode 47').replace("versionName '2.17.6'", "versionName '2.17.7'")
+          old_guard = '          grep -q "Show on page" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+          new_guard = ('          ! grep -q "Show on page" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+                       '          grep -q "cleanFootnoteDisplayText" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+                       '          grep -q "footnoteTapSuppressUntilMs" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n'
+                       '          grep -q "Card-only footnotes" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n')
+          if old_guard not in ws:
+              raise SystemExit('standard CI Show on page guard missing')
+          ws = ws.replace(old_guard, new_guard, 1)
+          w.write_text(ws)
+          PY
+
+      - name: Source guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "versionCode 47" app/build.gradle
+          grep -q "versionName '2.17.7'" app/build.gradle
+          grep -q 'cleanFootnoteDisplayText' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'footnoteTapSuppressUntilMs' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'Card-only footnotes' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q 'Show on page' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q 'requestFootnotePreview(targetHref, targetLabel);' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'renderBookSearchResults' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'ReadingProgressStore.set' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q 'showFindDialog' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          git diff --check
+
+      - name: Build lint and smoke v47
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintDebug :app:lintRelease --stacktrace
+          DEBUG=app/build/outputs/apk/debug/app-debug.apk
+          RELEASE=app/build/outputs/apk/release/app-release-unsigned.apk
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$DEBUG"
+          test -s "$RELEASE"
+          test -s "$AAB"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          for APK in "$DEBUG" "$RELEASE"; do
+            "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+            "$AAPT" dump badging "$APK" | grep -q "versionCode='47'"
+            "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.7'"
+            "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+          done
+
+      - name: Commit v47 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/build.gradle .github/workflows/build-apk.yml
+          git commit -m 'Make footnotes card-only and prevent tap page turns'
+          git push origin HEAD:main

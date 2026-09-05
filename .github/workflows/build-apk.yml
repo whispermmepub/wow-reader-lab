@@ -80,6 +80,8 @@ jobs:
           grep -q "cleanFootnoteDisplayText" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "footnoteTapSuppressUntilMs" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "Card-only footnotes" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "SRC_ANCHOR_TYPE" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "SRC_IMAGE_ANCHOR_TYPE" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "looksLikeFootnoteDestination" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "resolveTargetSpine" app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java
           grep -q "Theme_DeviceDefault_NoActionBar_Fullscreen" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java

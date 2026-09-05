@@ -20,20 +20,13 @@ import android.widget.TextView;
 public class SplashActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean opened = false;
-    private boolean minimumSplashElapsed = false;
-    private boolean autoLibraryFinished = false;
 
     private final Runnable openLibrary = () -> {
-        if (opened || isFinishing() || !minimumSplashElapsed || !autoLibraryFinished) return;
+        if (opened || isFinishing()) return;
         opened = true;
         startActivity(new Intent(this, MainActivity.class));
         finish();
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
-    };
-
-    private final Runnable forceOpenLibrary = () -> {
-        autoLibraryFinished = true;
-        openLibrary.run();
     };
 
     @Override
@@ -158,24 +151,12 @@ public class SplashActivity extends Activity {
         glowOne.animate().translationX(-dp(18)).translationY(dp(14)).setDuration(900L).start();
         glowTwo.animate().translationX(dp(14)).translationY(-dp(10)).setDuration(900L).start();
 
-        // Lab v41: make the Telegram-backed Library current before Home opens.
-        // Offline/misconfigured clients quietly fall through. The 30s ceiling
-        // prevents a weak connection from trapping the user on the splash.
-        AutoLibrarySync.sync(this, result -> handler.post(() -> {
-            autoLibraryFinished = true;
-            openLibrary.run();
-        }));
-        handler.postDelayed(() -> {
-            minimumSplashElapsed = true;
-            openLibrary.run();
-        }, 720L);
-        handler.postDelayed(forceOpenLibrary, 30_000L);
+        handler.postDelayed(openLibrary, 720L);
     }
 
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(openLibrary);
-        handler.removeCallbacks(forceOpenLibrary);
         super.onDestroy();
     }
 

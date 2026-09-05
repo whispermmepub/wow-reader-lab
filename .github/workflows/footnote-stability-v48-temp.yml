@@ -1,0 +1,235 @@
+name: Prepare WoW Reader v2.17.8 v48 footnote stability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/footnote-stability-v48-temp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android SDK
+        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+
+      - name: Sync approved v47 production source into Lab
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/whispermmepub/wow-reader-app.git /tmp/wow-prod
+          git -C /tmp/wow-prod checkout --quiet e075cb5e0cdcbd73fd6b4860354cd5f8c4617f17
+          rm -rf app tools
+          cp -a /tmp/wow-prod/app ./app
+          cp -a /tmp/wow-prod/tools ./tools
+          cp /tmp/wow-prod/build.gradle ./build.gradle
+          cp /tmp/wow-prod/settings.gradle ./settings.gradle
+          cp /tmp/wow-prod/gradle.properties ./gradle.properties
+          cp /tmp/wow-prod/.gitignore ./.gitignore
+
+      - name: Patch v48 footnote stability
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          s=p.read_text()
+
+          # Footnote card is an in-activity overlay, not a Dialog window. This prevents
+          # system-bar/viewport changes from reflowing or shifting the reading page.
+          s=s.replace('private Dialog footnotePreviewDialog = null;', 'private FrameLayout footnotePreviewOverlay = null;', 1)
+          s=s.replace('private volatile long lastReaderLinkTapMs = 0L;', 'private volatile long lastReaderLinkTapMs = 0L;\n    private boolean readerTouchStartedOnLink = false;', 1)
+
+          # Replace the entire card renderer with a root overlay bottom card.
+          start=s.index('    private void showFootnotePreview(ReaderSearchIndex.Footnote note, String label) {')
+          end=s.index('    private void navigateToFootnote(ReaderSearchIndex.Footnote note) {', start)
+          new_method=r'''    private void dismissFootnotePreview() {
+        if (footnotePreviewOverlay == null) return;
+        try {
+            ViewGroup parent = (ViewGroup) footnotePreviewOverlay.getParent();
+            if (parent != null) parent.removeView(footnotePreviewOverlay);
+        } catch (Exception ignored) {}
+        footnotePreviewOverlay = null;
+    }
+
+    private void showFootnotePreview(ReaderSearchIndex.Footnote note, String label) {
+        if (isFinishing() || note == null || root == null) return;
+        dismissFootnotePreview();
+
+        final FrameLayout overlay = new FrameLayout(this);
+        footnotePreviewOverlay = overlay;
+        overlay.setClickable(true);
+        overlay.setFocusable(true);
+        overlay.setBackgroundColor(Color.argb(22, 0, 0, 0));
+        overlay.setOnClickListener(v -> dismissFootnotePreview());
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(18), dp(10), dp(18), dp(16));
+        card.setBackground(glassPanel(readerPanelBase(), dp(24), readerPanelStroke()));
+        card.setElevation(dp(16));
+        card.setClickable(true);
+        card.setOnClickListener(v -> { });
+
+        View handle = new View(this);
+        handle.setBackground(glassPanel(readerPanelStroke(), dp(3), Color.TRANSPARENT));
+        LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(38), dp(5));
+        handleLp.gravity = Gravity.CENTER_HORIZONTAL;
+        handleLp.bottomMargin = dp(8);
+        card.addView(handle, handleLp);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        String cleanLabel = label == null ? "" : label.trim();
+        title.setText(cleanLabel.isEmpty() ? "Footnote" : "Footnote " + cleanLabel);
+        title.setTextSize(16f);
+        title.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+        title.setTextColor(readerPanelText());
+        head.addView(title, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        TextView close = new TextView(this);
+        close.setText("×");
+        close.setTextSize(24f);
+        close.setTextColor(readerPanelSubText());
+        close.setGravity(Gravity.CENTER);
+        close.setOnClickListener(v -> dismissFootnotePreview());
+        head.addView(close, new LinearLayout.LayoutParams(dp(42), dp(40)));
+        card.addView(head);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        TextView body = new TextView(this);
+        String text = note.text == null ? "" : note.text.trim();
+        text = text.replaceFirst("(?i)^\\s*Unknown\\s*", "").trim();
+        if (text.length() > 7000) text = text.substring(0, 7000).trim() + "…";
+        if (text.isEmpty()) text = "Footnote text could not be previewed.";
+        body.setText(text);
+        body.setTextSize(15.5f);
+        body.setTextColor(readerPanelText());
+        body.setLineSpacing(dp(3), 1.08f);
+        body.setPadding(dp(2), dp(4), dp(2), dp(8));
+        scroll.addView(body, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        int maxBody = Math.max(dp(100), (int) (getResources().getDisplayMetrics().heightPixels * 0.38f));
+        card.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxBody));
+
+        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
+        cardLp.leftMargin = dp(4);
+        cardLp.rightMargin = dp(4);
+        cardLp.bottomMargin = dp(4);
+        overlay.addView(card, cardLp);
+        root.addView(overlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        overlay.bringToFront();
+    }
+
+'''
+          s=s[:start]+new_method+s[end:]
+
+          # Card-only mode never arms or enters footnote-page navigation. Interception only previews.
+          s=s.replace('                    armFootnoteReturn(targetSourceId);\n                    requestFootnotePreview(targetHref, targetLabel);',
+                      '                    requestFootnotePreview(targetHref, targetLabel);', 1)
+
+          # Synchronous WebView hit-test gate: do not feed link taps to the reader page-turn detector.
+          old='''        readerTouchListener = (v, event) -> {\n            // Legacy v2.4/v2.5 paper-curl gesture is intentionally retired.\n            // None/Slide are the only live page animations.\n            readerTapDetector.onTouchEvent(event);\n            return false;\n        };'''
+          assert old in s
+          new='''        readerTouchListener = (v, event) -> {\n            // Never let a WebView anchor tap also become a reader edge/page tap.\n            boolean anchorHit = false;\n            if (v instanceof WebView) {\n                try {\n                    WebView.HitTestResult hit = ((WebView) v).getHitTestResult();\n                    int type = hit == null ? WebView.HitTestResult.UNKNOWN_TYPE : hit.getType();\n                    anchorHit = type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||\n                            type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE;\n                } catch (Exception ignored) {}\n            }\n            int action = event.getActionMasked();\n            if (action == MotionEvent.ACTION_DOWN) {\n                readerTouchStartedOnLink = anchorHit;\n                if (!anchorHit) readerTapDetector.onTouchEvent(event);\n                return false;\n            }\n            if (action == MotionEvent.ACTION_UP) {\n                boolean linkTap = readerTouchStartedOnLink || anchorHit;\n                readerTouchStartedOnLink = false;\n                if (linkTap) {\n                    lastReaderLinkTapMs = android.os.SystemClock.elapsedRealtime();\n                    return false;\n                }\n                readerTapDetector.onTouchEvent(event);\n                return false;\n            }\n            if (action == MotionEvent.ACTION_CANCEL) {\n                readerTouchStartedOnLink = false;\n            }\n            if (!readerTouchStartedOnLink) readerTapDetector.onTouchEvent(event);\n            return false;\n        };'''
+          s=s.replace(old,new,1)
+
+          # Scroll mode has no edge-tap chapter navigation. A tap only toggles reader chrome.
+          old_scroll='''                } else {\n                    if (ratio < 0.24f) navigateChapter(-1, true);\n                    else if (ratio > 0.76f) navigateChapter(1, false);\n                    else toggleControls();\n                }'''
+          assert old_scroll in s
+          s=s.replace(old_scroll, '''                } else {\n                    toggleControls();\n                }''', 1)
+
+          # Make the delayed fallback less race-prone for page mode if WebView hit testing misses.
+          s=s.replace('        }, 120L);', '        }, 220L);', 1)
+
+          # Back closes only the card before any search/reader navigation.
+          back='''    public void onBackPressed() {\n        if (bookSearchDialog != null && bookSearchDialog.isShowing())'''
+          assert back in s
+          s=s.replace(back, '''    public void onBackPressed() {\n        if (footnotePreviewOverlay != null) { dismissFootnotePreview(); return; }\n        if (bookSearchDialog != null && bookSearchDialog.isShowing())''', 1)
+
+          # Clean overlay on destroy.
+          destroy='''    protected void onDestroy() {\n        cancelChromeAutoHide();'''
+          assert destroy in s
+          s=s.replace(destroy, '''    protected void onDestroy() {\n        dismissFootnotePreview();\n        cancelChromeAutoHide();''', 1)
+
+          p.write_text(s)
+
+          g=Path('app/build.gradle')
+          b=g.read_text().replace('versionCode 47','versionCode 48',1).replace("versionName '2.17.7'","versionName '2.17.8'",1)
+          g.write_text(b)
+          PY
+
+          grep -q "versionCode 48" app/build.gradle
+          grep -q "versionName '2.17.8'" app/build.gradle
+          grep -q 'footnotePreviewOverlay' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'SRC_ANCHOR_TYPE' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'readerTouchStartedOnLink' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'dismissFootnotePreview' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q 'Show on page' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          ! grep -q 'armFootnoteReturn(targetSourceId)' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          git diff --check
+
+      - name: Build and lint v48
+        run: gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintDebug :app:lintRelease --stacktrace
+
+      - name: Smoke checks v48
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEBUG=app/build/outputs/apk/debug/app-debug.apk
+          RELEASE=app/build/outputs/apk/release/app-release-unsigned.apk
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$DEBUG"; test -s "$RELEASE"; test -s "$AAB"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          for APK in "$DEBUG" "$RELEASE"; do
+            "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+            "$AAPT" dump badging "$APK" | grep -q "versionCode='48'"
+            "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.8'"
+            "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+          done
+
+      - name: Commit v48 Lab source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app tools build.gradle settings.gradle gradle.properties .gitignore
+          git commit -m 'Stabilize card-only footnotes in v2.17.8 v48'
+          git push origin HEAD:main
+
+      - name: Collect unsigned Lab artifact
+        shell: bash
+        run: |
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.17.8-v48-release-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.17.8-v48-release-unsigned.aab
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-Lab-v2.17.8-v48
+          path: |
+            WoW-Reader-Lab-v2.17.8-v48-release-unsigned.apk
+            WoW-Reader-Lab-v2.17.8-v48-release-unsigned.aab
+          if-no-files-found: error
+          retention-days: 14

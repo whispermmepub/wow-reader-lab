@@ -1135,7 +1135,7 @@ public class BookReaderActivity extends Activity {
                     "var vp=document.getElementById('wow-page-viewport'),flow=document.getElementById('wow-page-flow');" +
                     "if(!vp){vp=document.createElement('div');vp.id='wow-page-viewport';if(!flow){flow=document.createElement('div');flow.id='wow-page-flow';while(document.body.firstChild)flow.appendChild(document.body.firstChild);}vp.appendChild(flow);document.body.appendChild(vp);}" +
                     "var w=Math.max(1,vp.clientWidth||window.innerWidth),m=Math.max(0,Math.round(w*" + (safeMargin / 100.0) + ")),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);" +
-                    "flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.transform='translate3d('+m+'px,0,0)';" +
+                    "flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.webkitColumnWidth=pw+'px';flow.style.webkitColumnGap=gap+'px';flow.style.transform='translate3d('+m+'px,0,0)';" +
                     "var wraps=flow.querySelectorAll('div,section,article,main,p,blockquote,dd,dt');for(var i=0;i<wraps.length;i++){var n=wraps[i],t=(n.textContent||'').replace(/\\s+/g,' ').trim();if(t.length<120)continue;var r=n.getBoundingClientRect();if(r.width>0&&r.width<pw*.90){n.style.setProperty('width','auto','important');n.style.setProperty('max-width','none','important');n.style.setProperty('margin-left','0','important');n.style.setProperty('margin-right','0','important');}}" +
                     "return true;}catch(e){return false;}})()";
         } else {
@@ -2270,6 +2270,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void loadCurrentEpubChapter() {
+        footnotePreviewRequestToken++;
         if (spine.isEmpty() || webView == null) return;
         if (chapterTransitionCapturePending) {
             chapterTransitionLoadDeferred = true;
@@ -2762,7 +2763,7 @@ public class BookReaderActivity extends Activity {
                     "#wow-page-viewport{position:absolute !important;left:0 !important;top:0 !important;width:100vw !important;height:100vh !important;overflow:hidden !important;clip-path:inset(0) !important;contain:layout paint size !important;}" +
                     "#wow-page-flow{position:absolute !important;left:0 !important;top:0 !important;height:100vh !important;max-width:none !important;" +
                     "margin:0 !important;padding:4.2vh 0 5.2vh 0 !important;box-sizing:border-box !important;overflow:visible !important;" +
-                    "column-fill:auto !important;will-change:transform !important;backface-visibility:hidden !important;transform-origin:0 0 !important;}" +
+                    "-webkit-column-fill:auto !important;column-fill:auto !important;will-change:transform !important;backface-visibility:hidden !important;transform-origin:0 0 !important;}" +
                     "#wow-page-flow p,#wow-page-flow li,#wow-page-flow blockquote,#wow-page-flow dd,#wow-page-flow dt{box-sizing:border-box !important;max-width:100% !important;}" +
                     "#wow-page-flow img,#wow-page-flow svg,#wow-page-flow video,#wow-page-flow table{max-width:100% !important;height:auto !important;}";
 
@@ -2774,7 +2775,7 @@ public class BookReaderActivity extends Activity {
                     "viewport.appendChild(flow);document.body.appendChild(viewport);}else if(!flow){flow=document.createElement('div');flow.id='wow-page-flow';viewport.appendChild(flow);}" +
                     "var st=window.__wowPageEngine||{};window.__wowPageEngine=st;st.mode='page';st.locked=true;st.flow=flow;st.viewport=viewport;st.marginRatio=" + (safeMargin / 100.0) + ";" +
                     "st.clamp=function(v,a,b){return Math.max(a,Math.min(b,v));};" + typographyJs +
-                    "st.layout=function(){var w=Math.max(1,viewport.clientWidth||window.innerWidth),m=Math.max(0,Math.round(w*st.marginRatio)),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);st.step=w;st.marginPx=m;st.pageWidth=pw;st.gapPx=gap;flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';};" +
+                    "st.layout=function(){var w=Math.max(1,viewport.clientWidth||window.innerWidth),m=Math.max(0,Math.round(w*st.marginRatio)),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);st.step=w;st.marginPx=m;st.pageWidth=pw;st.gapPx=gap;flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.webkitColumnWidth=pw+'px';flow.style.webkitColumnGap=gap+'px';};" +
                     "st.physical=function(){if(st.pageMap&&st.pageMap.length)return st.pageMap[st.clamp(st.page||0,0,st.pageMap.length-1)];return st.page||0;};" +
                     "st.apply=function(anim){st.layout();var physical=st.physical(),x=st.marginPx-physical*st.step;flow.style.transition=anim?'transform 155ms cubic-bezier(.2,.75,.25,1)':'none';flow.style.transform='translate3d('+x+'px,0,0)';};" +
                     "st.progress=function(){return (st.count||1)<=1?0:Math.round(((st.page||0)/((st.count||1)-1))*1000);};" +

@@ -98,7 +98,8 @@ public class RegressionInstrumentation extends Instrumentation {
             SystemClock.sleep(1900);
             // Different reference destinations in one long chapter expose chapter-start fallback bugs.
             String id=i%2==0?"ref2":"ref1";
-            js("window.__wowPageEngine.goToFragment('"+id+"')");SystemClock.sleep(300);
+            String jumped=js("window.__wowPageEngine.goToFragment('"+id+"')");SystemClock.sleep(500);
+            report.append(mode+"/"+animation+" jump="+jumped+" engine="+js("JSON.stringify({mode:window.__wowPageEngine.mode,count:window.__wowPageEngine.count,page:window.__wowPageEngine.page,rect:document.getElementById('"+id+"').getBoundingClientRect().left})")+"\n");
             int page=(Integer)ui(() -> field("currentPageInChapter"));
             int percent=prefs.getInt("percent_"+book.getName(),-1);
             String y=js("Math.round(scrollY)");

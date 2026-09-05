@@ -1,0 +1,807 @@
+name: Patch WoW Reader Lab v45 search and footnotes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-reader-search-footnote-v45-temp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Install Android 16 SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+      - name: Apply v45 reader navigation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java <<'JAVA'
+          package com.whisper.wowreader;
+
+          import android.os.Build;
+          import android.text.Html;
+          import android.net.Uri;
+
+          import org.w3c.dom.Document;
+          import org.w3c.dom.Element;
+          import org.w3c.dom.Node;
+          import org.w3c.dom.NodeList;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.File;
+          import java.io.FileInputStream;
+          import java.nio.charset.StandardCharsets;
+          import java.util.ArrayList;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+
+          import javax.xml.parsers.DocumentBuilderFactory;
+
+          final class ReaderSearchIndex {
+              static final class Hit {
+                  final int spineIndex;
+                  final int occurrence;
+                  final String chapter;
+                  final String snippet;
+                  Hit(int spineIndex, int occurrence, String chapter, String snippet) {
+                      this.spineIndex = spineIndex;
+                      this.occurrence = occurrence;
+                      this.chapter = chapter;
+                      this.snippet = snippet;
+                  }
+              }
+
+              static final class Footnote {
+                  final int spineIndex;
+                  final String fragment;
+                  final String text;
+                  Footnote(int spineIndex, String fragment, String text) {
+                      this.spineIndex = spineIndex;
+                      this.fragment = fragment == null ? "" : fragment;
+                      this.text = text == null ? "" : text;
+                  }
+              }
+
+              private ReaderSearchIndex() {}
+
+              static List<Hit> search(List<File> spine, List<String> titles, String query, int limit) {
+                  ArrayList<Hit> out = new ArrayList<>();
+                  if (spine == null || query == null) return out;
+                  String q = clean(query);
+                  if (q.isEmpty()) return out;
+                  String qLower = q.toLowerCase(Locale.ROOT);
+                  int max = Math.max(1, limit);
+                  for (int s = 0; s < spine.size() && out.size() < max; s++) {
+                      String plain = plainText(readUtf8(spine.get(s)));
+                      if (plain.isEmpty()) continue;
+                      String lower = plain.toLowerCase(Locale.ROOT);
+                      int from = 0;
+                      int occurrence = 0;
+                      while (from <= lower.length() - qLower.length() && out.size() < max) {
+                          int at = lower.indexOf(qLower, from);
+                          if (at < 0) break;
+                          int left = Math.max(0, at - 58);
+                          int right = Math.min(plain.length(), at + q.length() + 92);
+                          String snippet = plain.substring(left, right).trim();
+                          if (left > 0) snippet = "…" + snippet;
+                          if (right < plain.length()) snippet += "…";
+                          String chapter = null;
+                          if (titles != null && s < titles.size()) chapter = titles.get(s);
+                          if (chapter == null || chapter.trim().isEmpty() || isGeneric(chapter)) chapter = "Chapter " + (s + 1);
+                          out.add(new Hit(s, occurrence, chapter.trim(), snippet));
+                          occurrence++;
+                          from = at + Math.max(1, qLower.length());
+                      }
+                  }
+                  return out;
+              }
+
+              static Footnote resolveFootnote(List<File> spine, int sourceSpine, String href, String sourceId) {
+                  if (spine == null || spine.isEmpty() || sourceSpine < 0 || sourceSpine >= spine.size())
+                      return new Footnote(sourceSpine, "", "");
+                  String raw = href == null ? "" : href.trim();
+                  int hash = raw.indexOf('#');
+                  String filePart = hash >= 0 ? raw.substring(0, hash) : raw;
+                  String fragment = hash >= 0 && hash + 1 < raw.length() ? Uri.decode(raw.substring(hash + 1)) : "";
+                  int targetSpine = sourceSpine;
+                  try {
+                      if (!filePart.isEmpty()) {
+                          String decoded = Uri.decode(filePart);
+                          File source = spine.get(sourceSpine);
+                          File target;
+                          if (decoded.startsWith("file://")) target = new File(Uri.parse(decoded).getPath());
+                          else target = new File(source.getParentFile(), decoded);
+                          String wanted = target.getCanonicalPath();
+                          for (int i = 0; i < spine.size(); i++) {
+                              if (wanted.equals(spine.get(i).getCanonicalPath())) { targetSpine = i; break; }
+                          }
+                      }
+                  } catch (Exception ignored) {}
+
+                  String html = readUtf8(spine.get(Math.max(0, Math.min(spine.size() - 1, targetSpine))));
+                  String note = extractByFragment(html, fragment, sourceId);
+                  return new Footnote(targetSpine, fragment, note);
+              }
+
+              private static String extractByFragment(String html, String fragment, String sourceId) {
+                  if (html == null || html.isEmpty() || fragment == null || fragment.isEmpty()) return "";
+                  try {
+                      DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
+                      f.setNamespaceAware(false);
+                      f.setExpandEntityReferences(false);
+                      try { f.setFeature("http://xml.org/sax/features/external-general-entities", false); } catch (Exception ignored) {}
+                      try { f.setFeature("http://xml.org/sax/features/external-parameter-entities", false); } catch (Exception ignored) {}
+                      try { f.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false); } catch (Exception ignored) {}
+                      Document d = f.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(html.getBytes(StandardCharsets.UTF_8)));
+                      Element target = findElement(d.getDocumentElement(), fragment);
+                      if (target != null) {
+                          Element container = chooseContainer(target);
+                          String text = collectText(container, sourceId);
+                          if (!text.isEmpty()) return text;
+                      }
+                  } catch (Exception ignored) {}
+
+                  try {
+                      Pattern p = Pattern.compile("(?is)(id|name)\\s*=\\s*(['\"])" + Pattern.quote(fragment) + "\\2");
+                      Matcher m = p.matcher(html);
+                      if (!m.find()) return "";
+                      int pos = m.start();
+                      int start = pos;
+                      String low = html.toLowerCase(Locale.ROOT);
+                      String[] starts = {"<aside", "<li", "<p", "<div", "<dd", "<section"};
+                      for (String tag : starts) {
+                          int x = low.lastIndexOf(tag, pos);
+                          if (x >= 0 && pos - x < 1800) start = Math.min(start, x);
+                      }
+                      int end = Math.min(html.length(), pos + 5000);
+                      String[] ends = {"</aside>", "</li>", "</p>", "</dd>", "</section>", "</div>"};
+                      for (String tag : ends) {
+                          int x = low.indexOf(tag, pos);
+                          if (x >= 0) end = Math.min(end, x + tag.length());
+                      }
+                      return plainText(html.substring(Math.max(0, start), Math.max(start, end)));
+                  } catch (Exception ignored) {
+                      return "";
+                  }
+              }
+
+              private static Element findElement(Element root, String id) {
+                  if (root == null) return null;
+                  if (id.equals(root.getAttribute("id")) || id.equals(root.getAttribute("name"))) return root;
+                  NodeList children = root.getChildNodes();
+                  for (int i = 0; i < children.getLength(); i++) {
+                      Node n = children.item(i);
+                      if (n instanceof Element) {
+                          Element found = findElement((Element) n, id);
+                          if (found != null) return found;
+                      }
+                  }
+                  return null;
+              }
+
+              private static Element chooseContainer(Element target) {
+                  Element current = target;
+                  for (int i = 0; i < 4; i++) {
+                      String tag = current.getTagName() == null ? "" : current.getTagName().toLowerCase(Locale.ROOT);
+                      if (tag.equals("aside") || tag.equals("li") || tag.equals("p") || tag.equals("dd") ||
+                              tag.equals("section") || tag.equals("td") || tag.equals("div")) return current;
+                      Node p = current.getParentNode();
+                      if (!(p instanceof Element)) break;
+                      current = (Element) p;
+                  }
+                  return current;
+              }
+
+              private static String collectText(Element root, String sourceId) {
+                  StringBuilder b = new StringBuilder();
+                  collect(root, sourceId == null ? "" : sourceId, b);
+                  return clean(b.toString());
+              }
+
+              private static void collect(Node node, String sourceId, StringBuilder out) {
+                  if (node == null) return;
+                  if (node.getNodeType() == Node.TEXT_NODE) {
+                      out.append(node.getNodeValue()).append(' ');
+                      return;
+                  }
+                  if (node instanceof Element) {
+                      Element e = (Element) node;
+                      String tag = e.getTagName() == null ? "" : e.getTagName().toLowerCase(Locale.ROOT);
+                      if (tag.equals("script") || tag.equals("style")) return;
+                      if (tag.equals("a")) {
+                          String meta = (e.getAttribute("role") + " " + e.getAttribute("rel") + " " + e.getAttribute("epub:type")).toLowerCase(Locale.ROOT);
+                          String h = e.getAttribute("href");
+                          if (meta.contains("backlink") || (!sourceId.isEmpty() && h != null && h.endsWith("#" + sourceId))) return;
+                      }
+                  }
+                  NodeList children = node.getChildNodes();
+                  for (int i = 0; i < children.getLength(); i++) collect(children.item(i), sourceId, out);
+              }
+
+              private static String readUtf8(File f) {
+                  if (f == null || !f.isFile()) return "";
+                  try (FileInputStream in = new FileInputStream(f); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                      byte[] buf = new byte[32768];
+                      int n;
+                      while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                      return out.toString("UTF-8");
+                  } catch (Exception ignored) { return ""; }
+              }
+
+              private static String plainText(String html) {
+                  if (html == null || html.isEmpty()) return "";
+                  try {
+                      CharSequence s = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                              ? Html.fromHtml(html, Html.FROM_HTML_MODE_LEGACY)
+                              : Html.fromHtml(html);
+                      return clean(s == null ? "" : s.toString());
+                  } catch (Exception ignored) {
+                      return clean(html.replaceAll("(?is)<script.*?</script>|<style.*?</style>", " ").replaceAll("(?s)<[^>]+>", " "));
+                  }
+              }
+
+              private static String clean(String s) {
+                  return s == null ? "" : s.replace('\u00a0', ' ').replaceAll("\\s+", " ").trim();
+              }
+
+              private static boolean isGeneric(String value) {
+                  String low = clean(value).toLowerCase(Locale.ROOT).replace('_', ' ').replace('-', ' ');
+                  return low.isEmpty() || low.equals("unknown") || low.equals("untitled") || low.equals("null") ||
+                          low.matches("^(chapter|section|part|page|text|content|item|file)$");
+              }
+          }
+          JAVA
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
+          g=Path('app/build.gradle')
+          w=Path('.github/workflows/build-apk.yml')
+          s=p.read_text(); grad=g.read_text(); wf=w.read_text()
+
+          def once(text, old, new, label):
+              c=text.count(old)
+              if c != 1: raise SystemExit(f'{label}: expected 1 match, got {c}')
+              return text.replace(old,new,1)
+          def between(text,start,end,new,label):
+              a=text.find(start)
+              if a<0: raise SystemExit(f'{label}: start not found')
+              b=text.find(end,a)
+              if b<0: raise SystemExit(f'{label}: end not found')
+              return text[:a]+new+text[b:]
+
+          grad=once(grad,'versionCode 44','versionCode 45','versionCode')
+          grad=once(grad,"versionName '2.17.4'","versionName '2.17.5'",'versionName')
+
+          field_marker='''    private String footnotePreviewLabel = "";\n'''
+          field_new='''    private String footnotePreviewLabel = "";\n    private ReaderSearchIndex.Footnote footnotePreviewNote = null;\n    private boolean footnoteReturnPending = false;\n\n    // Search is transient reader navigation until the user explicitly closes it.\n    private Dialog bookSearchDialog = null;\n    private final List<ReaderSearchIndex.Hit> bookSearchResults = new ArrayList<>();\n    private String bookSearchQuery = "";\n    private int bookSearchGeneration = 0;\n    private boolean searchNavigationActive = false;\n    private int searchCurrentIndex = -1;\n    private int searchReturnSpine = -1;\n    private int searchReturnProgressPermille = 0;\n    private int searchReturnPage = 1;\n    private String pendingSearchQuery = "";\n    private int pendingSearchOccurrence = -1;\n    private LinearLayout searchNavigationBar = null;\n    private TextView searchNavigationLabel = null;\n'''
+          s=once(s,field_marker,field_new,'reader navigation fields')
+
+          old_ref='''        return frag.startsWith("fn") || frag.startsWith("ftn") || frag.contains("footnote") ||\n                frag.startsWith("note-") || frag.startsWith("note_") || frag.startsWith("endnote");'''
+          new_ref='''        frag = Uri.decode(frag).toLowerCase(Locale.ROOT);\n        return frag.startsWith("fn") || frag.startsWith("_fn") || frag.startsWith("ftn") || frag.startsWith("_ftn") ||\n                frag.contains("footnote") || frag.contains("noteref") || frag.startsWith("note") ||\n                frag.startsWith("endnote") || frag.startsWith("_edn");'''
+          s=once(s,old_ref,new_ref,'expanded footnote ids')
+
+          foot_block='''    private void requestFootnotePreview(String href, String label) {
+              if (webView == null || href == null || href.trim().isEmpty() || spine.isEmpty()) return;
+              footnotePreviewHref = href.trim();
+              footnotePreviewLabel = label == null ? "" : label.trim();
+              final int sourceSpine = currentSpine;
+              final String sourceId = footnoteReturnSourceId;
+              new Thread(() -> {
+                  ReaderSearchIndex.Footnote note = ReaderSearchIndex.resolveFootnote(spine, sourceSpine, footnotePreviewHref, sourceId);
+                  runOnUiThread(() -> {
+                      if (isFinishing()) return;
+                      footnotePreviewNote = note;
+                      showFootnotePreview(note, footnotePreviewLabel);
+                  });
+              }, "wow-footnote-preview").start();
+          }
+
+          private void showFootnotePreview(ReaderSearchIndex.Footnote note, String label) {
+              if (isFinishing() || note == null) return;
+              if (footnotePreviewDialog != null) {
+                  try { footnotePreviewDialog.dismiss(); } catch (Exception ignored) {}
+                  footnotePreviewDialog = null;
+              }
+              final Dialog dialog = new Dialog(this);
+              footnotePreviewDialog = dialog;
+              dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+              dialog.setCanceledOnTouchOutside(true);
+
+              LinearLayout card = new LinearLayout(this);
+              card.setOrientation(LinearLayout.VERTICAL);
+              card.setPadding(dp(18), dp(10), dp(18), dp(14));
+              card.setBackground(glassPanel(readerPanelBase(), dp(24), readerPanelStroke()));
+              card.setElevation(dp(16));
+
+              View handle = new View(this);
+              handle.setBackground(glassPanel(readerPanelStroke(), dp(3), Color.TRANSPARENT));
+              LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(38), dp(5));
+              handleLp.gravity = Gravity.CENTER_HORIZONTAL;
+              handleLp.bottomMargin = dp(8);
+              card.addView(handle, handleLp);
+
+              LinearLayout head = new LinearLayout(this);
+              head.setOrientation(LinearLayout.HORIZONTAL);
+              head.setGravity(Gravity.CENTER_VERTICAL);
+              TextView title = new TextView(this);
+              String cleanLabel = label == null ? "" : label.trim();
+              title.setText(cleanLabel.isEmpty() ? "Footnote" : "Footnote " + cleanLabel);
+              title.setTextSize(16f);
+              title.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+              title.setTextColor(readerPanelText());
+              head.addView(title, new LinearLayout.LayoutParams(0, dp(40), 1f));
+              TextView close = new TextView(this);
+              close.setText("×"); close.setTextSize(24f); close.setTextColor(readerPanelSubText()); close.setGravity(Gravity.CENTER);
+              close.setOnClickListener(v -> dialog.dismiss());
+              head.addView(close, new LinearLayout.LayoutParams(dp(42), dp(40)));
+              card.addView(head);
+
+              ScrollView scroll = new ScrollView(this);
+              scroll.setVerticalScrollBarEnabled(false);
+              TextView body = new TextView(this);
+              String text = note.text == null ? "" : note.text.trim();
+              if (text.length() > 7000) text = text.substring(0, 7000).trim() + "…";
+              if (text.isEmpty()) text = "Footnote text could not be previewed. You can still open it on the page.";
+              body.setText(text);
+              body.setTextSize(15.5f);
+              body.setTextColor(readerPanelText());
+              body.setLineSpacing(dp(3), 1.08f);
+              body.setPadding(dp(2), dp(4), dp(2), dp(8));
+              scroll.addView(body, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+              int maxBody = Math.max(dp(100), (int) (getResources().getDisplayMetrics().heightPixels * 0.34f));
+              card.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxBody));
+
+              TextView show = new TextView(this);
+              show.setText("Show on page");
+              show.setTextSize(14.5f);
+              show.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+              show.setTextColor(readerAccent());
+              show.setGravity(Gravity.CENTER);
+              show.setBackground(glassPanel(readerSelectedSurface(), dp(20), readerPanelStroke()));
+              show.setOnClickListener(v -> { dialog.dismiss(); navigateToFootnote(note); });
+              LinearLayout.LayoutParams showLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+              showLp.topMargin = dp(8);
+              card.addView(show, showLp);
+
+              dialog.setContentView(card);
+              dialog.setOnDismissListener(d -> { if (footnotePreviewDialog == dialog) footnotePreviewDialog = null; });
+              dialog.show();
+              Window win = dialog.getWindow();
+              if (win != null) {
+                  win.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                  win.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+                  win.setDimAmount(0.10f);
+                  WindowManager.LayoutParams lp = win.getAttributes();
+                  lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                  lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                  lp.gravity = Gravity.BOTTOM;
+                  win.setAttributes(lp);
+              }
+          }
+
+          private void navigateToFootnote(ReaderSearchIndex.Footnote note) {
+              if (webView == null || note == null || spine.isEmpty()) return;
+              footnoteNavigationActive = true;
+              footnoteReturnPending = false;
+              footnoteReturnArmed = false;
+              footnoteArmToken++;
+              int target = Math.max(0, Math.min(spine.size() - 1, note.spineIndex));
+              pendingTocFragment = note.fragment == null ? "" : note.fragment;
+              if (target == currentSpine) {
+                  jumpToPendingTocFragment(() -> updateBookmarkIcon());
+                  return;
+              }
+              currentSpine = target;
+              currentProgressPermille = 0;
+              loadCurrentEpubChapter();
+          }
+
+'''
+          s=between(s,'    private void requestFootnotePreview(','    private static String navLower',foot_block,'footnote preview methods')
+
+          old_bridge='''            if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) { armFootnoteReturn(sourceId); requestFootnotePreview(href, label); return true; }\n            if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) { restoreFootnoteReturn(); return true; }\n            return false;'''
+          new_bridge='''            if (footnoteNavigationActive && looksLikeFootnoteBacklink(href, epubType, role, rel, cssClass)) { restoreFootnoteReturn(); return true; }\n            if (looksLikeFootnoteReference(href, epubType, role, rel, cssClass)) { armFootnoteReturn(sourceId); requestFootnotePreview(href, label); return true; }\n            return false;'''
+          s=once(s,old_bridge,new_bridge,'footnote bridge order')
+
+          restore_block='''    private void restoreFootnoteReturn() {
+              runOnUiThread(() -> {
+                  if ((!footnoteNavigationActive && !footnoteReturnArmed) || webView == null || spine.isEmpty()) return;
+                  int targetSpine = Math.max(0, Math.min(spine.size() - 1, footnoteReturnSpine));
+                  int targetProgress = Math.max(0, Math.min(1000, footnoteReturnProgressPermille));
+                  int targetPage = Math.max(1, footnoteReturnPage);
+                  footnoteNavigationActive = false;
+                  footnoteReturnArmed = false;
+                  footnoteReturnPending = true;
+                  footnoteArmToken++;
+                  currentSpine = targetSpine;
+                  currentProgressPermille = targetProgress;
+
+                  String expected = Uri.fromFile(spine.get(targetSpine)).toString();
+                  String actual = webView.getUrl();
+                  if (actual != null) { int hash = actual.indexOf('#'); if (hash >= 0) actual = actual.substring(0, hash); }
+                  boolean sameDocument = expected.equals(actual);
+                  if (!sameDocument) {
+                      pendingTocFragment = footnoteReturnSourceId == null ? "" : footnoteReturnSourceId;
+                      loadCurrentEpubChapter();
+                      return;
+                  }
+                  finishFootnoteReturnOnReady(targetPage, targetProgress);
+              });
+          }
+
+          private void finishFootnoteReturnOnReady(int targetPage, int targetProgress) {
+              if (webView == null) { footnoteReturnPending = false; return; }
+              if ("page".equals(readingMode)) {
+                  int pageZero = Math.max(0, targetPage - 1);
+                  String jump = "(function(){var st=window.__wowPageEngine;if(!st||st.mode!=='page')return false;" +
+                          "st.page=st.clamp(" + pageZero + ",0,(st.count||1)-1);st.apply(false);st.report();return true;})()";
+                  try { webView.evaluateJavascript(jump, null); } catch (Exception ignored) {}
+              } else {
+                  String jump = "(function(){var h=Math.max(0,document.documentElement.scrollHeight-window.innerHeight);" +
+                          "window.scrollTo(0,h*" + (targetProgress / 1000.0) + ");return true;})()";
+                  try { webView.evaluateJavascript(jump, null); } catch (Exception ignored) {}
+              }
+              currentProgressPermille = targetProgress;
+              footnoteReturnPending = false;
+              updateEpubProgress(targetProgress);
+              saveEpubStateOnly();
+          }
+
+'''
+          s=between(s,'    private void restoreFootnoteReturn() {','    private ReaderWebView createPreloadWebView()',restore_block,'footnote return')
+
+          s=once(s,'if (!footnoteNavigationActive) ReadingProgressStore.set(prefs, bookFile.getName(), percent);',
+                 'if (!footnoteNavigationActive && !footnoteReturnPending && !searchNavigationActive) ReadingProgressStore.set(prefs, bookFile.getName(), percent);','progress transient guard')
+          s=once(s,'if (footnoteNavigationActive) return;\n        prefs.edit()',
+                 'if (footnoteNavigationActive || footnoteReturnPending || searchNavigationActive) return;\n        prefs.edit()','state transient guard')
+
+          old_ready='''        jumpToPendingTocFragment(() -> {\n            if (paperGestureChapterBoundary && paperGestureReleased && paperGestureCommit) {'''
+          new_ready='''        jumpToPendingTocFragment(() -> {\n            if (footnoteReturnPending) finishFootnoteReturnOnReady(footnoteReturnPage, footnoteReturnProgressPermille);\n            if (searchNavigationActive && pendingSearchOccurrence >= 0) applyPendingSearchHit();\n            if (paperGestureChapterBoundary && paperGestureReleased && paperGestureCommit) {'''
+          s=once(s,old_ready,new_ready,'page ready transient navigation')
+
+          search_block='''    private void searchInBook() {
+              if (isPdf || webView == null || spine.isEmpty()) return;
+              if (!searchNavigationActive) {
+                  searchReturnSpine = currentSpine;
+                  searchReturnProgressPermille = currentProgressPermille;
+                  searchReturnPage = currentPageInChapter;
+              }
+              showBookSearch(bookSearchQuery, !bookSearchResults.isEmpty());
+          }
+
+          private void showBookSearch(String initialQuery, boolean useCachedResults) {
+              if (isFinishing()) return;
+              if (bookSearchDialog != null) {
+                  try { bookSearchDialog.dismiss(); } catch (Exception ignored) {}
+                  bookSearchDialog = null;
+              }
+              hideSearchNavigationBar();
+              final Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+              bookSearchDialog = dialog;
+              dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+              dialog.setCanceledOnTouchOutside(false);
+
+              int bg = Color.rgb(22, 23, 26);
+              int surface = Color.rgb(35, 36, 40);
+              int text = Color.rgb(244, 245, 247);
+              int sub = Color.rgb(178, 181, 189);
+              int accent = Color.rgb(128, 203, 196);
+
+              LinearLayout page = new LinearLayout(this);
+              page.setOrientation(LinearLayout.VERTICAL);
+              page.setBackgroundColor(bg);
+              page.setPadding(dp(10), dp(12), dp(10), dp(10));
+
+              LinearLayout header = new LinearLayout(this);
+              header.setOrientation(LinearLayout.HORIZONTAL);
+              header.setGravity(Gravity.CENTER_VERTICAL);
+              header.setBackground(glassPanel(surface, dp(22), Color.rgb(55, 57, 64)));
+              TextView back = new TextView(this);
+              back.setText("‹"); back.setTextSize(32); back.setTextColor(text); back.setGravity(Gravity.CENTER);
+              back.setOnClickListener(v -> { dialog.dismiss(); restorePreSearchLocation(); });
+              header.addView(back, new LinearLayout.LayoutParams(dp(50), dp(54)));
+
+              EditText input = new EditText(this);
+              input.setSingleLine(true);
+              input.setHint("Search in book");
+              input.setHintTextColor(sub);
+              input.setTextColor(text);
+              input.setTextSize(17);
+              input.setBackgroundColor(Color.TRANSPARENT);
+              input.setPadding(dp(4), 0, dp(4), 0);
+              input.setText(initialQuery == null ? "" : initialQuery);
+              input.setSelection(input.length());
+              header.addView(input, new LinearLayout.LayoutParams(0, dp(54), 1f));
+
+              TextView clear = new TextView(this);
+              clear.setText("×"); clear.setTextSize(24); clear.setTextColor(sub); clear.setGravity(Gravity.CENTER);
+              clear.setOnClickListener(v -> input.setText(""));
+              header.addView(clear, new LinearLayout.LayoutParams(dp(50), dp(54)));
+              page.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+
+              TextView status = new TextView(this);
+              status.setTextSize(12.5f); status.setTextColor(sub); status.setPadding(dp(12), dp(12), dp(12), dp(8));
+              page.addView(status, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
+
+              ScrollView scroll = new ScrollView(this);
+              scroll.setFillViewport(true);
+              scroll.setVerticalScrollBarEnabled(false);
+              LinearLayout results = new LinearLayout(this);
+              results.setOrientation(LinearLayout.VERTICAL);
+              results.setPadding(dp(4), 0, dp(4), dp(20));
+              scroll.addView(results, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+              page.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+              dialog.setContentView(page);
+              dialog.setOnDismissListener(d -> { if (bookSearchDialog == dialog) bookSearchDialog = null; });
+              dialog.show();
+              Window win = dialog.getWindow();
+              if (win != null) {
+                  win.setStatusBarColor(bg); win.setNavigationBarColor(bg);
+                  win.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+              }
+
+              final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+              final Runnable[] pending = new Runnable[1];
+              final int[] localGeneration = {0};
+              input.addTextChangedListener(new android.text.TextWatcher() {
+                  @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                  @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
+                      if (pending[0] != null) handler.removeCallbacks(pending[0]);
+                      String q = value == null ? "" : value.toString().trim();
+                      bookSearchQuery = q;
+                      if (q.isEmpty()) {
+                          bookSearchResults.clear(); results.removeAllViews(); status.setText("Type a word or phrase"); return;
+                      }
+                      int token = ++localGeneration[0];
+                      pending[0] = () -> performBookSearch(q, token, localGeneration, results, status, accent, text, sub, surface, dialog);
+                      handler.postDelayed(pending[0], 260L);
+                  }
+                  @Override public void afterTextChanged(android.text.Editable e) {}
+              });
+
+              if (useCachedResults && initialQuery != null && !initialQuery.trim().isEmpty() && !bookSearchResults.isEmpty()) {
+                  renderBookSearchResults(results, status, accent, text, sub, surface, dialog);
+              } else if (initialQuery != null && !initialQuery.trim().isEmpty()) {
+                  int token = ++localGeneration[0];
+                  performBookSearch(initialQuery.trim(), token, localGeneration, results, status, accent, text, sub, surface, dialog);
+              } else status.setText("Type a word or phrase");
+
+              input.requestFocus();
+              input.postDelayed(() -> {
+                  try {
+                      android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager) getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
+                      if (imm != null) imm.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+                  } catch (Exception ignored) {}
+              }, 160L);
+          }
+
+          private void performBookSearch(String q, int token, int[] localGeneration, LinearLayout results, TextView status,
+                                         int accent, int text, int sub, int surface, Dialog dialog) {
+              status.setText("Searching the whole book…");
+              results.removeAllViews();
+              new Thread(() -> {
+                  List<ReaderSearchIndex.Hit> found = ReaderSearchIndex.search(spine, chapterTitles, q, 350);
+                  runOnUiThread(() -> {
+                      if (dialog != bookSearchDialog || !dialog.isShowing() || token != localGeneration[0]) return;
+                      bookSearchQuery = q;
+                      bookSearchResults.clear(); bookSearchResults.addAll(found);
+                      renderBookSearchResults(results, status, accent, text, sub, surface, dialog);
+                  });
+              }, "wow-book-search").start();
+          }
+
+          private void renderBookSearchResults(LinearLayout results, TextView status, int accent, int text, int sub, int surface, Dialog dialog) {
+              results.removeAllViews();
+              int count = bookSearchResults.size();
+              status.setText(count == 0 ? "No matches" : count + (count == 1 ? " result" : " results") + " in this book");
+              for (int i = 0; i < count; i++) {
+                  ReaderSearchIndex.Hit hit = bookSearchResults.get(i);
+                  LinearLayout row = new LinearLayout(this);
+                  row.setOrientation(LinearLayout.VERTICAL);
+                  row.setPadding(dp(14), dp(13), dp(14), dp(13));
+                  row.setBackground(glassPanel(surface, dp(15), Color.rgb(52, 54, 60)));
+
+                  TextView snippet = new TextView(this);
+                  snippet.setTextSize(16f); snippet.setTextColor(text); snippet.setLineSpacing(dp(2), 1.05f);
+                  snippet.setText(highlightSearchText(hit.snippet, bookSearchQuery, accent));
+                  row.addView(snippet, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                  TextView where = new TextView(this);
+                  where.setText("⌕  " + hit.chapter);
+                  where.setTextSize(12.5f); where.setTextColor(sub); where.setPadding(0, dp(7), 0, 0);
+                  row.addView(where, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  final int index = i;
+                  row.setOnClickListener(v -> { dialog.dismiss(); navigateToSearchHit(index); });
+                  LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  rowLp.bottomMargin = dp(8);
+                  results.addView(row, rowLp);
+              }
+          }
+
+          private CharSequence highlightSearchText(String source, String query, int accent) {
+              String value = source == null ? "" : source;
+              android.text.SpannableString span = new android.text.SpannableString(value);
+              if (query == null || query.trim().isEmpty()) return span;
+              String low = value.toLowerCase(Locale.ROOT), q = query.trim().toLowerCase(Locale.ROOT);
+              int from = 0;
+              while (from <= low.length() - q.length()) {
+                  int at = low.indexOf(q, from); if (at < 0) break;
+                  span.setSpan(new android.text.style.BackgroundColorSpan(Color.argb(105, Color.red(accent), Color.green(accent), Color.blue(accent))), at, at + q.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  from = at + Math.max(1, q.length());
+              }
+              return span;
+          }
+
+          private void navigateToSearchHit(int index) {
+              if (index < 0 || index >= bookSearchResults.size() || spine.isEmpty()) return;
+              searchNavigationActive = true;
+              searchCurrentIndex = index;
+              ReaderSearchIndex.Hit hit = bookSearchResults.get(index);
+              pendingSearchQuery = bookSearchQuery;
+              pendingSearchOccurrence = hit.occurrence;
+              hideControls();
+              int target = Math.max(0, Math.min(spine.size() - 1, hit.spineIndex));
+              if (target != currentSpine) {
+                  currentSpine = target;
+                  currentProgressPermille = 0;
+                  loadCurrentEpubChapter();
+              } else applyPendingSearchHit();
+              showSearchNavigationBar();
+          }
+
+          private void applyPendingSearchHit() {
+              if (!searchNavigationActive || webView == null || pendingSearchOccurrence < 0 || pendingSearchQuery == null || pendingSearchQuery.isEmpty()) return;
+              final String query = pendingSearchQuery;
+              final int wanted = pendingSearchOccurrence;
+              pendingSearchOccurrence = -1;
+              String script = "(function(){try{" +
+                      "var root=document.getElementById('wow-page-flow')||document.body;if(!root)return 'no-root';" +
+                      "var old=root.querySelectorAll('span.wow-search-hit');for(var z=0;z<old.length;z++){var o=old[z],p=o.parentNode;while(o.firstChild)p.insertBefore(o.firstChild,o);p.removeChild(o);}" +
+                      "var q=" + jsQuote(query.toLowerCase(Locale.ROOT)) + ",target=" + wanted + ",seen=0,w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null,false),n;" +
+                      "var pick=function(n,at){var r=document.createRange();r.setStart(n,at);r.setEnd(n,at+q.length);var sp=document.createElement('span');sp.className='wow-search-hit';sp.style.background='rgba(128,203,196,.50)';sp.style.borderRadius='3px';r.surroundContents(sp);" +
+                      "var st=window.__wowPageEngine;if(st&&st.mode==='page'){var cp=st.physical?st.physical():(st.page||0),bb=sp.getBoundingClientRect(),docX=(bb.left-(st.marginPx||0))+(cp*(st.step||window.innerWidth||1)),phys=Math.max(0,Math.floor((docX+2)/(st.step||window.innerWidth||1)));st.page=st.nearestLogical?st.nearestLogical(phys):phys;st.apply(false);st.report();}else sp.scrollIntoView({block:'center'});return true;};" +
+                      "while((n=w.nextNode())){var raw=n.nodeValue||'',low=raw.toLocaleLowerCase(),from=0,at;while((at=low.indexOf(q,from))>=0){if(seen===target)return pick(n,at)?'ok':'fail';seen++;from=at+Math.max(1,q.length);}}" +
+                      "return 'missing';}catch(e){return 'error';}})()";
+              try { webView.evaluateJavascript(script, null); } catch (Exception ignored) {}
+              updateSearchNavigationLabel();
+          }
+
+          private void showSearchNavigationBar() {
+              if (root == null) return;
+              if (searchNavigationBar == null) {
+                  LinearLayout bar = new LinearLayout(this);
+                  searchNavigationBar = bar;
+                  bar.setOrientation(LinearLayout.HORIZONTAL);
+                  bar.setGravity(Gravity.CENTER_VERTICAL);
+                  bar.setPadding(dp(6), dp(4), dp(6), dp(4));
+                  bar.setBackground(glassPanel(Color.rgb(28, 29, 32), dp(20), Color.rgb(70, 72, 78)));
+                  bar.setElevation(dp(18));
+                  TextView close = new TextView(this); close.setText("×"); close.setTextSize(25); close.setTextColor(Color.WHITE); close.setGravity(Gravity.CENTER);
+                  close.setOnClickListener(v -> closeSearchNavigation(false));
+                  bar.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                  searchNavigationLabel = new TextView(this); searchNavigationLabel.setTextSize(13.5f); searchNavigationLabel.setTextColor(Color.WHITE); searchNavigationLabel.setMaxLines(2); searchNavigationLabel.setGravity(Gravity.CENTER_VERTICAL);
+                  bar.addView(searchNavigationLabel, new LinearLayout.LayoutParams(0, dp(48), 1f));
+                  TextView prev = new TextView(this); prev.setText("‹"); prev.setTextSize(28); prev.setTextColor(Color.WHITE); prev.setGravity(Gravity.CENTER); prev.setOnClickListener(v -> { if (!bookSearchResults.isEmpty()) navigateToSearchHit((searchCurrentIndex - 1 + bookSearchResults.size()) % bookSearchResults.size()); });
+                  TextView next = new TextView(this); next.setText("›"); next.setTextSize(28); next.setTextColor(Color.WHITE); next.setGravity(Gravity.CENTER); next.setOnClickListener(v -> { if (!bookSearchResults.isEmpty()) navigateToSearchHit((searchCurrentIndex + 1) % bookSearchResults.size()); });
+                  bar.addView(prev, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                  bar.addView(next, new LinearLayout.LayoutParams(dp(48), dp(48)));
+                  FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(58), Gravity.BOTTOM);
+                  lp.leftMargin = dp(12); lp.rightMargin = dp(12); lp.bottomMargin = dp(18);
+                  root.addView(bar, lp);
+              }
+              searchNavigationBar.setVisibility(View.VISIBLE);
+              searchNavigationBar.bringToFront();
+              updateSearchNavigationLabel();
+          }
+
+          private void updateSearchNavigationLabel() {
+              if (searchNavigationLabel == null) return;
+              int count = bookSearchResults.size();
+              String where = currentSpine >= 0 && currentSpine < spine.size() ? chapterDisplayTitle(currentSpine) : "";
+              searchNavigationLabel.setText(bookSearchQuery + "\n" + (searchCurrentIndex + 1) + " of " + Math.max(1, count) + (where.isEmpty() ? "" : " · " + where));
+          }
+
+          private void hideSearchNavigationBar() {
+              if (searchNavigationBar != null) searchNavigationBar.setVisibility(View.GONE);
+          }
+
+          private void closeSearchNavigation(boolean restoreOriginal) {
+              hideSearchNavigationBar();
+              searchNavigationActive = false;
+              pendingSearchOccurrence = -1;
+              clearSearchHighlight();
+              if (restoreOriginal) restorePreSearchLocation();
+              else {
+                  updateEpubProgress(currentProgressPermille);
+                  saveEpubStateOnly();
+                  showControls();
+              }
+          }
+
+          private void clearSearchHighlight() {
+              if (webView == null) return;
+              try { webView.evaluateJavascript("(function(){var a=document.querySelectorAll('span.wow-search-hit');for(var i=0;i<a.length;i++){var s=a[i],p=s.parentNode;while(s.firstChild)p.insertBefore(s.firstChild,s);p.removeChild(s);}return true;})()", null); } catch (Exception ignored) {}
+          }
+
+          private void restorePreSearchLocation() {
+              hideSearchNavigationBar();
+              searchNavigationActive = false;
+              pendingSearchOccurrence = -1;
+              clearSearchHighlight();
+              if (searchReturnSpine < 0 || spine.isEmpty()) { showControls(); return; }
+              int target = Math.max(0, Math.min(spine.size() - 1, searchReturnSpine));
+              currentProgressPermille = searchReturnProgressPermille;
+              if (target != currentSpine) {
+                  currentSpine = target;
+                  loadCurrentEpubChapter();
+              } else if ("page".equals(readingMode)) {
+                  int pageZero = Math.max(0, searchReturnPage - 1);
+                  try { webView.evaluateJavascript("(function(){var st=window.__wowPageEngine;if(!st)return;st.page=st.clamp(" + pageZero + ",0,(st.count||1)-1);st.apply(false);st.report();})()", null); } catch (Exception ignored) {}
+              }
+              showControls();
+          }
+
+'''
+          s=between(s,'    private void searchInBook() {','    private void toggleBookmark()',search_block,'book search')
+
+          old_back='''    @Override\n    public void onBackPressed() {\n        if (!isPdf && footnoteNavigationActive) { restoreFootnoteReturn(); return; }\n        if (!isPdf) saveEpubState();\n        finish();\n        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);\n    }'''
+          new_back='''    @Override\n    public void onBackPressed() {\n        if (bookSearchDialog != null && bookSearchDialog.isShowing()) { bookSearchDialog.dismiss(); restorePreSearchLocation(); return; }\n        if (!isPdf && searchNavigationActive) { showBookSearch(bookSearchQuery, true); return; }\n        if (!isPdf && (footnoteNavigationActive || footnoteReturnPending)) { restoreFootnoteReturn(); return; }\n        if (!isPdf) saveEpubState();\n        finish();\n        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);\n    }'''
+          s=once(s,old_back,new_back,'back behavior')
+
+          wf=wf.replace('v2.17.4','v2.17.5').replace('versionCode 44','versionCode 45').replace("versionName '2.17.4'","versionName '2.17.5'").replace("versionCode='44'","versionCode='45'").replace("versionName='2.17.4'","versionName='2.17.5'")
+          wf=wf.replace("test -s app/src/main/java/com/whisper/wowreader/ReadingProgressStore.java", "test -s app/src/main/java/com/whisper/wowreader/ReadingProgressStore.java\n          test -s app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java")
+          wf=wf.replace("grep -q \"onReaderLinkTap\" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java", "grep -q \"onReaderLinkTap\" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n          grep -q \"Show on page\" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n          grep -q \"renderBookSearchResults\" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java\n          grep -q \"ReaderSearchIndex.search\" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java")
+
+          p.write_text(s); g.write_text(grad); w.write_text(wf)
+          PY
+
+          grep -q 'versionCode 45' app/build.gradle
+          grep -q "versionName '2.17.5'" app/build.gradle
+          grep -q 'Show on page' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'renderBookSearchResults' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'ReaderSearchIndex.search' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q '_ftn' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'versionCode 45' .github/workflows/build-apk.yml
+          git diff --check
+      - name: Build and lint v45
+        run: gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
+      - name: Smoke check v45
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          AAB=app/build/outputs/bundle/release/app-release.aab
+          test -s "$APK" && test -s "$AAB"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='45'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.17.5'"
+          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+      - name: Commit verified v45 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/build.gradle app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/src/main/java/com/whisper/wowreader/ReaderSearchIndex.java .github/workflows/build-apk.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "Add Play Books style search and footnote navigation"
+          git push origin HEAD:main

@@ -1,32 +1,62 @@
-# WoW Reader
+# WoW Reader Lab
 
-**WoW Reader** is an offline EPUB/PDF reader for the Whisper Of Words community.
+This repository is the **experimental / testing track** for WoW Reader.
 
-## Current release
-- Version: **2.14.0**
-- Android package: `com.whisper.wowreader`
-- Minimum Android: 6.0 (API 23)
-- Target SDK: 35
+> **Working rule:** test here first, finalize in production only after explicit real-device approval.
 
-## Reader features
-- EPUB and PDF offline reading
-- Page-by-page and vertical scroll modes
-- Myanmar smart justify / spacing adjustment
-- Publisher font plus Pyidaungsu, A10 YoeShin, Burma2, Burma001, M01 PuPu, Myanmar Ayar and Phantee
-- Import your own TTF, OTF, WOFF or WOFF2 reader fonts
-- EPUB NAV/NCX table of contents with auxiliary-page filtering
-- Bookmarks, highlights and notes
-- Selected-text Translate shortcut for Myanmar / English
-- Light, Sepia and Dark themes
-- Paper page-turn animation
-- Reading progress and resume
-- Manual backup / restore
-- Grid / list library views
+## Repositories
+
+- Lab / testing: `whispermmepub/wow-reader-lab`
+- Production / stable: `whispermmepub/wow-reader-app`
+
+## Current state
+
+- Lab: **WoW Reader v2.17.1** (`versionCode 41`)
+- Production baseline: **WoW Reader v2.17.0** (`versionCode 40`)
+- Package: `com.whisper.wowreader`
+- Minimum Android: 6.0 / API 23
+- Target SDK: 36
+- Java: 17
+
+Lab v41 is based on the approved production v40 source and is the place for future experiments and fixes before promotion.
+
+## Important decision
+
+The unfinished **Telegram Auto Library** experiment has been removed from this repository and is **not part of the current app**. Do not reintroduce it unless the user explicitly requests it again.
+
+## Stable feature set carried into Lab
+
+- Offline EPUB/PDF reading
+- Google sign-in + private Google Drive `appDataFolder` backup/restore + auto sync
+- Reading Statistics / streaks
+- Smart Library / shelves
+- Notes & Highlights Hub
+- Per-book typography
+- Smart Sync Merge
+- Home / Library / Notes / Explore navigation
+- Coming Soon / book-review feed
+- Custom App Theme
+- `Justify · Normal` and `Justify · Auto spacing`
+- Fast chapter transitions with adjacent-chapter preloading
+- Multi-book EPUB/PDF import
+- Corrected highlight/note text mapping
+- System-inset and scroll/font-scaling fixes
+
+## Development rule
+
+1. Make new changes in Lab first.
+2. Build APK/AAB and run lint/smoke checks.
+3. Test the signed Lab APK on a real device.
+4. Preserve existing working behavior; avoid broad rewrites.
+5. Promote to `wow-reader-app` only after explicit user approval.
 
 ## Community links
-- Telegram channel: https://t.me/TheBookR
+
+- Telegram books channel: https://t.me/TheBookR
 - Discussion group: https://t.me/+rUiqzi2mdhNiNGZl
 - Website: https://saroatsin.com
 - Book reviews: https://whispermmepub.github.io/Review/
 
-Google Account cloud library is available: connect a Google account to privately back up books, notes, highlights, custom fonts and reading progress to the app's Google Drive app-data space, then restore them on another device.
+## Secrets
+
+Never commit signing passwords, private keys, keystores, Telegram tokens, Cloudflare credentials, Firebase server credentials, or other secrets.

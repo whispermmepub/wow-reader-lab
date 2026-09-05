@@ -1,4 +1,4 @@
-name: Build WoW Reader Lab v2.18.0 APK and AAB
+name: Build WoW Reader Lab v2.18.1 APK and AAB
 
 on:
   push:
@@ -51,10 +51,11 @@ jobs:
           test -s app/google-services.json
           test -s app/src/main/assets/fonts/pyidaungsu_native.ttf
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
+          grep -q "minSdk 23" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
-          grep -q "versionCode 50" app/build.gradle
-          grep -q "versionName '2.18.0'" app/build.gradle
+          grep -q "versionCode 51" app/build.gradle
+          grep -q "versionName '2.18.1'" app/build.gradle
           grep -q "Home search submit is consumed" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "IME_ACTION_SEARCH" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "setOnEditorActionListener" app/src/main/java/com/whisper/wowreader/MainActivity.java
@@ -62,9 +63,17 @@ jobs:
           grep -q "reader_auto_scroll_speed" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "reader_eye_break_reminder" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "onAutoScrollEnd" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "autoScrollManualReturnSpine" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "remembered >= 995 ? 0 : remembered" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "Math.min(300, fontPercent + 10)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "260, 280, 300" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "EYE_BREAK_INTERVAL_MS" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "showAutoScrollSpeedDialog" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "30 min reminder" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "Edit title & author" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "library_metadata_custom_" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "Book details saved" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "Use book metadata" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "onReaderLinkTap" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "installReaderLinkNavigation(view)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "footnotePreviewOverlay" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
@@ -72,11 +81,6 @@ jobs:
           grep -q "looksLikeExplicitBacklinkHref" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "handleFootnoteBacklink" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "footnoteExactBacklinkPending" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "armFootnoteReturn(targetSourceId)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "requestFootnotePreview(targetHref, targetLabel, targetSourceId)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "if (ratio < 0.24f) navigateChapter(-1, true)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "else if (ratio > 0.76f) navigateChapter(1, false)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "window.devicePixelRatio" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "renderBookSearchResults" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "ReaderSearchIndex.search" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "ReadingProgressStore.set" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
@@ -102,8 +106,9 @@ jobs:
           test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
-          "$AAPT" dump badging "$APK" | grep -q "versionCode='50'"
-          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.0'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='51'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.1'"
+          "$AAPT" dump badging "$APK" | grep -q "sdkVersion:'23'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           unzip -l "$APK" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
           unzip -l "$AAB" | grep -q 'base/assets/fonts/pyidaungsu_native.ttf'
@@ -111,8 +116,8 @@ jobs:
       - name: Collect APK
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.0-v50-unsigned.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.0-v50-unsigned.aab
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.1-v51-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.1-v51-unsigned.aab
           APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
           test -n "$APKSIGNER_JAR"
           cp "$APKSIGNER_JAR" apksigner.jar
@@ -120,10 +125,10 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-Lab-v2.18.0-v50
+          name: WoW-Reader-Lab-v2.18.1-v51
           path: |
-            WoW-Reader-Lab-v2.18.0-v50-unsigned.apk
-            WoW-Reader-Lab-v2.18.0-v50-unsigned.aab
+            WoW-Reader-Lab-v2.18.1-v51-unsigned.apk
+            WoW-Reader-Lab-v2.18.1-v51-unsigned.aab
             apksigner.jar
           if-no-files-found: error
           retention-days: 14

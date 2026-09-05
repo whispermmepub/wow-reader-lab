@@ -1,0 +1,158 @@
+name: Verify v40 update and fresh install for v50
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/compat-v40-v50-ubuntu-temp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install SDK
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "platforms;android-36"
+      - name: Build v50 and v40 with same debug signer
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle :app:assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/wow-v50.apk"
+          git clone --quiet https://github.com/whispermmepub/wow-reader-app.git "$RUNNER_TEMP/wow-old"
+          cd "$RUNNER_TEMP/wow-old"
+          git checkout --quiet afc75339dece9ff175f8d498a9744fc88bbb6a62
+          gradle :app:assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/wow-v40.apk"
+          test -s "$RUNNER_TEMP/wow-v50.apk"
+          test -s "$RUNNER_TEMP/wow-v40.apk"
+      - name: Prepare emulator test script
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/verify-v50.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          PKG=com.whisper.wowreader
+          OLD="$RUNNER_TEMP/wow-v40.apk"
+          NEW="$RUNNER_TEMP/wow-v50.apk"
+          test -s "$OLD"
+          test -s "$NEW"
+
+          echo '=== v40 -> v50 update ==='
+          adb uninstall "$PKG" >/dev/null 2>&1 || true
+          adb install "$OLD"
+          adb shell run-as "$PKG" mkdir -p files/library shared_prefs
+          printf 'v40-library-preserved\n' | adb shell "run-as $PKG sh -c 'cat > files/library/__v40_update_sentinel.txt'"
+          cat > "$RUNNER_TEMP/wow_reader.xml" <<'XML'
+          <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+          <map>
+              <int name="percent_update-test.epub" value="37" />
+              <string name="library_shelves_json">{&quot;Favorites&quot;:[&quot;update-test.epub&quot;]}</string>
+              <string name="reading_stats_day_notes_json">{&quot;2026-09-05&quot;:&quot;v40 update sentinel&quot;}</string>
+          </map>
+          XML
+          cat "$RUNNER_TEMP/wow_reader.xml" | adb shell "run-as $PKG sh -c 'cat > shared_prefs/wow_reader.xml'"
+          adb install -r "$NEW"
+          adb logcat -c
+          adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+          sleep 5
+          adb shell dumpsys package "$PKG" | grep -q 'versionCode=50'
+          adb shell run-as "$PKG" test -f files/library/__v40_update_sentinel.txt
+          adb shell run-as "$PKG" grep -q 'value="37"' shared_prefs/wow_reader.xml
+          adb shell run-as "$PKG" grep -q 'library_shelves_json' shared_prefs/wow_reader.xml
+          adb shell run-as "$PKG" grep -q 'reading_stats_day_notes_json' shared_prefs/wow_reader.xml
+          adb shell pidof "$PKG" >/dev/null
+          if adb logcat -d | grep -A10 -B2 'FATAL EXCEPTION' | grep -q "$PKG"; then
+            echo 'FATAL on v40 update launch' >&2
+            exit 1
+          fi
+
+          echo '=== Home search Enter smoke ==='
+          adb shell uiautomator dump /sdcard/wow-ui.xml >/dev/null 2>&1 || true
+          UI=$(adb shell cat /sdcard/wow-ui.xml 2>/dev/null || true)
+          if printf '%s' "$UI" | grep -q 'Search title or author'; then
+            B=$(printf '%s' "$UI" | grep -o 'text="Search title or author"[^>]*bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' | head -n1 | grep -o 'bounds="[^"]*"' || true)
+            if [ -n "$B" ]; then
+              nums=$(printf '%s' "$B" | grep -o '[0-9]\+' | tr '\n' ' ')
+              read x1 y1 x2 y2 <<< "$nums"
+              x=$(( (x1+x2)/2 )); y=$(( (y1+y2)/2 ))
+              adb shell input tap "$x" "$y"
+              adb shell input text 'test'
+              adb logcat -c
+              adb shell input keyevent 66
+              sleep 2
+              adb shell pidof "$PKG" >/dev/null
+              if adb logcat -d | grep -A10 -B2 'FATAL EXCEPTION' | grep -q "$PKG"; then
+                echo 'FATAL after Home search Enter' >&2
+                exit 1
+              fi
+            fi
+          fi
+
+          echo '=== clean -> v50 ==='
+          adb uninstall "$PKG"
+          adb install "$NEW"
+          adb logcat -c
+          adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
+          sleep 5
+          adb shell dumpsys package "$PKG" | grep -q 'versionCode=50'
+          adb shell run-as "$PKG" test -d files/library
+          adb shell run-as "$PKG" test -d files/cover_cache
+          if adb shell run-as "$PKG" test -f files/library/__v40_update_sentinel.txt; then
+            echo 'fresh install retained old data' >&2
+            exit 1
+          fi
+          adb shell pidof "$PKG" >/dev/null
+          if adb logcat -d | grep -A10 -B2 'FATAL EXCEPTION' | grep -q "$PKG"; then
+            echo 'FATAL on fresh install launch' >&2
+            exit 1
+          fi
+
+          cat > compatibility-report.txt <<'REPORT'
+          WoW Reader v2.18.0 / versionCode 50
+          Package: com.whisper.wowreader
+          v2.17.0/v40 -> v50 in-place update: PASS
+          Existing library sentinel: PASS
+          Existing reading progress/shelf/calendar prefs: PASS
+          Fresh v50 install: PASS
+          New library/cache initialization: PASS
+          Launch fatal-exception checks: PASS
+          Home search Enter: exercised when search field was discoverable by UIAutomator; process/fatal check enforced.
+          REPORT
+          SCRIPT
+          chmod +x "$RUNNER_TEMP/verify-v50.sh"
+      - name: Exercise v40 update and fresh install
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          script: bash "$RUNNER_TEMP/verify-v50.sh"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-v50-update-fresh-compatibility
+          path: compatibility-report.txt
+          if-no-files-found: error
+          retention-days: 14

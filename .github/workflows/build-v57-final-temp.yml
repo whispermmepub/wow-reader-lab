@@ -35,7 +35,11 @@ jobs:
           yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager 'platforms;android-36' 'build-tools;36.0.0' >/dev/null || true
 
       - name: Apply v57 changes
-        run: python3 .github/scripts/finalize_v57.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/finalize_v57.py
+          python3 .github/scripts/v57_api23_fix.py
 
       - name: Source smoke checks
         shell: bash
@@ -81,7 +85,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app/build.gradle app/src/main/AndroidManifest.xml app/src/main/java/com/whisper/wowreader/MainActivity.java app/src/main/java/com/whisper/wowreader/BookReaderActivity.java app/src/main/java/com/whisper/wowreader/DictionaryDialog.java app/src/main/java/com/whisper/wowreader/DictionaryManagerActivity.java app/src/main/java/com/whisper/wowreader/KindleDictionaryStore.java app/src/main/java/com/whisper/wowreader/MyanmarSpellingStore.java app/src/main/assets/dictionary/myanmar_spelling.txt app/src/main/assets/dictionary/SPELLING-NOTICE.txt
-          git rm -f .github/scripts/finalize_v57.py .github/workflows/build-v57-dictionary-reader-temp.yml .github/workflows/build-v57-final-temp.yml
+          git rm -f .github/scripts/finalize_v57.py .github/scripts/v57_api23_fix.py .github/workflows/build-v57-dictionary-reader-temp.yml .github/workflows/build-v57-final-temp.yml
           git commit -m 'Finalize v57 dictionary reader and library views'
           git push origin HEAD:feature/v57-dictionary-reader-polish
 

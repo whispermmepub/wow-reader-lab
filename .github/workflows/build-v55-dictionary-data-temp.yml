@@ -1,4 +1,4 @@
-name: Probe v55 dictionary JSON fetch pattern
+name: Probe v55 category translation payload
 
 on:
   push:
@@ -17,29 +17,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/v55-inapp-dictionary
-      - name: Inspect Kaikki page JavaScript and one word JSON endpoint
+      - name: Inspect Burmese content and one word page structure
         shell: bash
         run: |
           python3 - <<'PY'
-          import html,re,urllib.parse,urllib.request
+          import re,urllib.request
           UA={'User-Agent':'WoW-Reader-dictionary-builder/1.0 (+https://github.com/whispermmepub/wow-reader-lab)'}
           def get(url):
               req=urllib.request.Request(url,headers=UA)
-              with urllib.request.urlopen(req,timeout=60) as r:
-                  data=r.read(); print('GET',r.status,r.headers.get('content-type'),r.geturl(),'bytes',len(data)); return data
-          page='https://kaikki.org/dictionary/English/categories-other/my/Terms%20with%20Burmese%20translations/ASEAN--Atthadassi.html'
-          body=get(page).decode('utf-8','replace')
-          needle='encodeURIComponent(fn) + ".json"'
-          i=body.find(needle)
-          print('needle index',i)
-          print(body[max(0,i-5000):i+5000])
-          # Also inspect Arabic word page, which is known to be in this category.
-          word='https://kaikki.org/dictionary/English/meaning/A/Ar/Arabic.html'
-          wb=get(word).decode('utf-8','replace')
-          j=wb.find(needle)
-          print('WORD CONTEXT',wb[max(0,j-5000):j+5000])
-          # Print fetch(...) snippets from both pages.
-          for label,txt in [('category',body),('word',wb)]:
-              print('FETCHES',label)
-              for m in re.finditer(r'fetch\s*\([^\)]{0,500}\)',txt,re.I|re.S): print(m.group(0)[:1000])
+              with urllib.request.urlopen(req,timeout=60) as r:return r.read().decode('utf-8','replace')
+          urls=[
+          'https://kaikki.org/dictionary/English/categories-other/my/Terms%20with%20Burmese%20translations/ASEAN--Atthadassi.html',
+          'https://kaikki.org/dictionary/English/meaning/A/Ar/Arabic.html']
+          pat=re.compile(r'[\u1000-\u109f\ua9e0-\ua9ff\uaa60-\uaa7f]')
+          for url in urls:
+              txt=get(url); hits=[m.start() for m in pat.finditer(txt)]
+              print('\nURL',url,'bytes',len(txt),'Myanmar chars',len(hits))
+              for pos in hits[:20]: print(txt[max(0,pos-500):pos+1000].replace('\n',' ')[:1600])
+              for needle in ['translations','Burmese','lang_code','translation']:
+                  print('needle',needle,'count',txt.lower().count(needle.lower()))
+                  p=txt.lower().find(needle.lower())
+                  if p>=0: print(txt[max(0,p-1000):p+3000])
           PY

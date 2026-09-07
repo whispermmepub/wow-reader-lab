@@ -297,12 +297,9 @@ reader = replace_between(
     reader,
     "    private void setupPdfView(FrameLayout content) {",
     "    private void openEpub() {",
-    pdf_setup + "    private void openEpub() {",
+    pdf_setup,
     "continuous pdf setup",
 )
-# replace_between retains end marker; replacement above includes it, so remove duplicated marker once.
-reader = reader.replace("    private void openEpub() {    private void openEpub() {", "    private void openEpub() {", 1)
-
 reader = replace_once(
     reader,
     '''        back.setOnClickListener(v -> {\n            if (!isPdf) saveEpubState();\n            finish();\n        });''',

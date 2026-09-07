@@ -2041,16 +2041,19 @@ public class MainActivity extends Activity {
 
     private void showEditBookMetadata(File file) {
         if (file == null) return;
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(22), dp(4), dp(22), dp(2));
+        android.app.Dialog dialog = new android.app.Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet = premiumSheet("Edit book details",
+                "Custom title and author are saved in WoW Reader and included in backup/restore.", dialog);
 
         TextView titleLabel = new TextView(this);
         titleLabel.setText("Book title");
         titleLabel.setTextSize(12.5f);
         titleLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         titleLabel.setTextColor(themeSecondaryText());
-        box.addView(titleLabel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
+        titleLabel.setPadding(dp(2), dp(6), dp(2), dp(5));
+        sheet.addView(titleLabel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(34)));
 
         EditText titleInput = new EditText(this);
         titleInput.setSingleLine(true);
@@ -2060,17 +2063,20 @@ public class MainActivity extends Activity {
         titleInput.setTextColor(themePrimaryText());
         titleInput.setHintTextColor(themeSecondaryText());
         titleInput.setHint("Book title");
+        titleInput.setPadding(dp(14), 0, dp(14), 0);
+        titleInput.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
         applyBookTitleTypeface(titleInput);
-        box.addView(titleInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+        sheet.addView(titleInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
 
         TextView authorLabel = new TextView(this);
         authorLabel.setText("Author name");
         authorLabel.setTextSize(12.5f);
         authorLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         authorLabel.setTextColor(themeSecondaryText());
-        LinearLayout.LayoutParams authorLabelLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30));
-        authorLabelLp.topMargin = dp(8);
-        box.addView(authorLabel, authorLabelLp);
+        authorLabel.setPadding(dp(2), dp(8), dp(2), dp(5));
+        LinearLayout.LayoutParams authorLabelLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
+        authorLabelLp.topMargin = dp(4);
+        sheet.addView(authorLabel, authorLabelLp);
 
         EditText authorInput = new EditText(this);
         authorInput.setSingleLine(true);
@@ -2080,43 +2086,58 @@ public class MainActivity extends Activity {
         authorInput.setTextColor(themePrimaryText());
         authorInput.setHintTextColor(themeSecondaryText());
         authorInput.setHint("Author name (optional)");
+        authorInput.setPadding(dp(14), 0, dp(14), 0);
+        authorInput.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
         if (pyidaungsuTypeface != null) authorInput.setTypeface(pyidaungsuTypeface);
-        box.addView(authorInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+        sheet.addView(authorInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
 
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Edit book details")
-                .setMessage("Custom title and author are saved in WoW Reader and included in backup/restore.")
-                .setView(box)
-                .setNeutralButton("Use book metadata", null)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Save", null)
-                .create();
-        dialog.setOnShowListener(d -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String title = titleInput.getText() == null ? "" : titleInput.getText().toString().trim();
-                String author = authorInput.getText() == null ? "" : authorInput.getText().toString().trim();
-                if (title.isEmpty()) {
-                    titleInput.setError("Book title is required");
-                    titleInput.requestFocus();
-                    return;
-                }
-                prefs.edit()
-                        .putString("library_title_" + file.getName(), title)
-                        .putString("library_author_" + file.getName(), author)
-                        .putBoolean(customMetadataFlag(file), true)
-                        .putLong("sync_updated_ms", System.currentTimeMillis())
-                        .apply();
-                dialog.dismiss();
-                if (homeMode) buildUi(); else refreshLibrary();
-                maybeAutoGoogleSync();
-                Toast.makeText(this, "Book details saved", Toast.LENGTH_SHORT).show();
-            });
-            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
-                dialog.dismiss();
-                resetBookMetadataFromSource(file);
-            });
+        TextView source = filterChoice("Use book metadata", false);
+        source.setGravity(Gravity.CENTER);
+        source.setOnClickListener(v -> {
+            dialog.dismiss();
+            resetBookMetadataFromSource(file);
         });
-        dialog.show();
+        LinearLayout.LayoutParams sourceLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        sourceLp.topMargin = dp(11);
+        sheet.addView(source, sourceLp);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        TextView cancel = filterChoice("Cancel", false);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        TextView save = filterChoice("Save", true);
+        save.setTextColor(Color.WHITE);
+        save.setBackground(roundRect(themeAccent(), dp(17), 0, 0));
+        save.setOnClickListener(v -> {
+            String title = titleInput.getText() == null ? "" : titleInput.getText().toString().trim();
+            String author = authorInput.getText() == null ? "" : authorInput.getText().toString().trim();
+            if (title.isEmpty()) {
+                titleInput.setError("Book title is required");
+                titleInput.requestFocus();
+                return;
+            }
+            prefs.edit()
+                    .putString("library_title_" + file.getName(), title)
+                    .putString("library_author_" + file.getName(), author)
+                    .putBoolean(customMetadataFlag(file), true)
+                    .putLong("sync_updated_ms", System.currentTimeMillis())
+                    .apply();
+            dialog.dismiss();
+            if (homeMode) buildUi(); else refreshLibrary();
+            maybeAutoGoogleSync();
+            Toast.makeText(this, "Book details saved", Toast.LENGTH_SHORT).show();
+        });
+        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(96), dp(40));
+        cancelLp.rightMargin = dp(8);
+        actions.addView(cancel, cancelLp);
+        actions.addView(save, new LinearLayout.LayoutParams(dp(96), dp(40)));
+        LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        actionLp.topMargin = dp(7);
+        sheet.addView(actions, actionLp);
+
+        presentBottomSheet(dialog, sheet, 0.74f);
+        titleInput.requestFocus();
     }
 
     private void resetBookMetadataFromSource(File file) {
@@ -3035,9 +3056,9 @@ public class MainActivity extends Activity {
                 String name=queryDisplayName(uri);
                 if(name==null||name.trim().isEmpty())name="book_"+System.currentTimeMillis();
                 String lower=name.toLowerCase(Locale.ROOT),mime=getContentResolver().getType(uri);
+                String detectedExtension=BookImportTypeDetector.resolveExtension(this,uri,name,mime);
                 if(!lower.endsWith(".epub")&&!lower.endsWith(".pdf")){
-                    if("application/pdf".equals(mime))name+=".pdf";
-                    else if("application/epub+zip".equals(mime))name+=".epub";
+                    if(detectedExtension!=null)name+=detectedExtension;
                     else throw new Exception("Only EPUB and PDF files are supported");
                 }
                 File out=uniqueFile(name);
@@ -3107,7 +3128,8 @@ public class MainActivity extends Activity {
             dialog.dismiss();
             if (file.delete()) {
                 LibraryShelfStore.removeBookFromAll(prefs, file.getName());
-                prefs.edit().remove("percent_" + file.getName()).remove("library_title_" + file.getName())
+                ReadingProgressStore.remove(prefs, file.getName());
+                prefs.edit().remove("library_title_" + file.getName())
                         .remove("library_author_" + file.getName()).remove(customMetadataFlag(file)).remove("library_owned_" + file.getName())
                         .remove("added_at_" + file.getName()).remove("last_opened_" + file.getName())
                         .putLong("sync_updated_ms", System.currentTimeMillis()).apply();

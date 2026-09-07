@@ -1,9 +1,11 @@
 package com.whisper.wowreader;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Matrix;
+import android.graphics.PointF;
 import android.graphics.pdf.PdfRenderer;
 import android.os.Handler;
 import android.os.Looper;
@@ -26,12 +28,15 @@ import java.util.concurrent.Executors;
 /**
  * Vertical, continuous PDF reader that renders only RecyclerView-visible pages.
  * A single background renderer keeps memory/CPU predictable on older devices.
+ * v56 adds a lightweight PDFBox text layer for Kindle-style long-press Dictionary/highlights.
  */
 final class PdfContinuousView extends RecyclerView {
     interface Listener {
         void onPageChanged(int pageZeroBased, int pageCount);
         void onTap();
         void onUserInteraction();
+        void onTextSelected(PdfTextRepository.Selection selection);
+        void onTextUnavailable(int pageZeroBased);
     }
 
     private final LinearLayoutManager layout;
@@ -47,6 +52,10 @@ final class PdfContinuousView extends RecyclerView {
     private volatile int generation = 0;
     private Listener listener;
     private int lastReportedPage = -1;
+
+    private PdfTextRepository textRepository;
+    private SharedPreferences prefs;
+    private String bookName = "";
 
     private boolean autoRunning = false;
     private int autoPixelsPerSecond = 0;
@@ -74,6 +83,9 @@ final class PdfContinuousView extends RecyclerView {
                 if (listener != null) listener.onTap();
                 return true;
             }
+            @Override public void onLongPress(MotionEvent e) {
+                handleLongPress(e);
+            }
         });
 
         addOnScrollListener(new OnScrollListener() {
@@ -88,6 +100,13 @@ final class PdfContinuousView extends RecyclerView {
     }
 
     void setListener(Listener value) { listener = value; }
+
+    void setTextFeatures(PdfTextRepository repository, SharedPreferences preferences, String fileName) {
+        textRepository = repository;
+        prefs = preferences;
+        bookName = fileName == null ? "" : fileName;
+        adapter.notifyDataSetChanged();
+    }
 
     void open(File file, int startPage) throws Exception {
         stopAutoScroll();
@@ -149,6 +168,24 @@ final class PdfContinuousView extends RecyclerView {
         removeCallbacks(autoTick);
     }
 
+    void refreshHighlights(int page) {
+        for (int i = 0; i < getChildCount(); i++) {
+            View child = getChildAt(i);
+            ViewHolder raw = getChildViewHolder(child);
+            if (!(raw instanceof PageHolder)) continue;
+            PageHolder h = (PageHolder) raw;
+            if (h.boundPage == page) h.overlay.setHighlights(PdfHighlightStore.forPage(prefs, bookName, page));
+        }
+    }
+
+    void clearTextSelection() {
+        for (int i = 0; i < getChildCount(); i++) {
+            View child = getChildAt(i);
+            ViewHolder raw = getChildViewHolder(child);
+            if (raw instanceof PageHolder) ((PageHolder) raw).overlay.clearSelected();
+        }
+    }
+
     void close() {
         stopAutoScroll();
         generation++;
@@ -163,6 +200,45 @@ final class PdfContinuousView extends RecyclerView {
         if (event != null && event.getActionMasked() == MotionEvent.ACTION_DOWN && listener != null)
             listener.onUserInteraction();
         return super.onTouchEvent(event);
+    }
+
+    private void handleLongPress(MotionEvent e) {
+        if (e == null || textRepository == null) return;
+        if (listener != null) listener.onUserInteraction();
+        View child = findChildViewUnder(e.getX(), e.getY());
+        if (child == null) return;
+        ViewHolder raw = getChildViewHolder(child);
+        if (!(raw instanceof PageHolder)) return;
+        PageHolder holder = (PageHolder) raw;
+        int page = holder.boundPage;
+        if (page < 0) return;
+        float localX = e.getX() - child.getLeft();
+        float localY = e.getY() - child.getTop();
+        PointF normalized = holder.overlay.toNormalized(localX, localY);
+        if (normalized == null) return;
+
+        if (holder.pageText != null) {
+            deliverSelection(holder, holder.pageText, normalized.x, normalized.y);
+            return;
+        }
+        final int bound = page;
+        textRepository.request(page, pageText -> {
+            if (holder.boundPage != bound || holder.itemView.getParent() == null) return;
+            holder.pageText = pageText;
+            holder.overlay.setPageText(pageText);
+            deliverSelection(holder, pageText, normalized.x, normalized.y);
+        });
+    }
+
+    private void deliverSelection(PageHolder holder, PdfTextRepository.PageText pageText, float nx, float ny) {
+        if (pageText == null || pageText.isEmpty()) {
+            if (listener != null) listener.onTextUnavailable(holder.boundPage);
+            return;
+        }
+        PdfTextRepository.Selection selection = pageText.select(nx, ny);
+        if (selection == null) return;
+        holder.overlay.setSelected(selection.wordRects);
+        if (listener != null) listener.onTextSelected(selection);
     }
 
     private final Runnable autoTick = new Runnable() {
@@ -244,12 +320,40 @@ final class PdfContinuousView extends RecyclerView {
                     return;
                 }
                 holder.replaceBitmap(ready);
-                ViewGroup.LayoutParams lp = holder.image.getLayoutParams();
-                if (lp.height != readyHeight) {
-                    lp.height = readyHeight;
-                    holder.image.setLayoutParams(lp);
-                }
+                setPageHeight(holder, readyHeight);
             });
+        });
+    }
+
+    private void setPageHeight(PageHolder holder, int height) {
+        ViewGroup.LayoutParams imageLp = holder.image.getLayoutParams();
+        if (imageLp.height != height) {
+            imageLp.height = height;
+            holder.image.setLayoutParams(imageLp);
+        }
+        ViewGroup.LayoutParams overlayLp = holder.overlay.getLayoutParams();
+        if (overlayLp.height != height) {
+            overlayLp.height = height;
+            holder.overlay.setLayoutParams(overlayLp);
+        }
+    }
+
+    private void requestText(PageHolder holder, int page) {
+        holder.pageText = null;
+        holder.overlay.clearSelected();
+        holder.overlay.setHighlights(PdfHighlightStore.forPage(prefs, bookName, page));
+        if (textRepository == null) return;
+        PdfTextRepository.PageText cached = textRepository.cached(page);
+        if (cached != null) {
+            holder.pageText = cached;
+            holder.overlay.setPageText(cached);
+            return;
+        }
+        final int bound = page;
+        textRepository.request(page, pageText -> {
+            if (holder.boundPage != bound || holder.itemView.getParent() == null) return;
+            holder.pageText = pageText;
+            holder.overlay.setPageText(pageText);
         });
     }
 
@@ -273,11 +377,15 @@ final class PdfContinuousView extends RecyclerView {
             ImageView image = new ImageView(getContext());
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);
             image.setBackgroundColor(Color.WHITE);
-            shell.addView(image, new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams pageLp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, estimatedHeight(), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+            shell.addView(image, pageLp);
+            PdfHighlightOverlayView overlay = new PdfHighlightOverlayView(getContext());
+            shell.addView(overlay, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, estimatedHeight(), Gravity.TOP | Gravity.CENTER_HORIZONTAL));
             shell.setLayoutParams(new RecyclerView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            return new PageHolder(shell, image);
+            return new PageHolder(shell, image, overlay);
         }
 
         @Override public void onBindViewHolder(PageHolder holder, int position) {
@@ -285,15 +393,16 @@ final class PdfContinuousView extends RecyclerView {
             int page = holder.getBindingAdapterPosition();
             if (page == RecyclerView.NO_POSITION) return;
             holder.boundPage = page;
-            ViewGroup.LayoutParams lp = holder.image.getLayoutParams();
-            lp.height = estimatedHeight();
-            holder.image.setLayoutParams(lp);
+            setPageHeight(holder, estimatedHeight());
             holder.image.setImageDrawable(null);
+            requestText(holder, page);
             renderAsync(holder, page);
         }
 
         @Override public void onViewRecycled(PageHolder holder) {
             holder.boundPage = -1;
+            holder.pageText = null;
+            holder.overlay.clearSelected();
             holder.clearBitmap();
             super.onViewRecycled(holder);
         }
@@ -311,12 +420,15 @@ final class PdfContinuousView extends RecyclerView {
 
     private static final class PageHolder extends RecyclerView.ViewHolder {
         final ImageView image;
+        final PdfHighlightOverlayView overlay;
         int boundPage = -1;
         Bitmap bitmap;
+        PdfTextRepository.PageText pageText;
 
-        PageHolder(View itemView, ImageView image) {
+        PageHolder(View itemView, ImageView image, PdfHighlightOverlayView overlay) {
             super(itemView);
             this.image = image;
+            this.overlay = overlay;
         }
 
         void replaceBitmap(Bitmap next) {

@@ -5,6 +5,7 @@ on:
     branches: [main, fix/v54-reader-pdf-oem]
     paths:
       - 'app/**'
+      - '.github/scripts/verify-v54-install-paths.sh'
       - '.github/workflows/stable-v54-regression.yml'
   workflow_dispatch:
 

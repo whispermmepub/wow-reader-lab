@@ -24,7 +24,7 @@ final class ReadingRulerView extends View {
 
     void configure(boolean enabled, int lines, int readerTheme) {
         rulerEnabled = enabled;
-        lineCount = lines <= 1 ? 1 : lines <= 3 ? 3 : 5;
+        lineCount = Math.max(1, Math.min(20, lines));
         theme = readerTheme;
         setVisibility(enabled ? VISIBLE : GONE);
         invalidate();
@@ -34,7 +34,7 @@ final class ReadingRulerView extends View {
         super.onDraw(canvas);
         if (!rulerEnabled || getWidth() <= 0 || getHeight() <= 0) return;
         float density = getResources().getDisplayMetrics().density;
-        float bandHeight = (lineCount == 1 ? 38f : lineCount == 3 ? 74f : 110f) * density;
+        float bandHeight = Math.min(getHeight() * 0.92f, (38f + (lineCount - 1) * 18f) * density);
         float top = (getHeight() - bandHeight) / 2f;
         float bottom = top + bandHeight;
 

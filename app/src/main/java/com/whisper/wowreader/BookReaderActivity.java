@@ -277,7 +277,7 @@ public class BookReaderActivity extends Activity {
         autoScrollSpeed = Math.max(1, Math.min(10, prefs.getInt("reader_auto_scroll_speed", 4)));
         readingRulerEnabled = prefs.getBoolean("reader_reading_ruler", false);
         int savedRulerLines = prefs.getInt("reader_reading_ruler_lines", 1);
-        readingRulerLines = savedRulerLines <= 1 ? 1 : savedRulerLines <= 3 ? 3 : 5;
+        readingRulerLines = Math.max(1, Math.min(20, savedRulerLines));
         positionDisplayMode = Math.max(0, Math.min(2, prefs.getInt("reader_position_display_mode", 0)));
         eyeBreakReminderEnabled = prefs.getBoolean("reader_eye_break_reminder", true);
 
@@ -1156,7 +1156,8 @@ public class BookReaderActivity extends Activity {
         String bg = readerTheme == 2 ? "#121212" : (readerTheme == 1 ? "#F4ECD8" : "#FFFFFF");
         String fg = readerTheme == 2 ? "#E8EAED" : (readerTheme == 1 ? "#4A4033" : "#202124");
         double line = lineSpacing / 100.0;
-        int safeMargin = Math.max(3, Math.min(14, marginPercent));
+        int safeMargin = Math.max(1, Math.min(14, marginPercent));
+        int adaptiveMargin = adaptiveReaderMarginCssPx(safeMargin);
         String script;
         if ("page".equals(readingMode)) {
             String css = "html,body{height:100% !important;width:100% !important;margin:0 !important;padding:0 !important;overflow:hidden !important;background:" + bg + " !important;color:" + fg + " !important;transform:none !important;zoom:1 !important;}" +
@@ -1168,13 +1169,13 @@ public class BookReaderActivity extends Activity {
                     "var s=document.getElementById('wow-preload-style');if(!s){s=document.createElement('style');s.id='wow-preload-style';document.head.appendChild(s);}s.innerHTML=" + jsQuote(css) + ";" +
                     "var vp=document.getElementById('wow-page-viewport'),flow=document.getElementById('wow-page-flow');" +
                     "if(!vp){vp=document.createElement('div');vp.id='wow-page-viewport';if(!flow){flow=document.createElement('div');flow.id='wow-page-flow';while(document.body.firstChild)flow.appendChild(document.body.firstChild);}vp.appendChild(flow);document.body.appendChild(vp);}" +
-                    "var w=Math.max(1,vp.clientWidth||window.innerWidth),m=Math.max(0,Math.round(w*" + (safeMargin / 100.0) + ")),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);" +
+                    "var w=Math.max(1,vp.clientWidth||window.innerWidth),m=Math.max(0,Math.min(Math.round(w*" + (safeMargin / 100.0) + ")," + adaptiveMargin + ")),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);" +
                     "flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.webkitColumnWidth=pw+'px';flow.style.webkitColumnGap=gap+'px';flow.style.transform='translate3d('+m+'px,0,0)';" +
                     "var wraps=flow.querySelectorAll('div,section,article,main,p,blockquote,dd,dt');for(var i=0;i<wraps.length;i++){var n=wraps[i],t=(n.textContent||'').replace(/\\s+/g,' ').trim();if(t.length<120)continue;var r=n.getBoundingClientRect();if(r.width>0&&r.width<pw*.90){n.style.setProperty('width','auto','important');n.style.setProperty('max-width','none','important');n.style.setProperty('margin-left','0','important');n.style.setProperty('margin-right','0','important');}}" +
                     "return true;}catch(e){return false;}})()";
         } else {
             String css = "html{overflow-x:hidden !important;background:" + bg + " !important;color:" + fg + " !important;}" +
-                    "body{font-size:100% !important;line-height:" + line + " !important;padding:5vh " + safeMargin + "vw 12vh " + safeMargin + "vw !important;height:auto !important;max-width:900px !important;margin:auto !important;box-sizing:border-box !important;background:" + bg + " !important;color:" + fg + " !important;column-width:auto !important;column-gap:normal !important;transform:none !important;}" +
+                    "body{font-size:100% !important;line-height:" + line + " !important;padding:5vh " + adaptiveMargin + "px 12vh " + adaptiveMargin + "px !important;height:auto !important;max-width:900px !important;margin:auto !important;box-sizing:border-box !important;background:" + bg + " !important;color:" + fg + " !important;column-width:auto !important;column-gap:normal !important;transform:none !important;}" +
                     "body *{max-width:100%;}img,svg,video{max-width:100% !important;height:auto !important;}";
             script = "(function(){try{var vp=document.getElementById('wow-page-viewport'),flow=document.getElementById('wow-page-flow');if(flow){var before=vp||flow;while(flow.firstChild)document.body.insertBefore(flow.firstChild,before);if(vp)vp.remove();else flow.remove();}" +
                     "var s=document.getElementById('wow-preload-style');if(!s){s=document.createElement('style');s.id='wow-preload-style';document.head.appendChild(s);}s.innerHTML=" + jsQuote(css) + ";return true;}catch(e){return false;}})()";
@@ -2952,7 +2953,8 @@ public class BookReaderActivity extends Activity {
         int restore = restoreProgress ? currentProgressPermille : -1;
         double ratio = restore >= 0 ? restore / 1000.0 : 0.0;
         double line = lineSpacing / 100.0;
-        int safeMargin = Math.max(3, Math.min(14, marginPercent));
+        int safeMargin = Math.max(1, Math.min(14, marginPercent));
+        int adaptiveMargin = adaptiveReaderMarginCssPx(safeMargin);
 
         String darkCss = readerTheme == 2
                 ? "body,body p,body div,body span,body section,body article,body li,body dd,body dt,body blockquote,body td,body th,body figcaption{color:" + fg + " !important;}" +
@@ -3043,9 +3045,9 @@ public class BookReaderActivity extends Activity {
                     "if(!viewport){viewport=document.createElement('div');viewport.id='wow-page-viewport';" +
                     "if(!flow){flow=document.createElement('div');flow.id='wow-page-flow';while(document.body.firstChild)flow.appendChild(document.body.firstChild);}" +
                     "viewport.appendChild(flow);document.body.appendChild(viewport);}else if(!flow){flow=document.createElement('div');flow.id='wow-page-flow';viewport.appendChild(flow);}" +
-                    "var st=window.__wowPageEngine||{};window.__wowPageEngine=st;st.mode='page';st.locked=true;st.flow=flow;st.viewport=viewport;st.marginRatio=" + (safeMargin / 100.0) + ";" +
+                    "var st=window.__wowPageEngine||{};window.__wowPageEngine=st;st.mode='page';st.locked=true;st.flow=flow;st.viewport=viewport;st.marginRatio=" + (safeMargin / 100.0) + ";st.marginCap=" + adaptiveMargin + ";" +
                     "st.clamp=function(v,a,b){return Math.max(a,Math.min(b,v));};" + typographyJs +
-                    "st.layout=function(){var w=Math.max(1,viewport.clientWidth||window.innerWidth),m=Math.max(0,Math.round(w*st.marginRatio)),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);st.step=w;st.marginPx=m;st.pageWidth=pw;st.gapPx=gap;flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.webkitColumnWidth=pw+'px';flow.style.webkitColumnGap=gap+'px';};" +
+                    "st.layout=function(){var w=Math.max(1,viewport.clientWidth||window.innerWidth),m=Math.max(0,Math.min(Math.round(w*st.marginRatio),st.marginCap||9999)),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);st.step=w;st.marginPx=m;st.pageWidth=pw;st.gapPx=gap;flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.webkitColumnWidth=pw+'px';flow.style.webkitColumnGap=gap+'px';};" +
                     "st.physical=function(){if(st.pageMap&&st.pageMap.length)return st.pageMap[st.clamp(st.page||0,0,st.pageMap.length-1)];return st.page||0;};" +
                     "st.apply=function(anim){st.layout();var physical=st.physical(),x=st.marginPx-physical*st.step;flow.style.transition=anim?'transform 155ms cubic-bezier(.2,.75,.25,1)':'none';flow.style.transform='translate3d('+x+'px,0,0)';};" +
                     "st.progress=function(){return (st.count||1)<=1?0:Math.round(((st.page||0)/((st.count||1)-1))*1000);};" +
@@ -3077,7 +3079,7 @@ public class BookReaderActivity extends Activity {
             css = commonCss +
                     "html{overflow-x:hidden !important;overscroll-behavior:none !important;}" +
                     "body{font-size:100% !important;line-height:" + line + " !important;" +
-                    "padding:5vh " + safeMargin + "vw 12vh " + safeMargin + "vw !important;" +
+                    "padding:5vh " + adaptiveMargin + "px 12vh " + adaptiveMargin + "px !important;" +
                     "height:auto !important;max-width:900px !important;margin:auto !important;box-sizing:border-box !important;" +
                     "column-width:auto !important;column-gap:normal !important;transform:none !important;transition:none !important;}" +
                     "body *{max-width:100%;}" +
@@ -4125,7 +4127,9 @@ public class BookReaderActivity extends Activity {
             showPdfSettings();
             return;
         }
+        beginAutoScrollInteraction();
         final Dialog dialog = new Dialog(this);
+        dialog.setOnDismissListener(d -> endAutoScrollInteraction());
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setCanceledOnTouchOutside(true);
 
@@ -4278,8 +4282,8 @@ public class BookReaderActivity extends Activity {
         addSheetLabel(card, "Margins", sub);
         LinearLayout marginRow = sheetRow();
         String[] marginLabels = {"Narrow", "Normal", "Wide"};
-        int[] marginValues = {4, 7, 11};
-        int marginSelected = marginPercent <= 5 ? 0 : (marginPercent >= 9 ? 2 : 1);
+        int[] marginValues = {2, 5, 10};
+        int marginSelected = marginPercent <= 3 ? 0 : (marginPercent >= 8 ? 2 : 1);
         TextView[] marginChips = new TextView[3];
         for (int i = 0; i < 3; i++) {
             marginChips[i] = sheetChip(marginLabels[i], i == marginSelected);
@@ -4329,12 +4333,7 @@ public class BookReaderActivity extends Activity {
             if (readingRulerView != null) readingRulerView.configure(readingRulerEnabled, readingRulerLines, readerTheme);
             saveReaderPreferences();
         });
-        rulerSize.setOnClickListener(v -> {
-            readingRulerLines = readingRulerLines == 1 ? 3 : readingRulerLines == 3 ? 5 : 1;
-            rulerSize.setText("Lines · " + readingRulerLines);
-            if (readingRulerView != null) readingRulerView.configure(readingRulerEnabled, readingRulerLines, readerTheme);
-            saveReaderPreferences();
-        });
+        rulerSize.setOnClickListener(v -> showReadingRulerSizeDialog(rulerSize));
         rulerRow.addView(rulerToggle, sheetChipLp(false));
         rulerRow.addView(rulerSize, sheetChipLp(true));
         card.addView(rulerRow);
@@ -4413,6 +4412,53 @@ public class BookReaderActivity extends Activity {
                 w.setBackgroundBlurRadius(dp(20));
             }
         }
+    }
+
+    private void showReadingRulerSizeDialog(TextView target) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), dp(4));
+        TextView value = new TextView(this);
+        value.setText("Lines · " + readingRulerLines);
+        value.setTextSize(14f);
+        value.setTextColor(readerPanelText());
+        value.setGravity(Gravity.CENTER);
+        box.addView(value, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+        SeekBar seek = new SeekBar(this);
+        seek.setMax(19);
+        seek.setProgress(Math.max(0, Math.min(19, readingRulerLines - 1)));
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                readingRulerLines = progress + 1;
+                value.setText("Lines · " + readingRulerLines);
+                if (target != null) target.setText("Lines · " + readingRulerLines);
+                if (readingRulerView != null)
+                    readingRulerView.configure(readingRulerEnabled, readingRulerLines, readerTheme);
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) {}
+            @Override public void onStopTrackingTouch(SeekBar bar) { saveReaderPreferences(); }
+        });
+        box.addView(seek, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        new AlertDialog.Builder(this)
+                .setTitle("Reading ruler size")
+                .setMessage("Choose from 1 to 20 text lines")
+                .setView(box)
+                .setPositiveButton("Done", (d, w) -> saveReaderPreferences())
+                .show();
+    }
+
+    private int adaptiveReaderMarginCssPx(int percent) {
+        int p = Math.max(1, Math.min(14, percent));
+        int width = Math.max(1, getResources().getConfiguration().screenWidthDp);
+        int desired = Math.max(4, Math.round(width * (p / 100f)));
+        int cap;
+        if (p <= 1) cap = 10;
+        else if (p <= 2) cap = 18;
+        else if (p <= 5) cap = 40;
+        else if (p <= 8) cap = 68;
+        else cap = 96;
+        return Math.max(4, Math.min(desired, cap));
     }
 
     private void addSheetLabel(LinearLayout parent, String label, int color) {
@@ -4509,6 +4555,7 @@ public class BookReaderActivity extends Activity {
             refreshAdvancedReaderSettingsRows();
             return;
         }
+        beginAutoScrollInteraction();
         java.util.ArrayList<String> rows = new java.util.ArrayList<>();
         for (String item : buildAdvancedReaderOptions()) rows.add(item);
         advancedReaderAdapter = new android.widget.ArrayAdapter<>(this, android.R.layout.simple_list_item_1, rows);
@@ -4520,7 +4567,11 @@ public class BookReaderActivity extends Activity {
                 .setView(list)
                 .setNegativeButton("Close", null)
                 .create();
-        advancedReaderDialog.setOnDismissListener(d -> { advancedReaderDialog = null; advancedReaderAdapter = null; });
+        advancedReaderDialog.setOnDismissListener(d -> {
+            advancedReaderDialog = null;
+            advancedReaderAdapter = null;
+            endAutoScrollInteraction();
+        });
         advancedReaderDialog.show();
         list.setOnItemClickListener((parent, view, which, id) -> {
             switch (which) {
@@ -4615,6 +4666,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showPdfSettings() {
+        beginAutoScrollInteraction();
         String[] options = new String[]{
                 "Reading mode · " + ("scroll".equals(readingMode) ? "Vertical scroll" : "Pages"),
                 "Auto scroll · " + onOff(autoScrollEnabled),
@@ -4624,7 +4676,7 @@ public class BookReaderActivity extends Activity {
                 "Lock orientation · " + onOff(lockOrientation)
         };
 
-        new AlertDialog.Builder(this)
+        AlertDialog pdfSettingsDialog = new AlertDialog.Builder(this)
                 .setTitle("PDF reader settings")
                 .setItems(options, (d, which) -> {
                     if (which == 0) {
@@ -4657,7 +4709,9 @@ public class BookReaderActivity extends Activity {
                     }
                 })
                 .setNegativeButton("Close", null)
-                .show();
+                .create();
+        pdfSettingsDialog.setOnDismissListener(d -> endAutoScrollInteraction());
+        pdfSettingsDialog.show();
     }
 
     private void showFontSizeDialog() {
@@ -4682,6 +4736,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showFontDialog() {
+        beginAutoScrollInteraction();
         List<ReaderFontStore.FontEntry> custom = ReaderFontStore.list(this);
         List<String> labels = new ArrayList<>();
         List<String> ids = new ArrayList<>();
@@ -4707,7 +4762,7 @@ public class BookReaderActivity extends Activity {
         int selected = -1;
         for (int i = 0; i < ids.size(); i++) if (ids.get(i).equals(fontChoice)) selected = i;
 
-        new AlertDialog.Builder(this)
+        AlertDialog fontDialog = new AlertDialog.Builder(this)
                 .setTitle("Font")
                 .setSingleChoiceItems(labels.toArray(new String[0]), selected, (dialog, which) -> {
                     String id = ids.get(which);
@@ -4721,7 +4776,9 @@ public class BookReaderActivity extends Activity {
                     }
                 })
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        fontDialog.setOnDismissListener(d -> endAutoScrollInteraction());
+        fontDialog.show();
     }
 
     private void pickCustomFont() {
@@ -4810,8 +4867,8 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showMarginDialog() {
-        final int[] values = {3, 5, 7, 9, 12};
-        String[] labels = {"Extra narrow", "Narrow · default", "Medium", "Wide", "Extra wide"};
+        final int[] values = {1, 2, 5, 8, 12};
+        String[] labels = {"Extra narrow", "Narrow", "Medium · default", "Wide", "Extra wide"};
 
         int selected = 1;
         for (int i = 0; i < values.length; i++)
@@ -4847,6 +4904,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showBrightnessDialog() {
+        beginAutoScrollInteraction();
         final int[] values = {-1, 40, 60, 80, 100};
         String[] labels = {"System", "40%", "60%", "80%", "100%"};
 
@@ -4854,7 +4912,7 @@ public class BookReaderActivity extends Activity {
         for (int i = 0; i < values.length; i++)
             if (values[i] == brightnessPercent) selected = i;
 
-        new AlertDialog.Builder(this)
+        AlertDialog brightnessDialog = new AlertDialog.Builder(this)
                 .setTitle("Brightness")
                 .setSingleChoiceItems(labels, selected, (dialog, which) -> {
                     brightnessPercent = values[which];
@@ -4863,7 +4921,9 @@ public class BookReaderActivity extends Activity {
                     dialog.dismiss();
                 })
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        brightnessDialog.setOnDismissListener(d -> endAutoScrollInteraction());
+        brightnessDialog.show();
     }
 
     private void resetReaderPreferences() {
@@ -5055,7 +5115,10 @@ public class BookReaderActivity extends Activity {
     private void updateEpubPageProgress(int page, int count, int p) {
         currentPageInChapter = Math.max(1, page);
         pageCountInChapter = Math.max(1, count);
-        updateEpubProgress(p);
+        int effectiveProgress = p;
+        if (!spine.isEmpty() && currentSpine == spine.size() - 1 && currentPageInChapter >= pageCountInChapter)
+            effectiveProgress = 1000;
+        updateEpubProgress(effectiveProgress);
         saveEpubStateOnly();
     }
 
@@ -6240,6 +6303,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showAutoScrollSpeedDialog() {
+        beginAutoScrollInteraction();
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(22), dp(8), dp(22), dp(4));
@@ -6264,12 +6328,14 @@ public class BookReaderActivity extends Activity {
             @Override public void onStopTrackingTouch(SeekBar bar) { updateAutoScrollState(); }
         });
         box.addView(seek, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        new AlertDialog.Builder(this)
+        AlertDialog speedDialog = new AlertDialog.Builder(this)
                 .setTitle("Auto scroll speed")
                 .setMessage("1 is extra slow · 10 is fastest")
                 .setView(box)
                 .setPositiveButton("Done", (d, w) -> updateAutoScrollState())
-                .show();
+                .create();
+        speedDialog.setOnDismissListener(d -> endAutoScrollInteraction());
+        speedDialog.show();
     }
 
     private void cancelEyeBreakReminder() {

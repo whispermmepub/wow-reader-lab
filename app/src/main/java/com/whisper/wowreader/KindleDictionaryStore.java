@@ -179,7 +179,6 @@ final class KindleDictionaryStore {
             int extraFlags = header.length >= 0xF4 ? u16(header, 0xF2) : 0;
 
             db = SQLiteDatabase.openOrCreateDatabase(output, null);
-            db.execSQL("PRAGMA journal_mode=DELETE");
             db.execSQL("CREATE TABLE entries(id INTEGER PRIMARY KEY,headword_norm TEXT NOT NULL,headword TEXT NOT NULL,definition_html TEXT NOT NULL)");
             db.execSQL("CREATE INDEX idx_kindle_headword ON entries(headword_norm)");
             db.beginTransaction();

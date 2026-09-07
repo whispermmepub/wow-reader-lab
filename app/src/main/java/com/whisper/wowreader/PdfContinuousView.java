@@ -149,7 +149,7 @@ final class PdfContinuousView extends RecyclerView {
 
     void startAutoScroll(int pixelsPerSecond) {
         int speed = Math.max(1, pixelsPerSecond);
-        if (pageCount <= 0 || !canScrollVertically(1)) {
+        if (pageCount <= 0) {
             stopAutoScroll();
             return;
         }
@@ -250,11 +250,10 @@ final class PdfContinuousView extends RecyclerView {
             autoLastMs = now;
             autoCarry += (autoPixelsPerSecond * dt) / 1000f;
             int pixels = (int) autoCarry;
-            if (pixels > 0) {
+            if (pixels > 0 && canScrollVertically(1)) {
                 autoCarry -= pixels;
                 scrollBy(0, pixels);
-            }
-            if (!canScrollVertically(1)) {
+            } else if (!canScrollVertically(1) && isAtDocumentEnd()) {
                 stopAutoScroll();
                 reportCurrentPage();
                 return;
@@ -262,6 +261,15 @@ final class PdfContinuousView extends RecyclerView {
             postOnAnimation(this);
         }
     };
+
+    private boolean isAtDocumentEnd() {
+        if (pageCount <= 0 || getChildCount() == 0) return false;
+        int last = layout.findLastVisibleItemPosition();
+        if (last < pageCount - 1) return false;
+        View end = layout.findViewByPosition(pageCount - 1);
+        if (end == null) return false;
+        return end.getBottom() <= getHeight() - getPaddingBottom() + dp(2);
+    }
 
     private void reportCurrentPage() {
         if (pageCount <= 0) return;

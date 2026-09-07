@@ -3546,7 +3546,7 @@ public class MainActivity extends Activity {
         if(googleSyncBusy){scheduleGoogleSyncRetry(12000L);return;}
         googleSyncBusy=true;
         final long requestedChangeMs=prefs.getLong("sync_updated_ms",0L);
-        googleDrive.authorize(false,new GoogleDriveSync.AuthCallback(){
+        googleDrive.authorizeSilently(new GoogleDriveSync.AuthCallback(){
             @Override public void onReady(GoogleDriveSync.Profile driveProfile){
                 GoogleDriveSync.Profile profile=resolvedProfile(driveProfile);
                 rememberGoogleProfile(profile,true);

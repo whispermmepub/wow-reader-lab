@@ -282,12 +282,14 @@ final class PdfContinuousView extends RecyclerView {
 
         @Override public void onBindViewHolder(PageHolder holder, int position) {
             holder.clearBitmap();
-            holder.boundPage = position;
+            int page = holder.getBindingAdapterPosition();
+            if (page == RecyclerView.NO_POSITION) return;
+            holder.boundPage = page;
             ViewGroup.LayoutParams lp = holder.image.getLayoutParams();
             lp.height = estimatedHeight();
             holder.image.setLayoutParams(lp);
             holder.image.setImageDrawable(null);
-            renderAsync(holder, position);
+            renderAsync(holder, page);
         }
 
         @Override public void onViewRecycled(PageHolder holder) {

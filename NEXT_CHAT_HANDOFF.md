@@ -33,7 +33,7 @@ Each matrix verifies:
 - clean/fresh v54 install + launch
 - reader/navigation/calendar/shelf instrumentation regression suite
 
-Build-fixtures, version/package checks and lint also passed. Two earlier CI-only timing/isolation races in the instrumentation harness were fixed; the final run is fully green.
+Build-fixtures, version/package checks and lint also passed. Two earlier CI-only timing/isolation races in the instrumentation harness were fixed; the final run is fully green. User instructed promotion to stable after the complete verification pass; v54 source is ready for `main`.
 
 ## Production release rule
 Use one original-production-signed v54 APK for both in-place updates and fresh installs. Sign only with the preserved original production key/certificate above. Never commit signing material.

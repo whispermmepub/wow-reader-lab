@@ -25,10 +25,12 @@ jobs:
           java-version: '17'
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
 
       - name: Install Android 16 SDK
         run: |
-          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager 'platforms;android-36' 'build-tools;36.0.0' >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
       - name: Integrate Kindle-style dictionary and bump v55
         shell: bash
@@ -36,21 +38,16 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-
           p=Path('app/src/main/java/com/whisper/wowreader/BookReaderActivity.java')
           s=p.read_text(encoding='utf-8')
-
           new_show='''    private void showTranslateDialog(String text) {\n        DictionaryDialog.show(this, text);\n    }\n'''
           s,n=re.subn(r'(?ms)^    private void showTranslateDialog\(String text\) \{.*?^    \}\n',new_show,s,count=1)
           if n != 1: raise SystemExit('showTranslateDialog replacement failed')
-
           new_open='''    private void openTranslation(String text, String targetLanguage) {\n        DictionaryDialog.show(this, text);\n    }\n'''
           s,n=re.subn(r'(?ms)^    private void openTranslation\(String text, String targetLanguage\) \{.*?^    \}\n',new_open,s,count=1)
           if n != 1: raise SystemExit('openTranslation replacement failed')
-
           s=s.replace('"Translate"', '"Dictionary"')
           p.write_text(s,encoding='utf-8')
-
           g=Path('app/build.gradle')
           t=g.read_text(encoding='utf-8')
           t,n1=re.subn(r'versionCode\s+54\b','versionCode 55',t,count=1)
@@ -58,7 +55,6 @@ jobs:
           if n1 != 1 or n2 != 1: raise SystemExit('version bump failed')
           g.write_text(t,encoding='utf-8')
           PY
-
           grep -q 'DictionaryDialog.show(this, text)' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           ! grep -R 'translate.google.com' app/src/main/java/com/whisper/wowreader
           grep -q 'versionCode 55' app/build.gradle
@@ -72,9 +68,7 @@ jobs:
           test "$(sqlite3 app/src/main/assets/dictionary/wow_dictionary.db 'select count(*) from entries where direction=1;')" -gt 10000
 
       - name: Build release APK AAB debug and lint
-        run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon clean assembleRelease bundleRelease assembleDebug lint
+        run: gradle :app:assembleRelease :app:bundleRelease :app:assembleDebug :app:lintRelease --stacktrace
 
       - name: APK smoke checks
         shell: bash
@@ -84,7 +78,8 @@ jobs:
           test -s "$APK"
           test -s "$AAB"
           unzip -l "$APK" | grep -q 'assets/dictionary/wow_dictionary.db'
-          ${ANDROID_HOME}/build-tools/36.0.0/aapt dump badging "$APK" | grep "package: name='com.whisper.wowreader' versionCode='55' versionName='2.18.5'"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep "package: name='com.whisper.wowreader' versionCode='55' versionName='2.18.5'"
 
       - name: Collect test artifacts
         run: |
@@ -94,6 +89,8 @@ jobs:
           cp app/build/outputs/bundle/release/app-release.aab out/WoW-Reader-v2.18.5-v55-dictionary-unsigned.aab
           cp app/src/main/assets/dictionary/NOTICE.md out/DICTIONARY-NOTICE.md
           cp tools/dictionary-build-report.txt out/dictionary-build-report.txt
+          APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
+          cp "$APKSIGNER_JAR" out/apksigner.jar
 
       - uses: actions/upload-artifact@v4
         with:

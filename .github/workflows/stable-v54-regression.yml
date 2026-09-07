@@ -12,7 +12,7 @@ on:
 permissions:
   contents: read
 
-# This matrix intentionally checks both update and fresh-install behavior across old/current Android APIs.
+# Final v54 gate: update, fresh-install and reader regressions across old/current Android APIs.
 jobs:
   build-fixtures:
     runs-on: ubuntu-latest

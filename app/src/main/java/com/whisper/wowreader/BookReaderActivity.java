@@ -175,6 +175,18 @@ public class BookReaderActivity extends Activity {
     private int autoScrollSpeed = 4;
     private long autoScrollResumeToken = 0L;
     private boolean autoScrollAdvancePending = false;
+    private int autoScrollInteractionLocks = 0;
+    private boolean selectionInteractionLock = false;
+    private boolean readingRulerEnabled = false;
+    private int readingRulerLines = 1;
+    private ReadingRulerView readingRulerView;
+    private int positionDisplayMode = 0;
+    private String basePositionText = "—";
+    private double lastOverallProgress = 0d;
+    private double lastChapterProgress = 0d;
+    private PdfTextRepository pdfTextRepository;
+    private PdfHighlightOverlayView pdfPageHighlightOverlay;
+    private PdfTextRepository.PageText pdfPageText;
     // Remembers a user-initiated Scroll-mode Next so Previous can return to the prior reading point.
     private int autoScrollManualReturnSpine = -1;
     private int autoScrollManualReturnProgress = 0;
@@ -255,6 +267,10 @@ public class BookReaderActivity extends Activity {
         volumeChapterKeys = prefs.getBoolean("reader_volume_chapter", false);
         autoScrollEnabled = prefs.getBoolean("reader_auto_scroll_enabled", false);
         autoScrollSpeed = Math.max(1, Math.min(10, prefs.getInt("reader_auto_scroll_speed", 4)));
+        readingRulerEnabled = prefs.getBoolean("reader_reading_ruler", false);
+        int savedRulerLines = prefs.getInt("reader_reading_ruler_lines", 1);
+        readingRulerLines = savedRulerLines <= 1 ? 1 : savedRulerLines <= 3 ? 3 : 5;
+        positionDisplayMode = Math.max(0, Math.min(2, prefs.getInt("reader_position_display_mode", 0)));
         eyeBreakReminderEnabled = prefs.getBoolean("reader_eye_break_reminder", true);
 
         readingMode = prefs.getString(isPdf ? "pdf_reading_mode" : "epub_reading_mode", "page");
@@ -332,6 +348,13 @@ public class BookReaderActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
         if (isPdf) setupPdfView(content); else setupWebView(content);
+
+        if (!isPdf) {
+            readingRulerView = new ReadingRulerView(this);
+            readingRulerView.configure(readingRulerEnabled, readingRulerLines, readerTheme);
+            root.addView(readingRulerView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
 
         if (!isPdf) {
             readerLoadingOverlay = new FrameLayout(this);
@@ -499,6 +522,8 @@ public class BookReaderActivity extends Activity {
         positionView.setGravity(Gravity.CENTER);
         positionView.setSingleLine(true);
         positionView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        positionView.setClickable(true);
+        positionView.setOnClickListener(v -> cyclePositionDisplayMode());
         bottomBar.addView(positionView, new LinearLayout.LayoutParams(0, dp(50), 1));
 
         TextView next = textButton("›");
@@ -1563,6 +1588,7 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showHighlightColorDialog(SelectionData data) {
+        beginAutoScrollInteraction();
         final String[] colors = {
                 "rgba(255,213,79,.46)",
                 "rgba(128,203,196,.42)",
@@ -1575,6 +1601,7 @@ public class BookReaderActivity extends Activity {
                 Color.rgb(146, 112, 210), Color.rgb(108, 170, 232)
         };
         Dialog dialog = new Dialog(this);
+        dialog.setOnDismissListener(d -> endAutoScrollInteraction());
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setCanceledOnTouchOutside(true);
         LinearLayout sheet = readerSheetBase("Highlight", "Choose a color", dialog);
@@ -1603,7 +1630,9 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showNoteEditor(SelectionData data) {
+        beginAutoScrollInteraction();
         Dialog dialog = new Dialog(this);
+        dialog.setOnDismissListener(d -> endAutoScrollInteraction());
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setCanceledOnTouchOutside(true);
         LinearLayout sheet = readerSheetBase("Add note", shortQuote(data.text, 120), dialog);
@@ -1913,11 +1942,12 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showTranslateDialog(String text) {
-        DictionaryDialog.show(this, text);
+        beginAutoScrollInteraction();
+        DictionaryDialog.show(this, text, this::endAutoScrollInteraction);
     }
 
     private void openTranslation(String text, String targetLanguage) {
-        DictionaryDialog.show(this, text);
+        showTranslateDialog(text);
     }
 
     private View selectionActionButton(String label, int action) {
@@ -2012,6 +2042,10 @@ public class BookReaderActivity extends Activity {
 
     private void showSelectionBar() {
         if (selectionBar == null || isPdf) return;
+        if (!selectionInteractionLock) {
+            selectionInteractionLock = true;
+            beginAutoScrollInteraction();
+        }
         selectionBar.animate().cancel();
         selectionBar.bringToFront();
         if (webView == null) {
@@ -2106,6 +2140,10 @@ public class BookReaderActivity extends Activity {
     }
 
     private void hideSelectionBar() {
+        if (selectionInteractionLock) {
+            selectionInteractionLock = false;
+            endAutoScrollInteraction();
+        }
         if (root != null && hideNativeSelectionRunnable != null) root.removeCallbacks(hideNativeSelectionRunnable);
         hideNativeSelectionRunnable = null;
         if (selectionBar != null) {
@@ -2138,6 +2176,9 @@ public class BookReaderActivity extends Activity {
         content.addView(pdfImage, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+        pdfPageHighlightOverlay = new PdfHighlightOverlayView(this);
+        content.addView(pdfPageHighlightOverlay, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         pdfContinuousView = new PdfContinuousView(this);
         pdfContinuousView.setVisibility(View.GONE);
@@ -2147,6 +2188,12 @@ public class BookReaderActivity extends Activity {
             }
             @Override public void onTap() { toggleControls(); }
             @Override public void onUserInteraction() { pauseAutoScrollForUserInteraction(); }
+            @Override public void onTextSelected(PdfTextRepository.Selection selection) {
+                if (selection != null) showPdfSelectionActions(selection);
+            }
+            @Override public void onTextUnavailable(int pageZeroBased) {
+                Toast.makeText(BookReaderActivity.this, "No selectable text on this PDF page", Toast.LENGTH_SHORT).show();
+            }
         });
         content.addView(pdfContinuousView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2159,6 +2206,10 @@ public class BookReaderActivity extends Activity {
                         pdfScale = Math.max(1f, Math.min(pdfScale, 4f));
                         pdfImage.setScaleX(pdfScale);
                         pdfImage.setScaleY(pdfScale);
+                        if (pdfPageHighlightOverlay != null) {
+                            pdfPageHighlightOverlay.setScaleX(pdfScale);
+                            pdfPageHighlightOverlay.setScaleY(pdfScale);
+                        }
                         return true;
                     }
                 });
@@ -2166,6 +2217,10 @@ public class BookReaderActivity extends Activity {
         pdfGestureDetector = new GestureDetector(this,
                 new GestureDetector.SimpleOnGestureListener() {
                     @Override public boolean onDown(MotionEvent e) { return true; }
+
+                    @Override public void onLongPress(MotionEvent e) {
+                        if (e != null) handlePdfPageLongPress(e.getX(), e.getY());
+                    }
 
                     @Override public boolean onDoubleTap(MotionEvent e) {
                         if (pdfScale > 1.05f) {
@@ -2213,6 +2268,7 @@ public class BookReaderActivity extends Activity {
         if (!isPdf || pdfRenderer == null) return;
         boolean scroll = "scroll".equals(readingMode);
         if (pdfImage != null) pdfImage.setVisibility(scroll ? View.GONE : View.VISIBLE);
+        if (pdfPageHighlightOverlay != null) pdfPageHighlightOverlay.setVisibility(scroll ? View.GONE : View.VISIBLE);
         if (pdfContinuousView != null) pdfContinuousView.setVisibility(scroll ? View.VISIBLE : View.GONE);
         if (scroll) {
             try { if (pdfPage != null) pdfPage.close(); } catch (Exception ignored) {}
@@ -2237,8 +2293,8 @@ public class BookReaderActivity extends Activity {
         currentPdfPage = Math.max(0, Math.min(count - 1, pageZeroBased));
         int percent = Math.max(0, Math.min(100, (int) Math.round(
                 ((currentPdfPage + 1.0) / count) * 100.0)));
-        if (positionView != null) positionView.setText(
-                "Page " + (currentPdfPage + 1) + " / " + count + " · " + percent + "%");
+        double overallPdf = (currentPdfPage + 1.0) / Math.max(1, count);
+        updatePositionDisplay("Page " + (currentPdfPage + 1) + " / " + count + " · " + percent + "%", overallPdf, overallPdf);
         if (readingSeek != null && !readingSeekDragging) {
             int seek = count <= 1 ? 1000 : (int) Math.round((currentPdfPage / (double) (count - 1)) * 1000.0);
             readingSeek.setProgress(Math.max(0, Math.min(1000, seek)));
@@ -2260,6 +2316,117 @@ public class BookReaderActivity extends Activity {
         } else {
             renderPdfPage();
         }
+    }
+
+    private void loadPdfPageText(int page) {
+        pdfPageText = null;
+        if (pdfTextRepository == null || pdfPageHighlightOverlay == null || bookFile == null) return;
+        pdfPageHighlightOverlay.setHighlights(PdfHighlightStore.forPage(prefs, bookFile.getName(), page));
+        PdfTextRepository.PageText cached = pdfTextRepository.cached(page);
+        if (cached != null) {
+            pdfPageText = cached;
+            pdfPageHighlightOverlay.setPageText(cached);
+            return;
+        }
+        final int requested = page;
+        pdfTextRepository.request(page, text -> {
+            if (requested != currentPdfPage || isFinishing()) return;
+            pdfPageText = text;
+            if (pdfPageHighlightOverlay != null) {
+                pdfPageHighlightOverlay.setPageText(text);
+                pdfPageHighlightOverlay.setHighlights(PdfHighlightStore.forPage(prefs, bookFile.getName(), requested));
+            }
+        });
+    }
+
+    private void handlePdfPageLongPress(float x, float y) {
+        if (!isPdf || "scroll".equals(readingMode) || pdfTextRepository == null || pdfPageHighlightOverlay == null) return;
+        pauseAutoScrollForUserInteraction();
+        if (pdfScale > 1.05f) {
+            Toast.makeText(this, "Reset PDF zoom to select text", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        android.graphics.PointF n = pdfPageHighlightOverlay.toNormalized(x, y);
+        if (n == null) return;
+        PdfTextRepository.PageText page = pdfPageText != null ? pdfPageText : pdfTextRepository.cached(currentPdfPage);
+        if (page != null) {
+            PdfTextRepository.Selection selection = page.select(n.x, n.y);
+            if (selection != null) {
+                pdfPageHighlightOverlay.setSelected(selection.wordRects);
+                showPdfSelectionActions(selection);
+            } else Toast.makeText(this, "No text at this spot", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(this, "Preparing PDF text…", Toast.LENGTH_SHORT).show();
+        final int requested = currentPdfPage;
+        pdfTextRepository.request(requested, text -> {
+            if (requested != currentPdfPage || isFinishing()) return;
+            pdfPageText = text;
+            if (pdfPageHighlightOverlay != null) pdfPageHighlightOverlay.setPageText(text);
+            if (text == null || text.isEmpty()) {
+                Toast.makeText(this, "No selectable text on this PDF page", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            PdfTextRepository.Selection selection = text.select(n.x, n.y);
+            if (selection != null) {
+                pdfPageHighlightOverlay.setSelected(selection.wordRects);
+                showPdfSelectionActions(selection);
+            }
+        });
+    }
+
+    private void showPdfSelectionActions(PdfTextRepository.Selection selection) {
+        if (selection == null) return;
+        beginAutoScrollInteraction();
+        String[] actions = {"Dictionary", "Highlight word", "Highlight line", "Copy word", "Copy line"};
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(selection.word)
+                .setItems(actions, (d, which) -> {
+                    if (which == 0) showTranslateDialog(selection.word);
+                    else if (which == 1) showPdfHighlightColors(selection, false);
+                    else if (which == 2) showPdfHighlightColors(selection, true);
+                    else if (which == 3) copySelectedText(selection.word);
+                    else if (which == 4) copySelectedText(selection.line);
+                })
+                .setNegativeButton("Cancel", null)
+                .create();
+        dialog.setOnDismissListener(d -> {
+            clearPdfTextSelection();
+            endAutoScrollInteraction();
+        });
+        dialog.show();
+    }
+
+    private void showPdfHighlightColors(PdfTextRepository.Selection selection, boolean wholeLine) {
+        beginAutoScrollInteraction();
+        final String[] labels = {"Yellow", "Teal", "Pink", "Purple"};
+        final int[] colors = {
+                Color.argb(92, 255, 213, 79),
+                Color.argb(84, 128, 203, 196),
+                Color.argb(84, 244, 143, 177),
+                Color.argb(80, 149, 117, 205)
+        };
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(wholeLine ? "Highlight line" : "Highlight word")
+                .setItems(labels, (d, which) -> {
+                    List<android.graphics.RectF> rects = wholeLine ? selection.lineRects : selection.wordRects;
+                    String quote = wholeLine ? selection.line : selection.word;
+                    PdfHighlightStore.add(prefs, bookFile.getName(), selection.page, quote, colors[which], rects);
+                    GoogleAutoSync.scheduleSoon(this);
+                    if (pdfPageHighlightOverlay != null && selection.page == currentPdfPage)
+                        pdfPageHighlightOverlay.setHighlights(PdfHighlightStore.forPage(prefs, bookFile.getName(), selection.page));
+                    if (pdfContinuousView != null) pdfContinuousView.refreshHighlights(selection.page);
+                    Toast.makeText(this, "Highlighted", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Cancel", null)
+                .create();
+        dialog.setOnDismissListener(d -> endAutoScrollInteraction());
+        dialog.show();
+    }
+
+    private void clearPdfTextSelection() {
+        if (pdfPageHighlightOverlay != null) pdfPageHighlightOverlay.clearSelected();
+        if (pdfContinuousView != null) pdfContinuousView.clearTextSelection();
     }
 
     private void openEpub() {
@@ -3877,6 +4044,33 @@ public class BookReaderActivity extends Activity {
                 .replace("\n", " ") + "'";
     }
 
+    private void cyclePositionDisplayMode() {
+        int max = isPdf ? 1 : 2;
+        positionDisplayMode = (positionDisplayMode + 1) % (max + 1);
+        prefs.edit().putInt("reader_position_display_mode", positionDisplayMode).apply();
+        refreshPositionDisplay();
+    }
+
+    private void updatePositionDisplay(String base, double chapterProgress, double overallProgress) {
+        basePositionText = base == null ? "—" : base;
+        lastChapterProgress = Math.max(0d, Math.min(1d, chapterProgress));
+        lastOverallProgress = Math.max(0d, Math.min(1d, overallProgress));
+        refreshPositionDisplay();
+    }
+
+    private void refreshPositionDisplay() {
+        if (positionView == null) return;
+        if (positionDisplayMode == 0 || bookFile == null) {
+            positionView.setText(basePositionText);
+            return;
+        }
+        ReadingEstimateStore.Estimate e = ReadingEstimateStore.estimate(
+                prefs, bookFile.getName(), lastOverallProgress, lastChapterProgress,
+                isPdf ? 1 : Math.max(1, spine.size()), readingSessionStartedElapsedMs);
+        if (!isPdf && positionDisplayMode == 1) positionView.setText(ReadingEstimateStore.chapterLabel(e));
+        else positionView.setText(ReadingEstimateStore.bookLabel(e));
+    }
+
     private void showReaderSettings() {
         if (isPdf) {
             showPdfSettings();
@@ -4050,6 +4244,27 @@ public class BookReaderActivity extends Activity {
         autoScrollRow.addView(autoToggle, sheetChipLp(false));
         autoScrollRow.addView(autoSpeed, sheetChipLp(true));
         card.addView(autoScrollRow);
+
+        addSheetLabel(card, "Reading ruler", sub);
+        LinearLayout rulerRow = sheetRow();
+        TextView rulerToggle = sheetChip(readingRulerEnabled ? "On" : "Off", readingRulerEnabled);
+        TextView rulerSize = sheetChip("Lines · " + readingRulerLines, false);
+        rulerToggle.setOnClickListener(v -> {
+            readingRulerEnabled = !readingRulerEnabled;
+            rulerToggle.setText(readingRulerEnabled ? "On" : "Off");
+            styleSheetChip(rulerToggle, readingRulerEnabled);
+            if (readingRulerView != null) readingRulerView.configure(readingRulerEnabled, readingRulerLines, readerTheme);
+            saveReaderPreferences();
+        });
+        rulerSize.setOnClickListener(v -> {
+            readingRulerLines = readingRulerLines == 1 ? 3 : readingRulerLines == 3 ? 5 : 1;
+            rulerSize.setText("Lines · " + readingRulerLines);
+            if (readingRulerView != null) readingRulerView.configure(readingRulerEnabled, readingRulerLines, readerTheme);
+            saveReaderPreferences();
+        });
+        rulerRow.addView(rulerToggle, sheetChipLp(false));
+        rulerRow.addView(rulerSize, sheetChipLp(true));
+        card.addView(rulerRow);
 
         addSheetLabel(card, "Eye care", sub);
         LinearLayout eyeRow = sheetRow();
@@ -4592,6 +4807,10 @@ public class BookReaderActivity extends Activity {
         volumeChapterKeys = false;
         autoScrollEnabled = false;
         autoScrollSpeed = 4;
+        readingRulerEnabled = false;
+        readingRulerLines = 1;
+        positionDisplayMode = 0;
+        if (readingRulerView != null) readingRulerView.configure(false, 1, readerTheme);
         eyeBreakReminderEnabled = true;
         autoScrollResumeToken++;
         stopAutoScrollEngine();
@@ -4625,6 +4844,9 @@ public class BookReaderActivity extends Activity {
                 .putBoolean("reader_volume_chapter", volumeChapterKeys)
                 .putBoolean("reader_auto_scroll_enabled", autoScrollEnabled)
                 .putInt("reader_auto_scroll_speed", Math.max(1, Math.min(10, autoScrollSpeed)))
+                .putBoolean("reader_reading_ruler", readingRulerEnabled)
+                .putInt("reader_reading_ruler_lines", readingRulerLines)
+                .putInt("reader_position_display_mode", positionDisplayMode)
                 .putBoolean("reader_eye_break_reminder", eyeBreakReminderEnabled)
                 .putString(isPdf ? "pdf_reading_mode" : "epub_reading_mode", readingMode)
                 .putLong("sync_updated_ms", System.currentTimeMillis())
@@ -4730,10 +4952,10 @@ public class BookReaderActivity extends Activity {
                 ? chapterTitles.get(currentSpine)
                 : "Chapter " + (currentSpine + 1);
 
-        if ("page".equals(readingMode))
-            positionView.setText("Page " + currentPageInChapter + " / " + pageCountInChapter + " · " + percent + "%");
-        else
-            positionView.setText(chapter + " · " + percent + "%");
+        String base = "page".equals(readingMode)
+                ? "Page " + currentPageInChapter + " / " + pageCountInChapter + " · " + percent + "%"
+                : chapter + " · " + percent + "%";
+        updatePositionDisplay(base, currentProgressPermille / 1000.0, overall);
         if (readingSeek != null && !readingSeekDragging)
             readingSeek.setProgress(Math.max(0, Math.min(1000, (int) Math.round(overall * 1000.0))));
         if (!footnoteNavigationActive && !footnoteReturnPending && !searchNavigationActive) ReadingProgressStore.set(prefs, bookFile.getName(), percent);
@@ -5432,7 +5654,12 @@ public class BookReaderActivity extends Activity {
                     prefs.getInt("pdf_page_" + bookFile.getName(), 0),
                     pdfRenderer.getPageCount() - 1));
 
-            if (pdfContinuousView != null) pdfContinuousView.open(bookFile, currentPdfPage);
+            if (pdfTextRepository != null) pdfTextRepository.close();
+            pdfTextRepository = new PdfTextRepository(this, bookFile);
+            if (pdfContinuousView != null) {
+                pdfContinuousView.setTextFeatures(pdfTextRepository, prefs, bookFile.getName());
+                pdfContinuousView.open(bookFile, currentPdfPage);
+            }
             applyPdfReadingMode();
 
         } catch (Exception e) {
@@ -5470,6 +5697,7 @@ public class BookReaderActivity extends Activity {
 
             pdfImage.setImageBitmap(bitmap);
             resetPdfZoom();
+            loadPdfPageText(currentPdfPage);
 
             updatePdfProgressState(currentPdfPage, pdfRenderer.getPageCount());
 
@@ -5864,7 +6092,7 @@ public class BookReaderActivity extends Activity {
         if (isPdf) {
             if (pdfContinuousView == null) return;
             boolean canRunPdf = autoScrollEnabled && "scroll".equals(readingMode) &&
-                    pdfContinuousView.getVisibility() == View.VISIBLE && eyeBreakOverlay == null && !isFinishing();
+                    pdfContinuousView.getVisibility() == View.VISIBLE && eyeBreakOverlay == null && autoScrollInteractionLocks == 0 && !isFinishing();
             if (canRunPdf) pdfContinuousView.startAutoScroll(autoScrollPixelsPerSecond());
             else pdfContinuousView.stopAutoScroll();
             return;
@@ -5872,7 +6100,7 @@ public class BookReaderActivity extends Activity {
         if (webView == null) return;
         boolean canRun = autoScrollEnabled && "scroll".equals(readingMode) && !chapterLoading &&
                 !footnoteNavigationActive && !footnoteReturnPending && !footnoteExactBacklinkPending &&
-                footnotePreviewOverlay == null && eyeBreakOverlay == null && !searchNavigationActive;
+                footnotePreviewOverlay == null && eyeBreakOverlay == null && !searchNavigationActive && autoScrollInteractionLocks == 0;
         if (!canRun) {
             stopAutoScrollEngine();
             return;
@@ -5888,6 +6116,23 @@ public class BookReaderActivity extends Activity {
                 "window.scrollBy(0,(a.speed*dt)/1000);a.raf=requestAnimationFrame(a.tick);};" +
                 "a.raf=requestAnimationFrame(a.tick);return true;}catch(e){return false;}})()";
         try { webView.evaluateJavascript(js, null); } catch (Exception ignored) {}
+    }
+
+    private void beginAutoScrollInteraction() {
+        autoScrollInteractionLocks++;
+        autoScrollResumeToken++;
+        stopAutoScrollEngine();
+    }
+
+    private void endAutoScrollInteraction() {
+        if (autoScrollInteractionLocks > 0) autoScrollInteractionLocks--;
+        if (autoScrollInteractionLocks == 0 && root != null) {
+            final long token = ++autoScrollResumeToken;
+            root.postDelayed(() -> {
+                if (token == autoScrollResumeToken && autoScrollInteractionLocks == 0 && !isFinishing())
+                    updateAutoScrollState();
+            }, 180L);
+        }
     }
 
     private void pauseAutoScrollForUserInteraction() {
@@ -6060,6 +6305,10 @@ public class BookReaderActivity extends Activity {
         if (pdfContinuousView != null) {
             try { pdfContinuousView.close(); } catch (Exception ignored) {}
             pdfContinuousView = null;
+        }
+        if (pdfTextRepository != null) {
+            try { pdfTextRepository.close(); } catch (Exception ignored) {}
+            pdfTextRepository = null;
         }
         try { if (pdfPage != null) pdfPage.close(); } catch (Exception ignored) {}
         try { if (pdfRenderer != null) pdfRenderer.close(); } catch (Exception ignored) {}

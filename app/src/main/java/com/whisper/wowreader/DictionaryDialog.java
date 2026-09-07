@@ -40,6 +40,10 @@ final class DictionaryDialog {
     private DictionaryDialog() {}
 
     static void show(Activity activity, String selectedText) {
+        show(activity, selectedText, null);
+    }
+
+    static void show(Activity activity, String selectedText, Runnable onDismiss) {
         if (activity == null || activity.isFinishing()) return;
         String query = cleanQuery(selectedText);
         if (query.isEmpty()) {
@@ -52,6 +56,12 @@ final class DictionaryDialog {
         List<Entry> entries = lookup(activity, query, direction);
 
         SharedPreferences prefs = activity.getSharedPreferences("wow_reader", Context.MODE_PRIVATE);
+        String sourceBook = "";
+        try {
+            String sourcePath = activity.getIntent() == null ? null : activity.getIntent().getStringExtra("path");
+            if (sourcePath != null) sourceBook = new File(sourcePath).getName();
+        } catch (Exception ignored) {}
+        if (query.split("\\s+").length <= 3) VocabularyStore.record(prefs, query, direction, sourceBook);
         int theme = prefs.getInt("reader_theme", 0);
         Palette p = palette(theme);
 
@@ -220,6 +230,9 @@ final class DictionaryDialog {
                 online.loadUrl("about:blank");
                 online.destroy();
             } catch (Exception ignored) {}
+            if (onDismiss != null) {
+                try { onDismiss.run(); } catch (Exception ignored) {}
+            }
         });
         dialog.show();
 

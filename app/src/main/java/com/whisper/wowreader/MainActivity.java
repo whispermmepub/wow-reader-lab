@@ -1461,6 +1461,10 @@ public class MainActivity extends Activity {
             dialog.dismiss();
             startActivity(new Intent(this, ReadingCalendarActivity.class));
         }));
+        sheet.addView(statSheetActionRow("Aa", "Vocabulary Builder", "Dictionary words · flashcards · learned words", "Open  ›", themeAccent(), () -> {
+            dialog.dismiss();
+            startActivity(new Intent(this, VocabularyActivity.class));
+        }));
         sheet.addView(statSheetRow("◷", "Today", "Time spent reading today", formatReadingTimeLong(stats.todayMs), themeAccent()));
         sheet.addView(statSheetRow("♨", "Current streak", "Keep the reading habit going",
                 stats.currentStreak + (stats.currentStreak == 1 ? " day" : " days"), Color.rgb(231, 111, 55)));

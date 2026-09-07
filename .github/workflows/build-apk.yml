@@ -1,8 +1,8 @@
-name: Build WoW Reader Lab v2.18.2 APK and AAB
+name: Build WoW Reader Lab v2.18.3 APK and AAB
 
 on:
   push:
-    branches: [main, play-store-api36, fix/v52-unified-install]
+    branches: [main, play-store-api36, fix/v52-unified-install, feature/v53-reading-calendar-recap]
     paths:
       - 'app/**'
       - 'build.gradle'
@@ -47,6 +47,9 @@ jobs:
           test -s app/src/main/java/com/whisper/wowreader/ReadingProgressStore.java
           test -s app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
           test -s app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingRecapActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/ReadingRecapData.java
+          test -s app/src/main/res/xml/share_paths.xml
           test -s app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
           test -s app/google-services.json
           test -s app/src/main/assets/fonts/pyidaungsu_native.ttf
@@ -54,8 +57,8 @@ jobs:
           grep -q "minSdk 23" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
-          grep -q "versionCode 52" app/build.gradle
-          grep -q "versionName '2.18.2'" app/build.gradle
+          grep -q "versionCode 53" app/build.gradle
+          grep -q "versionName '2.18.3'" app/build.gradle
           grep -q "Home search submit is consumed" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "IME_ACTION_SEARCH" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "setOnEditorActionListener" app/src/main/java/com/whisper/wowreader/MainActivity.java
@@ -84,6 +87,11 @@ jobs:
           grep -q "renderBookSearchResults" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "ReaderSearchIndex.search" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "ReadingProgressStore.set" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "finished_at_" app/src/main/java/com/whisper/wowreader/ReadingProgressStore.java
+          grep -q '"Week", "Month", "Year"' app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
+          grep -q "View & Share" app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
+          grep -q "Share Image" app/src/main/java/com/whisper/wowreader/ReadingRecapActivity.java
+          grep -q "FileProvider" app/src/main/java/com/whisper/wowreader/ReadingRecapActivity.java
           ! grep -q "showFindDialog" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "renameShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
           grep -q "deleteShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
@@ -106,8 +114,8 @@ jobs:
           test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
-          "$AAPT" dump badging "$APK" | grep -q "versionCode='52'"
-          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.2'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='53'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.3'"
           "$AAPT" dump badging "$APK" | grep -q "sdkVersion:'23'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           unzip -l "$APK" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
@@ -116,8 +124,8 @@ jobs:
       - name: Collect APK
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.2-v52-unsigned.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.2-v52-unsigned.aab
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.3-v53-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.3-v53-unsigned.aab
           APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
           test -n "$APKSIGNER_JAR"
           cp "$APKSIGNER_JAR" apksigner.jar
@@ -125,10 +133,10 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-Lab-v2.18.2-v52
+          name: WoW-Reader-Lab-v2.18.3-v53
           path: |
-            WoW-Reader-Lab-v2.18.2-v52-unsigned.apk
-            WoW-Reader-Lab-v2.18.2-v52-unsigned.aab
+            WoW-Reader-Lab-v2.18.3-v53-unsigned.apk
+            WoW-Reader-Lab-v2.18.3-v53-unsigned.aab
             apksigner.jar
             app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk

@@ -112,7 +112,7 @@ public class RegressionInstrumentation extends Instrumentation {
             ui(() -> {View go=find((View)field("root"),"Show on page");check(go!=null,"go button");go.performClick();return null;});ready("notes.xhtml");
             check(percent==prefs.getInt("percent_"+book.getName(),-1),"footnote visit did not overwrite progress");
             js("document.getElementById('back"+(id.equals("ref2")?"2":"1")+"').click()");ready("chapter.xhtml");
-            await(() -> page==(Integer)ui(() -> field("currentPageInChapter")), "return exact page");
+            await(() -> page==(Integer)field("currentPageInChapter"), "return exact page");
             check("true".equals(js("(function(){var r=document.getElementById('"+id+"').getBoundingClientRect();return r.top>=-2&&r.top<innerHeight&&r.left>=-2&&r.left<innerWidth;})()")),"returned reference is visible");
         }
         ui(() -> {
@@ -139,7 +139,7 @@ public class RegressionInstrumentation extends Instrumentation {
             ready("notes.xhtml");
         }
         ui(() -> {reader.finish();return null;});
-        await(() -> (Boolean)ui(() -> reader.isDestroyed()), "reader destroyed");
+        await(() -> reader.isDestroyed(), "reader destroyed");
         SystemClock.sleep(200);
     }
     private void testCalendarAndShelves() throws Exception {

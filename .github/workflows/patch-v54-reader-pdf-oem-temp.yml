@@ -45,7 +45,7 @@ jobs:
           set -euo pipefail
           git config user.name 'AungSoe Moe'
           git config user.email '61192036+whispermmepub@users.noreply.github.com'
-          git add app tools/patch_v54.py .github/workflows/build-apk.yml
+          git add app tools/patch_v54.py
           git diff --cached --quiet && exit 0
           git commit -m 'Fix themed metadata OEM resume and add PDF scroll auto-scroll'
           git push origin HEAD:fix/v54-reader-pdf-oem

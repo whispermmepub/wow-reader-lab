@@ -1,0 +1,78 @@
+name: Build unsigned v57 release APK
+
+on:
+  push:
+    branches: [feature/v57-dictionary-reader-polish]
+    paths:
+      - '.github/workflows/build-v57-unsigned-release-temp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v57-dictionary-reader-polish
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager 'platforms;android-36' 'build-tools;36.0.0' >/dev/null || true
+
+      - name: Verify v57 source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "versionCode 57" app/build.gradle
+          grep -q "versionName '2.18.7'" app/build.gradle
+          grep -q 'Notes & Highlight' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'Large Grid' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'Small Grid' app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q 'ScaleGestureDetector' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'Font weight' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q 'KindleDictionaryStore' app/src/main/java/com/whisper/wowreader/DictionaryDialog.java
+          grep -q 'Wiktionary Online' app/src/main/java/com/whisper/wowreader/DictionaryDialog.java
+          test -s app/src/main/assets/dictionary/myanmar_spelling.txt
+
+      - name: Build unsigned release APK
+        run: gradle :app:clean :app:assembleRelease --stacktrace
+
+      - name: Verify and collect unsigned APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -n 1)
+          test -n "$APK"
+          test -s "$APK"
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='57'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.7'"
+          "$AAPT" dump badging "$APK" | grep -q "sdkVersion:'23'"
+          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
+          cp "$APK" WoW-Reader-v2.18.7-v57-unsigned-release.apk
+          sha256sum WoW-Reader-v2.18.7-v57-unsigned-release.apk > WoW-Reader-v2.18.7-v57-unsigned-release.sha256.txt
+
+      - name: Upload unsigned release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Reader-v2.18.7-v57-unsigned-release
+          path: |
+            WoW-Reader-v2.18.7-v57-unsigned-release.apk
+            WoW-Reader-v2.18.7-v57-unsigned-release.sha256.txt
+          if-no-files-found: error
+          retention-days: 7

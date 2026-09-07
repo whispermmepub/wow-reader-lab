@@ -1,4 +1,4 @@
-name: Fix v54 footnote regression timing check
+name: Fix v54 regression activity cleanup
 
 on:
   push:
@@ -16,19 +16,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: fix/v54-reader-pdf-oem
-      - name: Wait for exact page state instead of sampling too early
+      - name: Wait for reader destruction between regression cases
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('app/src/androidTest/java/com/whisper/wowreader/RegressionInstrumentation.java')
           s = p.read_text()
-          old = '            check(page==(Integer)ui(() -> field("currentPageInChapter")),"return exact page");'
-          new = '            await(() -> page==(Integer)ui(() -> field("currentPageInChapter")), "return exact page");'
+          old = '        ui(() -> {reader.finish();return null;});SystemClock.sleep(300);'
+          new = '        ui(() -> {reader.finish();return null;});\n        await(() -> (Boolean)ui(() -> reader.isDestroyed()), "reader destroyed");\n        SystemClock.sleep(200);'
           if old not in s:
-              raise SystemExit('target assertion not found')
-          s = s.replace(old, new, 1)
-          p.write_text(s)
+              raise SystemExit('cleanup target not found')
+          p.write_text(s.replace(old, new, 1))
           PY
           git diff --check
       - name: Commit source fix
@@ -37,5 +36,5 @@ jobs:
           git config user.name 'AungSoe Moe'
           git config user.email '61192036+whispermmepub@users.noreply.github.com'
           git add app/src/androidTest/java/com/whisper/wowreader/RegressionInstrumentation.java
-          git commit -m 'Wait for exact footnote return page in regression test'
+          git commit -m 'Wait for reader destruction between regression cases'
           git push origin HEAD:fix/v54-reader-pdf-oem

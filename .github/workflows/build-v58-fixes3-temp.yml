@@ -22,7 +22,7 @@ jobs:
       - name: Install Android 16 SDK
         run: yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager 'platforms;android-36' 'build-tools;36.0.0' >/dev/null || true
       - name: Apply v58 fixes
-        run: python3 .github/scripts/run_v58_fixes2.py
+        run: python3 .github/scripts/run_v58_fixes3.py
       - name: Source checks
         run: |
           set -euo pipefail
@@ -59,7 +59,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app/build.gradle app/src/main/java/com/whisper/wowreader/KindleDictionaryStore.java app/src/main/java/com/whisper/wowreader/ReadingRulerView.java app/src/main/java/com/whisper/wowreader/PdfContinuousView.java app/src/main/java/com/whisper/wowreader/MainActivity.java app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          git rm -f .github/scripts/apply_v58_fixes.py .github/scripts/run_v58_fixes.py .github/scripts/run_v58_fixes2.py
+          git rm -f .github/scripts/apply_v58_fixes.py .github/scripts/run_v58_fixes.py .github/scripts/run_v58_fixes2.py .github/scripts/run_v58_fixes3.py
           git rm -f .github/workflows/build-v58-fixes-temp.yml .github/workflows/build-v58-fixes2-temp.yml .github/workflows/build-v58-fixes3-temp.yml
           git rm -f .github/workflows/build-v57-signed-test-temp.yml .github/workflows/build-v57-unsigned-release-temp.yml || true
           git commit -m 'Fix v58 reader stability and Kindle dictionary import'

@@ -138,7 +138,9 @@ public class RegressionInstrumentation extends Instrumentation {
             ui(() -> {WebView w=(WebView)field("webView");return call("handleReaderTap",new Class[]{float.class,float.class},w.getWidth()*.97f,w.getHeight()*.8f);});
             ready("notes.xhtml");
         }
-        ui(() -> {reader.finish();return null;});SystemClock.sleep(300);
+        ui(() -> {reader.finish();return null;});
+        await(() -> (Boolean)ui(() -> reader.isDestroyed()), "reader destroyed");
+        SystemClock.sleep(200);
     }
     private void testCalendarAndShelves() throws Exception {
         SharedPreferences p = getTargetContext().getSharedPreferences("regression_isolated", 0);

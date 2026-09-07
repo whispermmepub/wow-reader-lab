@@ -22,6 +22,10 @@
         </provider>
 
         <activity
+            android:name=".VocabularyActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ReadingRecapActivity"
             android:exported="false" />
 

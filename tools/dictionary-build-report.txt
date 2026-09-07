@@ -1,0 +1,5 @@
+my_to_en_rows=14557
+en_to_my_rows=6661
+english_word_files=4773
+english_fetch_failures=0
+db_bytes=3264512

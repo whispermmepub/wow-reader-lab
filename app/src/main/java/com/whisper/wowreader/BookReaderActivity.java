@@ -553,7 +553,7 @@ public class BookReaderActivity extends Activity {
         selectionBar.setElevation(dp(12));
         selectionBar.addView(selectionActionButton("Highlight", SEL_HIGHLIGHT));
         selectionBar.addView(selectionActionButton("Note", SEL_NOTE));
-        selectionBar.addView(selectionActionButton("Translate", SEL_TRANSLATE));
+        selectionBar.addView(selectionActionButton("Dictionary", SEL_TRANSLATE));
         selectionBar.addView(selectionActionButton("Copy", SEL_COPY));
         selectionBar.setVisibility(View.GONE);
         FrameLayout.LayoutParams selectionLp = new FrameLayout.LayoutParams(
@@ -1913,24 +1913,11 @@ public class BookReaderActivity extends Activity {
     }
 
     private void showTranslateDialog(String text) {
-        boolean hasMyanmar = text != null && text.matches("(?s).*[\\u1000-\\u109F\\uA9E0-\\uA9FF\\uAA60-\\uAA7F].*");
-        String[] labels = hasMyanmar ? new String[]{"English", "မြန်မာ"} : new String[]{"မြန်မာ", "English"};
-        String[] codes = hasMyanmar ? new String[]{"en", "my"} : new String[]{"my", "en"};
-        new AlertDialog.Builder(this)
-                .setTitle("Translate to")
-                .setItems(labels, (dialog, which) -> openTranslation(text, codes[which]))
-                .setNegativeButton("Cancel", null)
-                .show();
+        DictionaryDialog.show(this, text);
     }
 
     private void openTranslation(String text, String targetLanguage) {
-        try {
-            String url = "https://translate.google.com/?sl=auto&tl=" + targetLanguage +
-                    "&text=" + Uri.encode(text == null ? "" : text) + "&op=translate";
-            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-        } catch (Exception e) {
-            Toast.makeText(this, "Unable to open translation", Toast.LENGTH_SHORT).show();
-        }
+        DictionaryDialog.show(this, text);
     }
 
     private View selectionActionButton(String label, int action) {
@@ -3834,7 +3821,7 @@ public class BookReaderActivity extends Activity {
         selectionBar.removeAllViews();
         selectionBar.addView(selectionActionButton("Highlight", SEL_HIGHLIGHT));
         selectionBar.addView(selectionActionButton("Note", SEL_NOTE));
-        selectionBar.addView(selectionActionButton("Translate", SEL_TRANSLATE));
+        selectionBar.addView(selectionActionButton("Dictionary", SEL_TRANSLATE));
         selectionBar.addView(selectionActionButton("Copy", SEL_COPY));
     }
 

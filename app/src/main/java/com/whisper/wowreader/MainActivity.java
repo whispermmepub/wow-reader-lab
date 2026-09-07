@@ -70,6 +70,7 @@ public class MainActivity extends Activity {
     private TextView viewModeButton;
     private SharedPreferences prefs;
     private boolean gridMode;
+    private boolean smallGridMode;
     private String searchQuery = "";
     private Typeface pyidaungsuTypeface;
     private TextView sortButton;
@@ -118,6 +119,7 @@ public class MainActivity extends Activity {
         googleDrive = new GoogleDriveSync(this);
         restoreStoredGoogleProfile();
         gridMode = prefs.getBoolean("library_grid", true);
+        smallGridMode = gridMode && prefs.getBoolean("library_small_grid", false);
         sortMode = prefs.getString("library_sort", "added");
         if (!"added".equals(sortMode) && !"opened".equals(sortMode) &&
                 !"title_asc".equals(sortMode) && !"title_desc".equals(sortMode))
@@ -348,7 +350,7 @@ public class MainActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setText(post.title);
-        title.setTextSize(14.5f);
+        title.setTextSize(smallGridMode ? 12.5f : 14.5f);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextColor(themePrimaryText());
         title.setMaxLines(2);
@@ -690,7 +692,8 @@ public class MainActivity extends Activity {
     private View createGridCard(File file,int cellWidth) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(7), dp(7), dp(7), dp(9));
+        int cardPad = smallGridMode ? dp(5) : dp(7);
+        card.setPadding(cardPad, cardPad, cardPad, smallGridMode ? dp(7) : dp(9));
         card.setBackground(roundRect(themeCardSurface(), dp(18), dp(1), themeStroke()));
         card.setElevation(dp(1));
         card.setClickable(true);
@@ -704,7 +707,8 @@ public class MainActivity extends Activity {
             return false;
         });
 
-        int innerWidth = Math.max(dp(96), cellWidth - dp(26));
+        int innerWidth = Math.max(smallGridMode ? dp(78) : dp(96),
+                cellWidth - (smallGridMode ? dp(18) : dp(26)));
         int coverHeight = Math.round(innerWidth * 1.47f);
         ImageView cover = new ImageView(this);
         cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -721,13 +725,13 @@ public class MainActivity extends Activity {
         applyBookTitleTypeface(title);
         title.setMaxLines(2);
         title.setLineSpacing(0f, 1.05f);
-        title.setPadding(dp(2), dp(9), dp(2), 0);
+        title.setPadding(dp(2), smallGridMode ? dp(6) : dp(9), dp(2), 0);
         card.addView(title);
 
         int progress = ReadingProgressStore.get(prefs, file.getName());
         TextView meta = new TextView(this);
         meta.setText((file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf") ? "PDF" : "EPUB") + " · " + progress + "%");
-        meta.setTextSize(10.5f);
+        meta.setTextSize(smallGridMode ? 9.25f : 10.5f);
         meta.setTextColor(themeSecondaryText());
         meta.setSingleLine(true);
         meta.setPadding(dp(2), dp(5), dp(2), dp(6));
@@ -810,6 +814,38 @@ public class MainActivity extends Activity {
 
 
 
+    private String libraryViewIcon() {
+        if (!gridMode) return "☷";
+        return smallGridMode ? "▦" : "▥";
+    }
+
+    private String libraryViewName() {
+        if (!gridMode) return "List";
+        return smallGridMode ? "Small Grid" : "Large Grid";
+    }
+
+    private void updateLibraryViewButton() {
+        if (viewModeButton == null) return;
+        viewModeButton.setText(libraryViewIcon());
+        viewModeButton.setContentDescription("Library view · " + libraryViewName());
+    }
+
+    private void setLibraryViewMode(boolean grid, boolean small) {
+        gridMode = grid;
+        smallGridMode = grid && small;
+        prefs.edit().putBoolean("library_grid", gridMode)
+                .putBoolean("library_small_grid", smallGridMode).apply();
+        updateLibraryViewButton();
+        configureLibraryLayout();
+        if (libraryAdapter != null) libraryAdapter.notifyDataSetChanged();
+    }
+
+    private void cycleLibraryViewMode() {
+        if (!gridMode) setLibraryViewMode(true, false);
+        else if (!smallGridMode) setLibraryViewMode(true, true);
+        else setLibraryViewMode(false, false);
+    }
+
     private int calculateLibraryColumns(int widthPx) {
         if (!gridMode) return 1;
         float density = Math.max(1f, getResources().getDisplayMetrics().density);
@@ -818,10 +854,12 @@ public class MainActivity extends Activity {
         // This naturally produces 2 columns on phones and 3–6 on tablets/foldables/landscape.
         final float sideDp = 28f;
         final float gapDp = 12f;
-        final float minCardDp = 154f;
+        final float minCardDp = smallGridMode ? 108f : 154f;
         float usable = Math.max(minCardDp, widthDp - sideDp);
         int columns = (int) Math.floor((usable + gapDp) / (minCardDp + gapDp));
-        return Math.max(2, Math.min(6, columns));
+        int minimum = smallGridMode ? 3 : 2;
+        int maximum = smallGridMode ? 8 : 6;
+        return Math.max(minimum, Math.min(maximum, columns));
     }
 
     private void configureLibraryLayout() {
@@ -864,7 +902,8 @@ public class MainActivity extends Activity {
         int gap = dp(12);
         int side = dp(14);
         int columns = Math.max(1, libraryColumns);
-        return Math.max(dp(118), (screen - side * 2 - gap * (columns - 1)) / columns);
+        int minimum = smallGridMode ? dp(86) : dp(118);
+        return Math.max(minimum, (screen - side * 2 - gap * (columns - 1)) / columns);
     }
 
     private View buildLibraryHeader() {
@@ -899,16 +938,10 @@ public class MainActivity extends Activity {
         themeLp.leftMargin = dp(8);
         brandRow.addView(themeButton, themeLp);
 
-        viewModeButton = iconButton(gridMode ? "▦" : "☷");
+        viewModeButton = iconButton(libraryViewIcon());
         viewModeButton.setTextSize(16);
-        viewModeButton.setContentDescription("Change library view");
-        viewModeButton.setOnClickListener(v -> {
-            gridMode = !gridMode;
-            prefs.edit().putBoolean("library_grid", gridMode).apply();
-            viewModeButton.setText(gridMode ? "▦" : "☷");
-            configureLibraryLayout();
-            if (libraryAdapter != null) libraryAdapter.notifyDataSetChanged();
-        });
+        updateLibraryViewButton();
+        viewModeButton.setOnClickListener(v -> cycleLibraryViewMode());
         LinearLayout.LayoutParams viewLp = new LinearLayout.LayoutParams(dp(44), dp(44));
         viewLp.leftMargin = dp(8);
         brandRow.addView(viewModeButton, viewLp);
@@ -1224,7 +1257,7 @@ public class MainActivity extends Activity {
         nav.setElevation(dp(9));
         nav.addView(bottomNavItem("⌂", "Home", homeMode, this::switchToHome), new LinearLayout.LayoutParams(0, dp(56), 1f));
         nav.addView(bottomNavItem("▥", "Library", !homeMode, this::switchToLibrary), new LinearLayout.LayoutParams(0, dp(56), 1f));
-        nav.addView(bottomNavItem("✎", "Notes", false, this::showNotesHighlightsHub), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        nav.addView(bottomNavItem("✎", "Notes & Highlight", false, this::showNotesHighlightsHub), new LinearLayout.LayoutParams(0, dp(56), 1f));
         nav.addView(bottomNavItem("◈", "Explore", false, this::showExploreHome), new LinearLayout.LayoutParams(0, dp(56), 1f));
         nav.addView(bottomNavItem("＋", "Add book", false, this::chooseBook), new LinearLayout.LayoutParams(0, dp(56), 1f));
         return nav;
@@ -1554,13 +1587,16 @@ public class MainActivity extends Activity {
         sheet.addView(viewTitle);
         LinearLayout viewRow = new LinearLayout(this);
         viewRow.setOrientation(LinearLayout.HORIZONTAL);
-        TextView grid = filterChoice("Grid", gridMode);
+        TextView largeGrid = filterChoice("Large Grid", gridMode && !smallGridMode);
+        TextView smallGrid = filterChoice("Small Grid", gridMode && smallGridMode);
         TextView list = filterChoice("List", !gridMode);
-        grid.setOnClickListener(v -> { if (!gridMode) { gridMode = true; prefs.edit().putBoolean("library_grid", true).apply(); configureLibraryLayout(); refreshLibrary(); dialog.dismiss(); } });
-        list.setOnClickListener(v -> { if (gridMode) { gridMode = false; prefs.edit().putBoolean("library_grid", false).apply(); configureLibraryLayout(); refreshLibrary(); dialog.dismiss(); } });
-        LinearLayout.LayoutParams half1 = new LinearLayout.LayoutParams(0, dp(40), 1f); half1.rightMargin = dp(5);
-        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(0, dp(40), 1f); half2.leftMargin = dp(5);
-        viewRow.addView(grid, half1); viewRow.addView(list, half2); sheet.addView(viewRow);
+        largeGrid.setOnClickListener(v -> { setLibraryViewMode(true, false); refreshLibrary(); dialog.dismiss(); });
+        smallGrid.setOnClickListener(v -> { setLibraryViewMode(true, true); refreshLibrary(); dialog.dismiss(); });
+        list.setOnClickListener(v -> { setLibraryViewMode(false, false); refreshLibrary(); dialog.dismiss(); });
+        LinearLayout.LayoutParams third1 = new LinearLayout.LayoutParams(0, dp(40), 1f); third1.rightMargin = dp(4);
+        LinearLayout.LayoutParams third2 = new LinearLayout.LayoutParams(0, dp(40), 1f); third2.leftMargin = dp(4); third2.rightMargin = dp(4);
+        LinearLayout.LayoutParams third3 = new LinearLayout.LayoutParams(0, dp(40), 1f); third3.leftMargin = dp(4);
+        viewRow.addView(largeGrid, third1); viewRow.addView(smallGrid, third2); viewRow.addView(list, third3); sheet.addView(viewRow);
 
         sheet.addView(sheetSectionLabel("Status"));
         LinearLayout status = new LinearLayout(this);
@@ -2280,16 +2316,10 @@ public class MainActivity extends Activity {
         themeLp.leftMargin = dp(8);
         brandRow.addView(themeButton, themeLp);
 
-        viewModeButton = iconButton(gridMode ? "▦" : "☷");
+        viewModeButton = iconButton(libraryViewIcon());
         viewModeButton.setTextSize(16);
-        viewModeButton.setContentDescription("Change library view");
-        viewModeButton.setOnClickListener(v -> {
-            gridMode = !gridMode;
-            prefs.edit().putBoolean("library_grid", gridMode).apply();
-            viewModeButton.setText(gridMode ? "▦" : "☷");
-            configureLibraryLayout();
-            if (libraryAdapter != null) libraryAdapter.notifyDataSetChanged();
-        });
+        updateLibraryViewButton();
+        viewModeButton.setOnClickListener(v -> cycleLibraryViewMode());
         LinearLayout.LayoutParams viewLp = new LinearLayout.LayoutParams(dp(44), dp(44));
         viewLp.leftMargin = dp(8);
         brandRow.addView(viewModeButton, viewLp);

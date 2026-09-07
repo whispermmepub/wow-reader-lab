@@ -50,6 +50,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".DictionaryManagerActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".BookReaderActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:enableOnBackInvokedCallback="false"

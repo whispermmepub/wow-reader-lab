@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -93,7 +94,7 @@ public class DictionaryManagerActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(13), dp(16), dp(13));
-        card.setBackground(AppThemePalette.roundRect(Color.WHITE, dp(18), dp(1), Color.rgb(222, 225, 231)));
+        card.setBackground(roundRect(Color.WHITE, dp(18), dp(1), Color.rgb(222, 225, 231)));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -155,10 +156,18 @@ public class DictionaryManagerActivity extends Activity {
         }, "wow-kindle-dictionary-import").start();
     }
 
+    private GradientDrawable roundRect(int fill, int radius, int strokeWidth, int strokeColor) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(fill);
+        g.setCornerRadius(radius);
+        if (strokeWidth > 0) g.setStroke(strokeWidth, strokeColor);
+        return g;
+    }
+
     private TextView button(String text) {
         TextView v = label(text, 14, Color.rgb(55, 91, 174), Typeface.BOLD);
         v.setGravity(Gravity.CENTER);
-        v.setBackground(AppThemePalette.roundRect(Color.WHITE, dp(16), dp(1), Color.rgb(205, 211, 224)));
+        v.setBackground(roundRect(Color.WHITE, dp(16), dp(1), Color.rgb(205, 211, 224)));
         return v;
     }
 

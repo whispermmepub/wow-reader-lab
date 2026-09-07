@@ -6,10 +6,10 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
+import android.os.Build;
 import android.provider.OpenableColumns;
 import android.text.Html;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -286,7 +286,7 @@ final class KindleDictionaryStore {
     }
 
     private static byte[] palmDocDecompress(byte[] data) throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(4096, data.length * 2));
+        ByteBuf out = new ByteBuf(Math.max(4096, data.length * 3));
         int i = 0;
         while (i < data.length) {
             int c = data[i++] & 0xFF;
@@ -303,17 +303,27 @@ final class KindleDictionaryStore {
                 int v = (c << 8) | c2;
                 int distance = (v >> 3) & 0x7FF;
                 int length = (v & 7) + 3;
-                byte[] current = out.toByteArray();
-                int pos = current.length - distance;
-                if (distance <= 0 || pos < 0) throw new Exception("Invalid PalmDOC back-reference");
-                for (int j = 0; j < length; j++) {
-                    current = out.toByteArray();
-                    if (pos < 0 || pos >= current.length) throw new Exception("Invalid PalmDOC stream");
-                    out.write(current[pos++]);
-                }
+                if (distance <= 0 || distance > out.size()) throw new Exception("Invalid PalmDOC back-reference");
+                for (int j = 0; j < length; j++) out.copyBack(distance);
             }
         }
         return out.toByteArray();
+    }
+
+    private static final class ByteBuf {
+        private byte[] data; private int size;
+        ByteBuf(int capacity) { data = new byte[Math.max(32, capacity)]; }
+        int size() { return size; }
+        void write(int value) { ensure(1); data[size++] = (byte) value; }
+        void write(byte[] src, int off, int len) { ensure(len); System.arraycopy(src, off, data, size, len); size += len; }
+        void copyBack(int distance) { ensure(1); data[size] = data[size - distance]; size++; }
+        byte[] toByteArray() { return java.util.Arrays.copyOf(data, size); }
+        private void ensure(int extra) {
+            int need = size + extra;
+            if (need <= data.length) return;
+            int cap = Math.max(need, data.length + Math.max(1024, data.length / 2));
+            data = java.util.Arrays.copyOf(data, cap);
+        }
     }
 
     private static int indexOfIgnoreCase(CharSequence value, String needle, int from) {
@@ -333,7 +343,9 @@ final class KindleDictionaryStore {
     private static String htmlToText(String raw) {
         if (raw == null || raw.isEmpty()) return "";
         try {
-            CharSequence cs = Html.fromHtml(raw, Html.FROM_HTML_MODE_LEGACY);
+            CharSequence cs = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                    ? Html.fromHtml(raw, Html.FROM_HTML_MODE_LEGACY)
+                    : Html.fromHtml(raw);
             return cs.toString().replace('\u00A0', ' ').replaceAll("[ \\t]+", " ")
                     .replaceAll("\\n[ \\t]+", "\\n").replaceAll("\\n{3,}", "\\n\\n").trim();
         } catch (Exception ignored) {

@@ -5,6 +5,7 @@ import android.app.Dialog;
 import android.content.ClipboardManager;
 import android.content.ClipData;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
@@ -35,7 +36,7 @@ import java.util.Locale;
 
 final class DictionaryDialog {
     private static final String ASSET_DB = "dictionary/wow_dictionary.db";
-    private static final String DB_FILE = "wow_dictionary_v1.db";
+    private static final String DB_FILE = "wow_dictionary_v2.db";
 
     private DictionaryDialog() {}
 
@@ -54,6 +55,14 @@ final class DictionaryDialog {
         boolean myanmar = hasMyanmar(query);
         int direction = myanmar ? 1 : 0; // 0 = English→Myanmar, 1 = Myanmar→English
         List<Entry> entries = lookup(activity, query, direction);
+        if (!myanmar) {
+            List<KindleDictionaryStore.Result> imported = KindleDictionaryStore.lookup(activity, query, 6);
+            for (int i = imported.size() - 1; i >= 0; i--) {
+                KindleDictionaryStore.Result r = imported.get(i);
+                entries.add(0, new Entry(r.headword, "Kindle Dictionary · Offline", r.meaning, "", ""));
+            }
+        }
+        MyanmarSpellingStore.Match spelling = myanmar ? MyanmarSpellingStore.lookup(activity, query) : null;
 
         SharedPreferences prefs = activity.getSharedPreferences("wow_reader", Context.MODE_PRIVATE);
         String sourceBook = "";
@@ -103,7 +112,7 @@ final class DictionaryDialog {
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         tabs.setPadding(0, 0, 0, dp(activity, 8));
         TextView offlineTab = pill(activity, "Offline", p.accent, p.surface, p.accent, true);
-        TextView onlineTab = pill(activity, "Online", p.text, p.surface, p.border, false);
+        TextView onlineTab = pill(activity, "Wiktionary", p.text, p.surface, p.border, false);
         LinearLayout.LayoutParams tabLp = new LinearLayout.LayoutParams(0, dp(activity, 40), 1f);
         tabLp.rightMargin = dp(activity, 7);
         tabs.addView(offlineTab, tabLp);
@@ -122,6 +131,24 @@ final class DictionaryDialog {
         results.setPadding(0, dp(activity, 2), 0, dp(activity, 12));
         offlineScroll.addView(results, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         body.addView(offlineScroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        if (spelling != null) {
+            LinearLayout spellCard = new LinearLayout(activity);
+            spellCard.setOrientation(LinearLayout.VERTICAL);
+            spellCard.setPadding(dp(activity, 13), dp(activity, 11), dp(activity, 13), dp(activity, 11));
+            GradientDrawable spellBg = new GradientDrawable();
+            spellBg.setColor(p.card); spellBg.setCornerRadius(dp(activity, 14)); spellBg.setStroke(dp(activity, 1), p.border);
+            spellCard.setBackground(spellBg);
+            TextView sh = text(activity, "မြန်မာစာလုံးပေါင်း သတ်ပုံကျမ်း", 14.5f, p.text, Typeface.BOLD);
+            spellCard.addView(sh);
+            String message = spelling.found ? "✓ စာလုံးပေါင်းစာရင်းတွင် တွေ့ရှိသည်" : "စာလုံးပေါင်းစာရင်းတွင် မတွေ့ပါ";
+            if (!spelling.suggestions.isEmpty())
+                message += "\nအနီးစပ်ဆုံး: " + android.text.TextUtils.join(" · ", spelling.suggestions);
+            TextView sm = text(activity, message, 13.5f, spelling.found ? p.accent : p.subText, Typeface.NORMAL);
+            sm.setPadding(0, dp(activity, 5), 0, 0); spellCard.addView(sm);
+            LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            slp.bottomMargin = dp(activity, 8); results.addView(spellCard, slp);
+        }
 
         if (entries.isEmpty()) {
             TextView empty = text(activity,
@@ -171,7 +198,7 @@ final class DictionaryDialog {
         }
 
         TextView attribution = text(activity,
-                "Dictionary data: Wiktionary via Kaikki.org • CC BY-SA 4.0",
+                "Offline data: Wiktionary via Kaikki.org • Myanmar spelling list • imported Kindle dictionary when installed",
                 10.5f, p.subText, Typeface.NORMAL);
         attribution.setPadding(0, dp(activity, 4), 0, dp(activity, 6));
         results.addView(attribution);
@@ -199,11 +226,11 @@ final class DictionaryDialog {
         onlineTab.setOnClickListener(v -> {
             offlineScroll.setVisibility(View.GONE);
             online.setVisibility(View.VISIBLE);
-            source.setText(directionLabel + "  •  Online");
+            source.setText(directionLabel + "  •  Wiktionary Online");
             stylePill(offlineTab, p.text, p.surface, p.border, false);
             stylePill(onlineTab, p.accent, p.surface, p.accent, true);
             if (online.getUrl() == null) {
-                online.loadUrl("https://kaikki.org/dictionary/?q=" + Uri.encode(query));
+                online.loadUrl((myanmar ? "https://my.wiktionary.org/wiki/" : "https://en.wiktionary.org/wiki/") + Uri.encode(query));
             }
         });
 
@@ -211,6 +238,15 @@ final class DictionaryDialog {
         footer.setOrientation(LinearLayout.HORIZONTAL);
         footer.setGravity(Gravity.CENTER_VERTICAL);
         footer.setPadding(0, dp(activity, 8), 0, 0);
+
+        TextView sources = pill(activity, "Sources", p.accent, p.card, p.border, false);
+        sources.setOnClickListener(v -> {
+            dialog.dismiss();
+            activity.startActivity(new Intent(activity, DictionaryManagerActivity.class));
+        });
+        LinearLayout.LayoutParams sourceLp = new LinearLayout.LayoutParams(0, dp(activity, 38), 1f);
+        sourceLp.rightMargin = dp(activity, 7);
+        footer.addView(sources, sourceLp);
 
         TextView copy = pill(activity, "Copy", p.text, p.card, p.border, false);
         copy.setOnClickListener(v -> {
@@ -292,7 +328,7 @@ final class DictionaryDialog {
         File dir = new File(context.getFilesDir(), "dictionary");
         if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("dictionary dir");
         File target = new File(dir, DB_FILE);
-        if (target.exists() && target.length() > 1000000L) return target;
+        if (target.exists() && target.length() > 1000000L && validBundledDb(target)) return target;
 
         File tmp = new File(dir, DB_FILE + ".tmp");
         try (InputStream in = context.getAssets().open(ASSET_DB);
@@ -305,6 +341,25 @@ final class DictionaryDialog {
         if (target.exists()) target.delete();
         if (!tmp.renameTo(target)) throw new IllegalStateException("dictionary install");
         return target;
+    }
+
+    private static boolean validBundledDb(File target) {
+        SQLiteDatabase db = null; Cursor c = null;
+        try {
+            db = SQLiteDatabase.openDatabase(target.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+            c = db.rawQuery("SELECT direction,count(*) FROM entries GROUP BY direction", null);
+            boolean en = false, my = false;
+            while (c.moveToNext()) {
+                int d = c.getInt(0), n = c.getInt(1);
+                if (d == 0 && n > 1000) en = true;
+                if (d == 1 && n > 1000) my = true;
+            }
+            return en && my;
+        } catch (Exception ignored) { return false; }
+        finally {
+            if (c != null) try { c.close(); } catch (Exception ignored) {}
+            if (db != null) try { db.close(); } catch (Exception ignored) {}
+        }
     }
 
     private static String cleanQuery(String text) {

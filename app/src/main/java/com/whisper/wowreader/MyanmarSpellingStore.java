@@ -88,8 +88,8 @@ final class MyanmarSpellingStore {
     }
 
     private static int distance(String a, String b, int cap) {
-        int[] x = a.codePoints().toArray();
-        int[] y = b.codePoints().toArray();
+        int[] x = toCodePoints(a);
+        int[] y = toCodePoints(b);
         if (Math.abs(x.length - y.length) > cap) return cap + 1;
         int[] prev = new int[y.length + 1];
         int[] cur = new int[y.length + 1];
@@ -106,6 +106,19 @@ final class MyanmarSpellingStore {
             int[] t = prev; prev = cur; cur = t;
         }
         return prev[y.length];
+    }
+
+    private static int[] toCodePoints(String value) {
+        if (value == null || value.isEmpty()) return new int[0];
+        int count = value.codePointCount(0, value.length());
+        int[] out = new int[count];
+        int at = 0;
+        for (int i = 0; i < value.length();) {
+            int cp = value.codePointAt(i);
+            out[at++] = cp;
+            i += Character.charCount(cp);
+        }
+        return out;
     }
 
     private static String normalize(String s) {

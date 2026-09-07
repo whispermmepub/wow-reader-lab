@@ -105,6 +105,12 @@ public class BookReaderActivity extends Activity {
     private ReaderWebView preloadWebView;
     private FrameLayout epubWebContent;
     private View.OnTouchListener readerTouchListener;
+    private ScaleGestureDetector epubFontScaleDetector;
+    private boolean epubFontPinching = false;
+    private float pinchFontValue = 115f;
+    private long fontPinchSuppressUntilMs = 0L;
+    private AlertDialog advancedReaderDialog;
+    private android.widget.ArrayAdapter<String> advancedReaderAdapter;
     private int preloadedSpine = -1;
     private boolean preloadReady = false;
     private boolean preloadLoading = false;
@@ -147,6 +153,7 @@ public class BookReaderActivity extends Activity {
     private int currentProgressPermille = 0;
     private int readerTheme = 0;
     private int fontPercent = 115;
+    private int fontWeight = 400;
     private String fontChoice = "publisher";
     private int lineSpacing = 170;
     private int marginPercent = 7;
@@ -256,6 +263,7 @@ public class BookReaderActivity extends Activity {
 
         readerTheme = prefs.getInt("reader_theme", 0);
         fontPercent = Math.max(80, Math.min(300, prefs.getInt("epub_font", 115)));
+        fontWeight = normalizeFontWeight(prefs.getInt("epub_font_weight", 400));
         fontChoice = prefs.getString("epub_font_choice", "publisher");
         lineSpacing = prefs.getInt("epub_line_spacing", 170);
         marginPercent = prefs.getInt("epub_margin", 7);
@@ -1111,7 +1119,7 @@ public class BookReaderActivity extends Activity {
             s.setJavaScriptEnabled(true);
             s.setUseWideViewPort(false);
             s.setLoadWithOverviewMode(false);
-            s.setTextZoom(Math.max(80, Math.min(200, fontPercent)));
+            s.setTextZoom(Math.max(80, Math.min(300, fontPercent)));
             s.setAllowFileAccess(true);
             s.setAllowContentAccess(true);
             s.setAllowFileAccessFromFileURLs(true);
@@ -1142,7 +1150,7 @@ public class BookReaderActivity extends Activity {
 
     private void warmPreloadedChapter(WebView view, int token) {
         if (view == null || view != preloadWebView || token != preloadGeneration || preloadedSpine < 0) return;
-        try { view.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        try { view.getSettings().setTextZoom(Math.max(80, Math.min(300, fontPercent))); }
         catch (Exception ignored) {}
 
         String bg = readerTheme == 2 ? "#121212" : (readerTheme == 1 ? "#F4ECD8" : "#FFFFFF");
@@ -1209,7 +1217,7 @@ public class BookReaderActivity extends Activity {
         preloadWebView.setScaleX(1f);
         preloadWebView.setScaleY(1f);
         preloadWebView.setTranslationX(0f);
-        try { preloadWebView.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        try { preloadWebView.getSettings().setTextZoom(Math.max(80, Math.min(300, fontPercent))); }
         catch (Exception ignored) {}
         try {
             preloadWebView.loadUrl(Uri.fromFile(spine.get(target)).toString());
@@ -1303,7 +1311,7 @@ public class BookReaderActivity extends Activity {
         // metadata must not trigger overview zoom when moving between spine items.
         s.setUseWideViewPort(false);
         s.setLoadWithOverviewMode(false);
-        s.setTextZoom(Math.max(80, Math.min(200, fontPercent)));
+        s.setTextZoom(Math.max(80, Math.min(300, fontPercent)));
         s.setAllowFileAccess(true);
         s.setAllowContentAccess(true);
         s.setAllowFileAccessFromFileURLs(true);
@@ -1320,6 +1328,38 @@ public class BookReaderActivity extends Activity {
         webView.addJavascriptInterface(new ReaderBridge(webView), "WoW");
 
         pageTouchSlop = ViewConfiguration.get(this).getScaledTouchSlop();
+
+        epubFontScaleDetector = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
+                if (chapterLoading || isPdf) return false;
+                epubFontPinching = true;
+                pinchFontValue = fontPercent;
+                beginAutoScrollInteraction();
+                return true;
+            }
+            @Override public boolean onScale(ScaleGestureDetector detector) {
+                if (!epubFontPinching) return false;
+                pinchFontValue *= detector.getScaleFactor();
+                pinchFontValue = Math.max(80f, Math.min(300f, pinchFontValue));
+                int target = Math.max(80, Math.min(300, Math.round(pinchFontValue / 2f) * 2));
+                if (target != fontPercent) {
+                    fontPercent = target;
+                    try { if (webView != null) webView.getSettings().setTextZoom(fontPercent); } catch (Exception ignored) {}
+                    try { if (preloadWebView != null) preloadWebView.getSettings().setTextZoom(fontPercent); } catch (Exception ignored) {}
+                    if (positionView != null) positionView.setText("Aa · " + fontPercent + "%");
+                }
+                return true;
+            }
+            @Override public void onScaleEnd(ScaleGestureDetector detector) {
+                if (!epubFontPinching) return;
+                epubFontPinching = false;
+                fontPinchSuppressUntilMs = android.os.SystemClock.uptimeMillis() + 360L;
+                saveReaderPreferences();
+                applyReaderStyleSmooth(true);
+                if (root != null) root.postDelayed(BookReaderActivity.this::endAutoScrollInteraction, 520L);
+                else endAutoScrollInteraction();
+            }
+        });
 
         readerTapDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
@@ -1346,6 +1386,14 @@ public class BookReaderActivity extends Activity {
         });
 
         readerTouchListener = (v, event) -> {
+            if (epubFontScaleDetector != null) {
+                try { epubFontScaleDetector.onTouchEvent(event); } catch (Exception ignored) {}
+                if (epubFontPinching || event.getPointerCount() > 1 ||
+                        android.os.SystemClock.uptimeMillis() < fontPinchSuppressUntilMs) {
+                    readerTouchStartedOnLink = false;
+                    return true;
+                }
+            }
             // A WebView link tap must never also become a reader page/edge tap.
             boolean anchorHit = false;
             if (v instanceof WebView) {
@@ -2861,7 +2909,7 @@ public class BookReaderActivity extends Activity {
         if (webView == null) return;
         // WebView textZoom scales publisher px/pt/% sizes too. Body-only CSS scaling did
         // not affect many EPUBs in Scroll mode, so textZoom is the single font scale.
-        try { webView.getSettings().setTextZoom(Math.max(80, Math.min(200, fontPercent))); }
+        try { webView.getSettings().setTextZoom(Math.max(80, Math.min(300, fontPercent))); }
         catch (Exception ignored) {}
 
         String bg = readerTheme == 2 ? "#121212" :
@@ -2925,6 +2973,7 @@ public class BookReaderActivity extends Activity {
                 "@font-face{font-family:'WoWPhantee';src:url('file:///android_asset/fonts/phantee_hand_written.ttf') format('truetype');font-display:block;}" +
                 "html,body{background:" + bg + " !important;color:" + fg + " !important;transform:none !important;zoom:1 !important;-webkit-text-size-adjust:100% !important;text-size-adjust:100% !important;}" +
                 "a{color:" + link + " !important;}" +
+                "body{font-weight:" + fontWeight + " !important;}" +
                 "pre{white-space:pre-wrap !important;overflow-wrap:anywhere !important;}" +
                 ".wow-reader-block{line-height:" + line + " !important;letter-spacing:normal !important;}" +
                 ".wow-reader-block *{line-height:inherit !important;}" +
@@ -4177,6 +4226,30 @@ public class BookReaderActivity extends Activity {
         fontSizeRow.addView(fontPick, sheetChipLp(true));
         card.addView(fontSizeRow);
 
+        addSheetLabel(card, "Font weight", sub);
+        LinearLayout weightRow = sheetRow();
+        SeekBar weightSeek = new SeekBar(this);
+        weightSeek.setMax(6);
+        weightSeek.setProgress(Math.max(0, Math.min(6, (fontWeight - 200) / 100)));
+        TextView weightValue = new TextView(this);
+        weightValue.setText(fontWeightDisplay());
+        weightValue.setTextSize(12.5f); weightValue.setTextColor(text); weightValue.setGravity(Gravity.CENTER);
+        weightSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                fontWeight = 200 + progress * 100;
+                weightValue.setText(fontWeightDisplay());
+                try {
+                    if (webView != null) webView.evaluateJavascript("(function(){if(document.body)document.body.style.setProperty('font-weight','" + fontWeight + "','important');})()", null);
+                } catch (Exception ignored) {}
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { saveReaderPreferences(); applyReaderStyleSmooth(true); }
+        });
+        weightRow.addView(weightSeek, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        weightRow.addView(weightValue, new LinearLayout.LayoutParams(dp(116), dp(44)));
+        card.addView(weightRow);
+
         addSheetLabel(card, "Line height", sub);
         LinearLayout lineRow = sheetRow();
         TextView lineMinus = sheetChip("−", false);
@@ -4400,18 +4473,14 @@ public class BookReaderActivity extends Activity {
         for (int i = 0; i < chips.length; i++) if (chips[i] != null) styleSheetChip(chips[i], i == selected);
     }
 
-    private void showAdvancedReaderSettings() {
-        if (isPdf) {
-            showPdfSettings();
-            return;
-        }
-
-        String[] options = new String[]{
+    private String[] buildAdvancedReaderOptions() {
+        return new String[]{
                 "Reading mode · " + readingModeDisplayName(),
                 "Page animation · " + pageAnimationDisplayName(),
                 "Text alignment · " + alignmentDisplayName(),
                 "Font size · " + fontPercent + "%",
                 "Font · " + fontDisplayName(),
+                "Font weight · " + fontWeightDisplay(),
                 "Line spacing · " + lineSpacingDisplay(),
                 "Margins · " + marginPercent + "%",
                 "Theme · " + themeDisplayName(),
@@ -4424,56 +4493,62 @@ public class BookReaderActivity extends Activity {
                 "30-minute eye reminder · " + onOff(eyeBreakReminderEnabled),
                 "Reset reader settings"
         };
+    }
 
-        new AlertDialog.Builder(this)
+    private void refreshAdvancedReaderSettingsRows() {
+        if (advancedReaderAdapter == null) return;
+        String[] fresh = buildAdvancedReaderOptions();
+        advancedReaderAdapter.clear();
+        for (String item : fresh) advancedReaderAdapter.add(item);
+        advancedReaderAdapter.notifyDataSetChanged();
+    }
+
+    private void showAdvancedReaderSettings() {
+        if (isPdf) { showPdfSettings(); return; }
+        if (advancedReaderDialog != null && advancedReaderDialog.isShowing()) {
+            refreshAdvancedReaderSettingsRows();
+            return;
+        }
+        java.util.ArrayList<String> rows = new java.util.ArrayList<>();
+        for (String item : buildAdvancedReaderOptions()) rows.add(item);
+        advancedReaderAdapter = new android.widget.ArrayAdapter<>(this, android.R.layout.simple_list_item_1, rows);
+        android.widget.ListView list = new android.widget.ListView(this);
+        list.setDividerHeight(0);
+        list.setAdapter(advancedReaderAdapter);
+        advancedReaderDialog = new AlertDialog.Builder(this)
                 .setTitle("Reader settings")
-                .setItems(options, (d, which) -> {
-                    switch (which) {
-                        case 0: showReadingModeDialog(); break;
-                        case 1: showPageAnimationDialog(); break;
-                        case 2: showAlignmentDialog(); break;
-                        case 3: showFontSizeDialog(); break;
-                        case 4: showFontDialog(); break;
-                        case 5: showLineSpacingDialog(); break;
-                        case 6: showMarginDialog(); break;
-                        case 7: showThemeDialog(); break;
-                        case 8: showBrightnessDialog(); break;
-                        case 9:
-                            keepScreenOn = !keepScreenOn;
-                            saveReaderPreferences();
-                            applyWindowPreferences();
-                            showReaderSettings();
-                            break;
-                        case 10:
-                            lockOrientation = !lockOrientation;
-                            saveReaderPreferences();
-                            applyWindowPreferences();
-                            showReaderSettings();
-                            break;
-                        case 11:
-                            volumeChapterKeys = !volumeChapterKeys;
-                            saveReaderPreferences();
-                            showReaderSettings();
-                            break;
-                        case 12:
-                            autoScrollEnabled = !autoScrollEnabled;
-                            saveReaderPreferences();
-                            autoScrollResumeToken++;
-                            updateAutoScrollState();
-                            showReaderSettings();
-                            break;
-                        case 13: showAutoScrollSpeedDialog(); break;
-                        case 14:
-                            eyeBreakReminderEnabled = !eyeBreakReminderEnabled;
-                            saveReaderPreferences();
-                            if (eyeBreakReminderEnabled) scheduleEyeBreakReminder(); else cancelEyeBreakReminder();
-                            showReaderSettings();
-                            break;
-                        case 15: resetReaderPreferences(); break;
-                    }
-                })
+                .setView(list)
                 .setNegativeButton("Close", null)
-                .show();
+                .create();
+        advancedReaderDialog.setOnDismissListener(d -> { advancedReaderDialog = null; advancedReaderAdapter = null; });
+        advancedReaderDialog.show();
+        list.setOnItemClickListener((parent, view, which, id) -> {
+            switch (which) {
+                case 0: showReadingModeDialog(); break;
+                case 1: showPageAnimationDialog(); break;
+                case 2: showAlignmentDialog(); break;
+                case 3: showFontSizeDialog(); break;
+                case 4: showFontDialog(); break;
+                case 5:
+                    fontWeight = fontWeight >= 800 ? 200 : fontWeight + 100;
+                    saveReaderPreferences(); applyReaderStyleSmooth(true); break;
+                case 6: showLineSpacingDialog(); break;
+                case 7: showMarginDialog(); break;
+                case 8: showThemeDialog(); break;
+                case 9: showBrightnessDialog(); break;
+                case 10: keepScreenOn = !keepScreenOn; saveReaderPreferences(); applyWindowPreferences(); break;
+                case 11: lockOrientation = !lockOrientation; saveReaderPreferences(); applyWindowPreferences(); break;
+                case 12: volumeChapterKeys = !volumeChapterKeys; saveReaderPreferences(); break;
+                case 13:
+                    autoScrollEnabled = !autoScrollEnabled; saveReaderPreferences(); autoScrollResumeToken++; updateAutoScrollState(); break;
+                case 14: showAutoScrollSpeedDialog(); break;
+                case 15:
+                    eyeBreakReminderEnabled = !eyeBreakReminderEnabled; saveReaderPreferences();
+                    if (eyeBreakReminderEnabled) scheduleEyeBreakReminder(); else cancelEyeBreakReminder(); break;
+                case 16: resetReaderPreferences(); break;
+            }
+            refreshAdvancedReaderSettingsRows();
+        });
     }
 
     private void showReadingModeDialog() {
@@ -4794,6 +4869,7 @@ public class BookReaderActivity extends Activity {
     private void resetReaderPreferences() {
         fontPercent = 100;
         fontChoice = "publisher";
+        fontWeight = 400;
         lineSpacing = 160;
         marginPercent = 5;
         textAlignment = "justify";
@@ -4831,6 +4907,7 @@ public class BookReaderActivity extends Activity {
         prefs.edit()
                 .putInt("epub_font", fontPercent)
                 .putString("epub_font_choice", fontChoice)
+                .putInt("epub_font_weight", fontWeight)
                 .putInt("epub_line_spacing", lineSpacing)
                 .putInt("epub_margin", marginPercent)
                 .putString("epub_text_alignment", textAlignment)
@@ -4851,7 +4928,21 @@ public class BookReaderActivity extends Activity {
                 .putString(isPdf ? "pdf_reading_mode" : "epub_reading_mode", readingMode)
                 .putLong("sync_updated_ms", System.currentTimeMillis())
                 .apply();
+        refreshAdvancedReaderSettingsRows();
         GoogleAutoSync.scheduleSoon(this);
+    }
+
+    private int normalizeFontWeight(int value) {
+        int w = Math.max(200, Math.min(800, value));
+        return Math.round(w / 100f) * 100;
+    }
+
+    private String fontWeightDisplay() {
+        if (fontWeight <= 300) return fontWeight + " · Thin";
+        if (fontWeight <= 400) return fontWeight + " · Regular";
+        if (fontWeight <= 500) return fontWeight + " · Medium";
+        if (fontWeight <= 600) return fontWeight + " · Semi Bold";
+        return fontWeight + " · Bold";
     }
 
     private String readingModeDisplayName() {

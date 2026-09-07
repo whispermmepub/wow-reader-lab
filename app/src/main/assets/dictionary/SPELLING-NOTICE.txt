@@ -1,0 +1,2 @@
+Myanmar spelling word list from kanaung/wordlists, pinned blob 1cb25065823a1d931fc13a637fae6d44acc44f3f.
+Repository license: WTFPL. This list is used only as an offline spelling word list.

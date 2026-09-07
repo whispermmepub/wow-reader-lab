@@ -39,6 +39,7 @@ jobs:
           grep -q "PdfContinuousView" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "1 is extra slow" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "ReadingProgressStore.set" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "getBindingAdapterPosition" app/src/main/java/com/whisper/wowreader/PdfContinuousView.java
           git diff --check
       - name: Compile release debug and instrumentation
         run: gradle :app:assembleRelease :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace

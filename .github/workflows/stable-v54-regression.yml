@@ -1,0 +1,123 @@
+name: Stable v54 update and fresh-install regression
+
+on:
+  push:
+    branches: [main, fix/v54-reader-pdf-oem]
+    paths:
+      - 'app/**'
+      - '.github/workflows/stable-v54-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android 16 SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
+
+      - name: Build v51 v52 v53 update fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/wow-update-apks"
+          git fetch origin fix/v52-unified-install feature/v53-reading-calendar-recap
+
+          git worktree add --detach "$RUNNER_TEMP/v51" 6bf2a90dcaa6cb9a781b67b23a4d0469311d3032
+          (cd "$RUNNER_TEMP/v51" && gradle :app:assembleDebug --stacktrace)
+          cp "$RUNNER_TEMP/v51/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/wow-update-apks/v51-debug.apk"
+
+          git worktree add --detach "$RUNNER_TEMP/v52" origin/fix/v52-unified-install
+          (cd "$RUNNER_TEMP/v52" && gradle :app:assembleDebug --stacktrace)
+          cp "$RUNNER_TEMP/v52/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/wow-update-apks/v52-debug.apk"
+
+          git worktree add --detach "$RUNNER_TEMP/v53" 8ec6b449bb34e219e71beb686c960e3a71233701
+          (cd "$RUNNER_TEMP/v53" && gradle :app:assembleDebug --stacktrace)
+          cp "$RUNNER_TEMP/v53/app/build/outputs/apk/debug/app-debug.apk" "$RUNNER_TEMP/wow-update-apks/v53-debug.apk"
+
+      - name: Build current v54 debug and instrumentation
+        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug --stacktrace
+
+      - name: Verify fixture versions and package identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/wow-update-apks/v54-debug.apk"
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "$RUNNER_TEMP/wow-update-apks/v54-androidTest.apk"
+          for item in 'v51-debug.apk:51' 'v52-debug.apk:52' 'v53-debug.apk:53' 'v54-debug.apk:54'; do
+            file=${item%%:*}; code=${item##*:}
+            "$AAPT" dump badging "$RUNNER_TEMP/wow-update-apks/$file" | grep -q "package: name='com.whisper.wowreader'"
+            "$AAPT" dump badging "$RUNNER_TEMP/wow-update-apks/$file" | grep -q "versionCode='$code'"
+          done
+          "$AAPT" dump badging "$RUNNER_TEMP/wow-update-apks/v54-debug.apk" | grep -q "versionName='2.18.4'"
+          "$AAPT" dump badging "$RUNNER_TEMP/wow-update-apks/v54-debug.apk" | grep -q "sdkVersion:'23'"
+          "$AAPT" dump badging "$RUNNER_TEMP/wow-update-apks/v54-debug.apk" | grep -q "targetSdkVersion:'36'"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stable-v54-update-fixtures
+          path: ${{ runner.temp }}/wow-update-apks/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  device-regression:
+    needs: build-fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api: 23
+            arch: x86
+          - api: 29
+            arch: x86_64
+          - api: 35
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stable-v54-update-fixtures
+          path: update-apks
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: ${{ matrix.arch }}
+          target: google_apis
+          disable-animations: true
+          script: bash .github/scripts/verify-v54-install-paths.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stable-v54-api${{ matrix.api }}-report
+          path: verification-v54/
+          if-no-files-found: warn
+          retention-days: 14

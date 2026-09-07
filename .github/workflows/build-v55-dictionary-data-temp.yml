@@ -1,4 +1,4 @@
-name: Prepare v55 offline dictionary data
+name: Probe v55 dictionary source links
 
 on:
   push:
@@ -10,141 +10,49 @@ permissions:
   contents: write
 
 jobs:
-  build-data:
+  probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: feature/v55-inapp-dictionary
-          fetch-depth: 1
-
-      - name: Build CC BY-SA offline English-Myanmar dictionary pack
+      - name: Inspect Kaikki category chunk download links
         shell: bash
         run: |
           python3 - <<'PY'
-          import html, json, os, re, sqlite3, urllib.parse, urllib.request
-          from pathlib import Path
-
-          UA = {'User-Agent': 'WoW-Reader-dictionary-builder/1.0 (+https://github.com/whispermmepub/wow-reader-lab)'}
-          def get(url, timeout=90):
-              req = urllib.request.Request(url, headers=UA)
-              with urllib.request.urlopen(req, timeout=timeout) as r:
+          import html,re,urllib.parse,urllib.request
+          UA={'User-Agent':'WoW-Reader-dictionary-builder/1.0 (+https://github.com/whispermmepub/wow-reader-lab)'}
+          def get(url):
+              req=urllib.request.Request(url,headers=UA)
+              with urllib.request.urlopen(req,timeout=60) as r:
+                  print('GET',r.status,r.headers.get('content-type'),r.geturl())
                   return r.read()
-
-          out_dir = Path('app/src/main/assets/dictionary')
-          out_dir.mkdir(parents=True, exist_ok=True)
-          db_path = out_dir / 'wow_dictionary.db'
-          if db_path.exists(): db_path.unlink()
-
-          db = sqlite3.connect(db_path)
-          db.execute('PRAGMA journal_mode=OFF')
-          db.execute('PRAGMA synchronous=OFF')
-          db.execute('CREATE TABLE entries (id INTEGER PRIMARY KEY, headword TEXT NOT NULL, headword_norm TEXT NOT NULL, direction INTEGER NOT NULL, pos TEXT, meaning TEXT NOT NULL, sense TEXT, roman TEXT, source TEXT NOT NULL)')
-          db.execute('CREATE INDEX idx_entries_lookup ON entries(direction, headword_norm)')
-          db.execute('CREATE INDEX idx_entries_headword ON entries(headword)')
-          seen=set(); my_rows=0; en_rows=0
-
-          def norm(s): return ' '.join((s or '').strip().casefold().split())
-          def add(headword, direction, pos, meaning, sense='', roman='', source='Wiktionary'):
-              nonlocal_dummy = None
-              h=(headword or '').strip(); m=(meaning or '').strip()
-              if not h or not m: return False
-              key=(norm(h), direction, m, (pos or '').strip())
-              if key in seen: return False
-              seen.add(key)
-              db.execute('INSERT INTO entries(headword,headword_norm,direction,pos,meaning,sense,roman,source) VALUES(?,?,?,?,?,?,?,?)',
-                         (h,norm(h),direction,(pos or '').strip(),m,(sense or '').strip(),(roman or '').strip(),source))
-              return True
-
-          # Myanmar -> English: all Burmese entries from the English Wiktionary extraction.
-          burmese_url='https://kaikki.org/dictionary/Burmese/kaikki.org-dictionary-Burmese.jsonl'
-          burmese_data=get(burmese_url).decode('utf-8')
-          for line in burmese_data.splitlines():
-              if not line.strip(): continue
-              try: obj=json.loads(line)
-              except Exception: continue
-              word=obj.get('word',''); pos=obj.get('pos','')
-              roman=''
-              for f in obj.get('forms') or []:
-                  if 'romanization' in (f.get('tags') or []): roman=f.get('form',''); break
-              for sense in obj.get('senses') or []:
-                  for gloss in sense.get('glosses') or []:
-                      if add(word, 1, pos, gloss, '', roman): my_rows += 1
-
-          # English -> Myanmar: download only the Kaikki category containing English senses
-          # that actually have Burmese translations, rather than the multi-GB full English dump.
-          cat='https://kaikki.org/dictionary/English/categories-other/my/Terms%20with%20Burmese%20translations/'
-          index_url=cat+'index.html'
-          index_html=get(index_url).decode('utf-8','replace')
+          base='https://kaikki.org/dictionary/English/categories-other/my/Terms%20with%20Burmese%20translations/'
+          index=base+'index.html'
+          body=get(index).decode('utf-8','replace')
           hrefs=[]
-          for h in re.findall(r'href=["\']([^"\']+\.html)["\']', index_html, re.I):
+          for h in re.findall(r'href=["\']([^"\']+\.html)["\']',body,re.I):
               h=html.unescape(h)
-              name=urllib.parse.unquote(h.rsplit('/',1)[-1])
-              if '--' in name and h not in hrefs: hrefs.append(h)
-          if len(hrefs) < 20:
-              raise SystemExit(f'Unexpected Kaikki category index: only {len(hrefs)} chunk links')
-
-          raw_chunks=0
-          for h in hrefs:
-              page=urllib.parse.urljoin(index_url,h)
-              candidates=[page[:-5]+'.jsonl']
-              raw=None
-              for u in candidates:
-                  try:
-                      raw=get(u,60); break
-                  except Exception:
-                      pass
-              if raw is None:
-                  page_html=get(page,60).decode('utf-8','replace')
-                  m=re.search(r'href=["\']([^"\']+\.jsonl)["\']',page_html,re.I)
-                  if m:
-                      try: raw=get(urllib.parse.urljoin(page,m.group(1)),60)
-                      except Exception: raw=None
-              if raw is None: continue
-              raw_chunks += 1
-              for line in raw.decode('utf-8','replace').splitlines():
-                  if not line.strip(): continue
-                  try: obj=json.loads(line)
-                  except Exception: continue
-                  word=obj.get('word',''); pos=obj.get('pos','')
-                  for tr in obj.get('translations') or []:
-                      if (tr.get('lang_code') or tr.get('code')) != 'my': continue
-                      if add(word,0,pos,tr.get('word',''),tr.get('sense',''),tr.get('roman','')): en_rows += 1
-
-          db.execute('CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
-          meta={
-            'schema_version':'1',
-            'source':'English Wiktionary via Kaikki.org / Wiktextract',
-            'license':'CC BY-SA 4.0',
-            'source_burmese':burmese_url,
-            'source_english_category':index_url,
-            'my_to_en_rows':str(my_rows),
-            'en_to_my_rows':str(en_rows),
-          }
-          db.executemany('INSERT INTO metadata(key,value) VALUES(?,?)',meta.items())
-          db.commit(); db.execute('VACUUM'); db.close()
-
-          if my_rows < 5000:
-              raise SystemExit(f'Burmese dataset too small: {my_rows}')
-          if en_rows < 2000:
-              raise SystemExit(f'English->Myanmar dataset too small: {en_rows}; chunks={raw_chunks}/{len(hrefs)}')
-
-          Path('app/src/main/assets/dictionary/NOTICE.md').write_text('''# WoW Reader offline dictionary data\n\nThe bundled `wow_dictionary.db` is a transformed subset of English Wiktionary data extracted through Kaikki.org/Wiktextract. It contains Burmese dictionary entries with English glosses and English entries with Burmese translations.\n\nDictionary data is distributed under the Creative Commons Attribution-ShareAlike 4.0 International license (CC BY-SA 4.0), consistent with Wiktionary licensing. WoW Reader transforms the source JSONL into a compact SQLite lookup database; no example quotations, images, or audio are bundled.\n\nSources:\n- https://en.wiktionary.org/\n- https://kaikki.org/dictionary/\n- https://github.com/tatuylonen/wiktextract\n\nLicense:\n- https://creativecommons.org/licenses/by-sa/4.0/\n\nWoW Reader application source code and this dictionary database are separate works; this notice applies to the dictionary data asset.\n''', encoding='utf-8')
-          Path('tools/dictionary-build-report.txt').parent.mkdir(parents=True,exist_ok=True)
-          Path('tools/dictionary-build-report.txt').write_text(
-              f'my_to_en_rows={my_rows}\nen_to_my_rows={en_rows}\ncategory_chunks={raw_chunks}/{len(hrefs)}\ndb_bytes={db_path.stat().st_size}\n',encoding='utf-8')
-          print(Path('tools/dictionary-build-report.txt').read_text())
+              if '--' in urllib.parse.unquote(h.rsplit('/',1)[-1]) and h not in hrefs: hrefs.append(h)
+          print('chunk count',len(hrefs))
+          print('first href',hrefs[0])
+          page=urllib.parse.urljoin(index,hrefs[0])
+          page_body=get(page).decode('utf-8','replace')
+          print('page',page,'bytes',len(page_body))
+          links=[]
+          for h in re.findall(r'href=["\']([^"\']+)["\']',page_body,re.I):
+              h=html.unescape(h)
+              if any(x in h.lower() for x in ('json','download','raw','jl','gz')):
+                  if h not in links: links.append(h)
+          print('interesting links:')
+          for h in links[:100]: print(repr(h), '=>', urllib.parse.urljoin(page,h))
+          print('lines mentioning json/download/raw:')
+          for line in page_body.splitlines():
+              low=line.lower()
+              if 'json' in low or 'download' in low or 'raw' in low:
+                  print(line[:2000])
+          print('script/src links:')
+          for h in re.findall(r'(?:src|href)=["\']([^"\']+)["\']',page_body,re.I):
+              if h not in links: print(repr(h))
           PY
-          ls -lh app/src/main/assets/dictionary/wow_dictionary.db
-          sqlite3 app/src/main/assets/dictionary/wow_dictionary.db 'select direction,count(*) from entries group by direction;'
-
-      - name: Commit generated dictionary pack and remove temporary builder
-        shell: bash
-        run: |
-          git config user.name 'AungSoe Moe'
-          git config user.email '61192036+whispermmepub@users.noreply.github.com'
-          git rm .github/workflows/build-v55-dictionary-data-temp.yml
-          git add app/src/main/assets/dictionary tools/dictionary-build-report.txt
-          git commit -m 'Add offline English Myanmar dictionary data'
-          git push origin HEAD:feature/v55-inapp-dictionary

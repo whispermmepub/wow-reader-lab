@@ -17,13 +17,12 @@ final class ReadingProgressStore {
     static void set(SharedPreferences prefs, String fileName, int percent) {
         if (prefs == null || fileName == null) return;
         int clean = clamp(percent);
-        int previous = get(prefs, fileName);
         long addedAt = prefs.getLong("added_at_" + fileName, 0L);
         long finishedAt = prefs.getLong(finishedKey(fileName), 0L);
         SharedPreferences.Editor edit = prefs.edit().putInt(percentKey(fileName), clean);
         // Completion is historical: moving back to an earlier page after finishing must not erase it.
         // A stale timestamp from a deleted/re-imported same-name file is replaced after the new import.
-        if (clean >= 100 && (previous < 100 || finishedAt <= 0L || (addedAt > 0L && finishedAt < addedAt))) {
+        if (clean >= 100 && (finishedAt <= 0L || (addedAt > 0L && finishedAt < addedAt))) {
             edit.putLong(finishedKey(fileName), System.currentTimeMillis());
         }
         edit.apply();

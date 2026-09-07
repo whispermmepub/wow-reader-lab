@@ -1,0 +1,41 @@
+name: Fix v54 footnote regression timing check
+
+on:
+  push:
+    branches: [fix/v54-reader-pdf-oem]
+    paths:
+      - '.github/workflows/fix-v54-regression-await-temp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/v54-reader-pdf-oem
+      - name: Wait for exact page state instead of sampling too early
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/androidTest/java/com/whisper/wowreader/RegressionInstrumentation.java')
+          s = p.read_text()
+          old = '            check(page==(Integer)ui(() -> field("currentPageInChapter")),"return exact page");'
+          new = '            await(() -> page==(Integer)ui(() -> field("currentPageInChapter")), "return exact page");'
+          if old not in s:
+              raise SystemExit('target assertion not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Commit source fix
+        shell: bash
+        run: |
+          git config user.name 'AungSoe Moe'
+          git config user.email '61192036+whispermmepub@users.noreply.github.com'
+          git add app/src/androidTest/java/com/whisper/wowreader/RegressionInstrumentation.java
+          git commit -m 'Wait for exact footnote return page in regression test'
+          git push origin HEAD:fix/v54-reader-pdf-oem

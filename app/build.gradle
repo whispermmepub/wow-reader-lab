@@ -17,8 +17,8 @@ android {
         applicationId 'com.whisper.wowreader'
         minSdk 23
         targetSdk 36
-        versionCode 52
-        versionName '2.18.2'
+        versionCode 53
+        versionName '2.18.3'
         testInstrumentationRunner 'com.whisper.wowreader.RegressionInstrumentation'
     }
 
@@ -50,6 +50,7 @@ android {
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
     implementation 'com.github.chanmratekoko:myanmar-calendar:1.1.1.RELEASE'
+    implementation 'androidx.core:core:1.15.0'
     implementation 'androidx.recyclerview:recyclerview:1.3.2'
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation platform('com.google.firebase:firebase-bom:34.18.0')

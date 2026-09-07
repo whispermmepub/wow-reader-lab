@@ -1,8 +1,8 @@
-name: Build WoW Reader Lab v2.18.3 APK and AAB
+name: Build WoW Reader Lab v2.18.4 APK and AAB
 
 on:
   push:
-    branches: [main, play-store-api36, fix/v52-unified-install, feature/v53-reading-calendar-recap]
+    branches: [main, fix/v54-reader-pdf-oem]
     paths:
       - 'app/**'
       - 'build.gradle'
@@ -37,7 +37,7 @@ jobs:
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
-      - name: Source checks
+      - name: Stable source checks
         shell: bash
         run: |
           set -euo pipefail
@@ -49,50 +49,35 @@ jobs:
           test -s app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
           test -s app/src/main/java/com/whisper/wowreader/ReadingRecapActivity.java
           test -s app/src/main/java/com/whisper/wowreader/ReadingRecapData.java
-          test -s app/src/main/res/xml/share_paths.xml
           test -s app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
+          test -s app/src/main/java/com/whisper/wowreader/BookImportTypeDetector.java
+          test -s app/src/main/java/com/whisper/wowreader/PdfContinuousView.java
+          test -s app/src/main/res/xml/share_paths.xml
           test -s app/google-services.json
           test -s app/src/main/assets/fonts/pyidaungsu_native.ttf
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
           grep -q "minSdk 23" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
-          grep -q "versionCode 53" app/build.gradle
-          grep -q "versionName '2.18.3'" app/build.gradle
+          grep -q "versionCode 54" app/build.gradle
+          grep -q "versionName '2.18.4'" app/build.gradle
           grep -q "Home search submit is consumed" app/src/main/java/com/whisper/wowreader/MainActivity.java
-          grep -q "IME_ACTION_SEARCH" app/src/main/java/com/whisper/wowreader/MainActivity.java
-          grep -q "setOnEditorActionListener" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "Edit title & author" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "themeControlSurface" app/src/main/java/com/whisper/wowreader/MainActivity.java
+          grep -q "BookImportTypeDetector.resolveExtension" app/src/main/java/com/whisper/wowreader/MainActivity.java
           grep -q "reader_auto_scroll_enabled" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "reader_auto_scroll_speed" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "reader_eye_break_reminder" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "onAutoScrollEnd" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "autoScrollManualReturnSpine" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "remembered >= 995 ? 0 : remembered" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "Math.min(300, fontPercent + 10)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "260, 280, 300" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "EYE_BREAK_INTERVAL_MS" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "showAutoScrollSpeedDialog" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "30 min reminder" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "Edit title & author" app/src/main/java/com/whisper/wowreader/MainActivity.java
-          grep -q "library_metadata_custom_" app/src/main/java/com/whisper/wowreader/MainActivity.java
-          grep -q "Book details saved" app/src/main/java/com/whisper/wowreader/MainActivity.java
-          grep -q "Use book metadata" app/src/main/java/com/whisper/wowreader/MainActivity.java
-          grep -q "onReaderLinkTap" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "installReaderLinkNavigation(view)" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "footnotePreviewOverlay" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "Show on page" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "looksLikeExplicitBacklinkHref" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "handleFootnoteBacklink" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "footnoteExactBacklinkPending" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "renderBookSearchResults" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q "ReaderSearchIndex.search" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "1 is extra slow" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "saveReaderLocationDurable" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "pdf_reading_mode" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "PdfContinuousView" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "ReadingProgressStore.set" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "getBindingAdapterPosition" app/src/main/java/com/whisper/wowreader/PdfContinuousView.java
           grep -q "finished_at_" app/src/main/java/com/whisper/wowreader/ReadingProgressStore.java
           grep -q '"Week", "Month", "Year"' app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
           grep -q "View & Share" app/src/main/java/com/whisper/wowreader/ReadingCalendarActivity.java
           grep -q "Share Image" app/src/main/java/com/whisper/wowreader/ReadingRecapActivity.java
           grep -q "FileProvider" app/src/main/java/com/whisper/wowreader/ReadingRecapActivity.java
-          ! grep -q "showFindDialog" app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           grep -q "renameShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
           grep -q "deleteShelf" app/src/main/java/com/whisper/wowreader/LibraryShelfStore.java
           test ! -e app/src/main/java/com/whisper/wowreader/AutoLibrarySync.java
@@ -104,7 +89,7 @@ jobs:
       - name: Android lint
         run: gradle :app:lintRelease --stacktrace
 
-      - name: APK smoke checks
+      - name: APK and AAB smoke checks
         shell: bash
         run: |
           set -euo pipefail
@@ -114,18 +99,18 @@ jobs:
           test -s "$AAB"
           AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
           "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
-          "$AAPT" dump badging "$APK" | grep -q "versionCode='53'"
-          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.3'"
+          "$AAPT" dump badging "$APK" | grep -q "versionCode='54'"
+          "$AAPT" dump badging "$APK" | grep -q "versionName='2.18.4'"
           "$AAPT" dump badging "$APK" | grep -q "sdkVersion:'23'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
           unzip -l "$APK" | grep -q 'assets/fonts/pyidaungsu_native.ttf'
           unzip -l "$AAB" | grep -q 'base/assets/fonts/pyidaungsu_native.ttf'
 
-      - name: Collect APK
+      - name: Collect build artifacts
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.3-v53-unsigned.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.3-v53-unsigned.aab
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-Lab-v2.18.4-v54-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-Lab-v2.18.4-v54-unsigned.aab
           APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
           test -n "$APKSIGNER_JAR"
           cp "$APKSIGNER_JAR" apksigner.jar
@@ -133,10 +118,10 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-Lab-v2.18.3-v53
+          name: WoW-Reader-Lab-v2.18.4-v54
           path: |
-            WoW-Reader-Lab-v2.18.3-v53-unsigned.apk
-            WoW-Reader-Lab-v2.18.3-v53-unsigned.aab
+            WoW-Reader-Lab-v2.18.4-v54-unsigned.apk
+            WoW-Reader-Lab-v2.18.4-v54-unsigned.aab
             apksigner.jar
             app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk

@@ -1,4 +1,4 @@
-name: Probe v55 dictionary source links
+name: Probe v55 dictionary JSON fetch pattern
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/v55-inapp-dictionary
-      - name: Inspect Kaikki category chunk download links
+      - name: Inspect Kaikki page JavaScript and one word JSON endpoint
         shell: bash
         run: |
           python3 - <<'PY'
@@ -26,33 +26,20 @@ jobs:
           def get(url):
               req=urllib.request.Request(url,headers=UA)
               with urllib.request.urlopen(req,timeout=60) as r:
-                  print('GET',r.status,r.headers.get('content-type'),r.geturl())
-                  return r.read()
-          base='https://kaikki.org/dictionary/English/categories-other/my/Terms%20with%20Burmese%20translations/'
-          index=base+'index.html'
-          body=get(index).decode('utf-8','replace')
-          hrefs=[]
-          for h in re.findall(r'href=["\']([^"\']+\.html)["\']',body,re.I):
-              h=html.unescape(h)
-              if '--' in urllib.parse.unquote(h.rsplit('/',1)[-1]) and h not in hrefs: hrefs.append(h)
-          print('chunk count',len(hrefs))
-          print('first href',hrefs[0])
-          page=urllib.parse.urljoin(index,hrefs[0])
-          page_body=get(page).decode('utf-8','replace')
-          print('page',page,'bytes',len(page_body))
-          links=[]
-          for h in re.findall(r'href=["\']([^"\']+)["\']',page_body,re.I):
-              h=html.unescape(h)
-              if any(x in h.lower() for x in ('json','download','raw','jl','gz')):
-                  if h not in links: links.append(h)
-          print('interesting links:')
-          for h in links[:100]: print(repr(h), '=>', urllib.parse.urljoin(page,h))
-          print('lines mentioning json/download/raw:')
-          for line in page_body.splitlines():
-              low=line.lower()
-              if 'json' in low or 'download' in low or 'raw' in low:
-                  print(line[:2000])
-          print('script/src links:')
-          for h in re.findall(r'(?:src|href)=["\']([^"\']+)["\']',page_body,re.I):
-              if h not in links: print(repr(h))
+                  data=r.read(); print('GET',r.status,r.headers.get('content-type'),r.geturl(),'bytes',len(data)); return data
+          page='https://kaikki.org/dictionary/English/categories-other/my/Terms%20with%20Burmese%20translations/ASEAN--Atthadassi.html'
+          body=get(page).decode('utf-8','replace')
+          needle='encodeURIComponent(fn) + ".json"'
+          i=body.find(needle)
+          print('needle index',i)
+          print(body[max(0,i-5000):i+5000])
+          # Also inspect Arabic word page, which is known to be in this category.
+          word='https://kaikki.org/dictionary/English/meaning/A/Ar/Arabic.html'
+          wb=get(word).decode('utf-8','replace')
+          j=wb.find(needle)
+          print('WORD CONTEXT',wb[max(0,j-5000):j+5000])
+          # Print fetch(...) snippets from both pages.
+          for label,txt in [('category',body),('word',wb)]:
+              print('FETCHES',label)
+              for m in re.finditer(r'fetch\s*\([^\)]{0,500}\)',txt,re.I|re.S): print(m.group(0)[:1000])
           PY

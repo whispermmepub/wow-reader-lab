@@ -2,11 +2,12 @@ name: Build v60 whole-book scroll and dictionary fixes
 
 on:
   push:
-    branches: ['feature/v60-scroll-dictionary']
+    branches:
+      - feature/v60-scroll-dictionary
     paths:
-      - '.github/workflows/build-v60-scroll-dictionary-temp.yml'
-      - 'scripts/v60_patch.py'
-      - 'app/**'
+      - .github/workflows/build-v60-scroll-dictionary-temp.yml
+      - scripts/v60_patch.py
+      - app/**
   workflow_dispatch:
 
 permissions:
@@ -50,10 +51,12 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Install Android 16 SDK
-        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
       - name: Unit tests and build
-        run: gradle :app:testDebugUnitTest :app:assembleRelease :app:assembleDebug --stacktrace
+        run: gradle :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease --stacktrace
 
       - name: Lint release
         run: gradle :app:lintRelease --stacktrace

@@ -59,7 +59,7 @@ public class DictionaryManagerActivity extends Activity {
         addSource("Kindle dictionary (.prc/.mobi)", source,
                 installed ? number(count) + " entries" : "Optional");
 
-        TextView importButton = button(installed ? "Replace Kindle dictionary" : "Import Kindle dictionary");
+        TextView importButton = button(installed ? "Replace PRC / MOBI dictionary" : "Import PRC / MOBI dictionary");
         importButton.setOnClickListener(v -> pickKindleDictionary());
         LinearLayout.LayoutParams importLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
         importLp.topMargin = dp(16);
@@ -81,8 +81,8 @@ public class DictionaryManagerActivity extends Activity {
             root.addView(remove, lp);
         }
 
-        TextView note = label("Kindle import supports unencrypted Unicode PalmDOC/MOBI7 dictionaries. " +
-                        "The imported file is indexed privately; WoW Reader does not upload it.",
+        TextView note = label("Kindle import supports DRM-free Unicode .prc and .mobi PalmDOC/MOBI7 dictionaries. " +
+                        "Legacy Myanmar visual-order text is normalized for modern Android display. The imported file is indexed privately; WoW Reader does not upload it.",
                 11.5f, Color.rgb(112, 116, 124), Typeface.NORMAL);
         note.setPadding(dp(2), dp(18), dp(2), 0);
         root.addView(note);
@@ -118,7 +118,10 @@ public class DictionaryManagerActivity extends Activity {
         Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         pick.addCategory(Intent.CATEGORY_OPENABLE);
         pick.setType("*/*");
-        pick.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/octet-stream", "application/x-mobipocket-ebook", "application/vnd.amazon.ebook"});
+        pick.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                "application/octet-stream", "application/x-mobipocket-ebook", "application/vnd.amazon.ebook",
+                "application/x-mobi", "application/mobi", "application/vnd.amazon.mobi8-ebook"
+        });
         try { startActivityForResult(pick, REQ_KINDLE_DICT); }
         catch (Exception e) { Toast.makeText(this, "No file picker available", Toast.LENGTH_SHORT).show(); }
     }

@@ -17,8 +17,8 @@ android {
         applicationId 'com.whisper.wowreader'
         minSdk 23
         targetSdk 36
-        versionCode 59
-        versionName '2.18.9'
+        versionCode 60
+        versionName '2.19.0'
         testInstrumentationRunner 'com.whisper.wowreader.RegressionInstrumentation'
     }
 

@@ -179,6 +179,10 @@ public class BookReaderActivity extends Activity {
     private int chapterLoadGeneration = 0;
     private long readingSessionStartedElapsedMs = 0L;
     private boolean autoScrollEnabled = false;
+    // Whole-book scope keeps auto scroll running across EPUB spine/chapter boundaries.
+    private boolean autoScrollWholeBook = true;
+    // True only for a preloaded automatic handoff, so no chapter-transition overlay is shown.
+    private boolean autoScrollSeamlessHandoff = false;
     private int autoScrollSpeed = 4;
     private long autoScrollResumeToken = 0L;
     private boolean autoScrollAdvancePending = false;
@@ -274,6 +278,7 @@ public class BookReaderActivity extends Activity {
         lockOrientation = prefs.getBoolean("reader_lock_orientation", false);
         volumeChapterKeys = prefs.getBoolean("reader_volume_chapter", false);
         autoScrollEnabled = prefs.getBoolean("reader_auto_scroll_enabled", false);
+        autoScrollWholeBook = prefs.getBoolean("reader_auto_scroll_whole_book", true);
         autoScrollSpeed = Math.max(1, Math.min(10, prefs.getInt("reader_auto_scroll_speed", 4)));
         readingRulerEnabled = prefs.getBoolean("reader_reading_ruler", false);
         int savedRulerLines = prefs.getInt("reader_reading_ruler_lines", 1);
@@ -1274,7 +1279,7 @@ public class BookReaderActivity extends Activity {
         incoming.setScaleX(1f);
         incoming.setScaleY(1f);
         incoming.setTranslationX(0f);
-        incoming.setAlpha(0f);
+        incoming.setAlpha(autoScrollSeamlessHandoff && "scroll".equals(readingMode) ? 1f : 0f);
         incoming.bringToFront();
         if (chapterTransitionOverlay != null && chapterTransitionOverlay.getVisibility() == View.VISIBLE)
             chapterTransitionOverlay.bringToFront();
@@ -1295,7 +1300,7 @@ public class BookReaderActivity extends Activity {
         webView.postDelayed(() -> {
             if (generation == chapterLoadGeneration && chapterLoading && "scroll".equals(readingMode))
                 completePageReady(generation);
-        }, 850L);
+        }, autoScrollSeamlessHandoff ? 140L : 850L);
         webView.postDelayed(() -> {
             if (generation == chapterLoadGeneration && chapterLoading && "page".equals(readingMode))
                 forceChapterRepaginate(generation);
@@ -2572,9 +2577,10 @@ public class BookReaderActivity extends Activity {
                 if (activatePreloadedChapterIfReady()) return;
                 cancelChapterPreload();
                 loadCurrentEpubChapter();
-            }, 100L);
+            }, autoScrollWholeBook && autoScrollAdvancePending ? 260L : 100L);
             return;
         }
+        autoScrollSeamlessHandoff = false;
         cancelChapterPreload();
 
         currentSelection = null;
@@ -2621,8 +2627,8 @@ public class BookReaderActivity extends Activity {
         }
 
         int targetProgressPermille = restoreEnd ? 1000 : 0;
+        final boolean automaticForward = "scroll".equals(readingMode) && autoScrollEnabled && delta > 0 && autoScrollAdvancePending;
         if ("scroll".equals(readingMode) && autoScrollEnabled) {
-            final boolean automaticForward = delta > 0 && autoScrollAdvancePending;
             if (delta > 0 && !automaticForward) {
                 // User pressed Next: remember this exact location for a possible immediate Previous.
                 autoScrollManualReturnSpine = currentSpine;
@@ -2651,7 +2657,9 @@ public class BookReaderActivity extends Activity {
         }
 
         preferredPreloadDirection = delta < 0 ? -1 : 1;
-        prepareChapterTransition(delta);
+        boolean seamlessReady = automaticForward && autoScrollWholeBook && preloadReady && preloadedSpine == target;
+        autoScrollSeamlessHandoff = seamlessReady;
+        if (!seamlessReady) prepareChapterTransition(delta);
         lastChapterNavMs = now;
         currentSpine = target;
         currentProgressPermille = targetProgressPermille;
@@ -3189,6 +3197,10 @@ public class BookReaderActivity extends Activity {
                 return;
             }
             if (finishPendingChapterCurl()) return;
+            if (autoScrollSeamlessHandoff && "scroll".equals(readingMode)) {
+                finishStableChapterReveal();
+                return;
+            }
             revealStableChapter();
         });
     }
@@ -3273,6 +3285,7 @@ public class BookReaderActivity extends Activity {
         prewarmAdjacentChapters();
         scheduleAdjacentChapterPreload(preferredPreloadDirection);
         autoScrollAdvancePending = false;
+        autoScrollSeamlessHandoff = false;
         updateAutoScrollState();
     }
 
@@ -4396,6 +4409,7 @@ public class BookReaderActivity extends Activity {
         LinearLayout autoScrollRow = sheetRow();
         TextView autoToggle = sheetChip(autoScrollEnabled ? "On" : "Off", autoScrollEnabled);
         TextView autoSpeed = sheetChip("Speed · " + autoScrollSpeedDisplay(), false);
+        TextView autoScope = sheetChip(autoScrollWholeBook ? "Whole book" : "Chapter", autoScrollWholeBook);
         autoToggle.setOnClickListener(v -> {
             autoScrollEnabled = !autoScrollEnabled;
             autoToggle.setText(autoScrollEnabled ? "On" : "Off");
@@ -4407,8 +4421,17 @@ public class BookReaderActivity extends Activity {
             updateAutoScrollState();
         });
         autoSpeed.setOnClickListener(v -> { dialog.dismiss(); showAutoScrollSpeedDialog(); });
+        autoScope.setOnClickListener(v -> {
+            autoScrollWholeBook = !autoScrollWholeBook;
+            autoScope.setText(autoScrollWholeBook ? "Whole book" : "Chapter");
+            styleSheetChip(autoScope, autoScrollWholeBook);
+            saveReaderPreferences();
+            autoScrollResumeToken++;
+            updateAutoScrollState();
+        });
         autoScrollRow.addView(autoToggle, sheetChipLp(false));
         autoScrollRow.addView(autoSpeed, sheetChipLp(true));
+        autoScrollRow.addView(autoScope, sheetChipLp(true));
         card.addView(autoScrollRow);
 
         addSheetLabel(card, "Reading ruler", sub);
@@ -4625,6 +4648,7 @@ public class BookReaderActivity extends Activity {
                 "Volume keys navigate · " + onOff(volumeChapterKeys),
                 "Auto scroll · " + onOff(autoScrollEnabled),
                 "Auto scroll speed · " + autoScrollSpeedDisplay(),
+                "Auto scroll scope · " + (autoScrollWholeBook ? "Whole book" : "Chapter"),
                 "30-minute eye reminder · " + onOff(eyeBreakReminderEnabled),
                 "Reset reader settings"
         };
@@ -4683,9 +4707,11 @@ public class BookReaderActivity extends Activity {
                     autoScrollEnabled = !autoScrollEnabled; saveReaderPreferences(); autoScrollResumeToken++; updateAutoScrollState(); break;
                 case 14: showAutoScrollSpeedDialog(); break;
                 case 15:
+                    autoScrollWholeBook = !autoScrollWholeBook; saveReaderPreferences(); autoScrollResumeToken++; updateAutoScrollState(); break;
+                case 16:
                     eyeBreakReminderEnabled = !eyeBreakReminderEnabled; saveReaderPreferences();
                     if (eyeBreakReminderEnabled) scheduleEyeBreakReminder(); else cancelEyeBreakReminder(); break;
-                case 16: resetReaderPreferences(); break;
+                case 17: resetReaderPreferences(); break;
             }
             refreshAdvancedReaderSettingsRows();
         });
@@ -5032,6 +5058,8 @@ public class BookReaderActivity extends Activity {
         lockOrientation = false;
         volumeChapterKeys = false;
         autoScrollEnabled = false;
+        autoScrollWholeBook = true;
+        autoScrollSeamlessHandoff = false;
         autoScrollSpeed = 4;
         readingRulerEnabled = false;
         readingRulerLines = 1;
@@ -5070,6 +5098,7 @@ public class BookReaderActivity extends Activity {
                 .putBoolean("reader_lock_orientation", lockOrientation)
                 .putBoolean("reader_volume_chapter", volumeChapterKeys)
                 .putBoolean("reader_auto_scroll_enabled", autoScrollEnabled)
+                .putBoolean("reader_auto_scroll_whole_book", autoScrollWholeBook)
                 .putInt("reader_auto_scroll_speed", Math.max(1, Math.min(10, autoScrollSpeed)))
                 .putBoolean("reader_reading_ruler", readingRulerEnabled)
                 .putInt("reader_reading_ruler_lines", readingRulerLines)
@@ -6176,11 +6205,14 @@ public class BookReaderActivity extends Activity {
             runOnUiThread(() -> {
                 if (!autoScrollEnabled || !"scroll".equals(readingMode) || chapterLoading || autoScrollAdvancePending ||
                         footnoteNavigationActive || footnotePreviewOverlay != null || eyeBreakOverlay != null) return;
-                if (currentSpine >= 0 && currentSpine < spine.size() - 1) {
+                updateEpubProgress(1000);
+                saveEpubStateOnly();
+                if (autoScrollWholeBook && currentSpine >= 0 && currentSpine < spine.size() - 1) {
                     autoScrollAdvancePending = true;
                     navigateChapter(1, false);
                 } else {
                     autoScrollAdvancePending = false;
+                    autoScrollSeamlessHandoff = false;
                     stopAutoScrollEngine();
                 }
             });

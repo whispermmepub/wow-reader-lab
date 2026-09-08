@@ -171,6 +171,8 @@ final class KindleDictionaryStore {
             int textRecords = u16(header, 8);
             int encryption = u16(header, 12);
             if (encryption != 0) throw new Exception("Encrypted/DRM Kindle dictionaries cannot be imported");
+            if (compression == 17480)
+                throw new Exception("This MOBI dictionary uses HUFF/CDIC compression, which is not supported yet");
             if (compression != 1 && compression != 2)
                 throw new Exception("This Kindle dictionary compression is not supported");
             if (textRecords <= 0 || textRecords >= records) throw new Exception("Invalid Kindle text records");
@@ -345,15 +347,95 @@ final class KindleDictionaryStore {
             CharSequence cs = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
                     ? Html.fromHtml(raw, Html.FROM_HTML_MODE_LEGACY)
                     : Html.fromHtml(raw);
-            return cs.toString().replace('\u00A0', ' ').replaceAll("[ \\t]+", " ")
+            String clean = cs.toString().replace('\u00A0', ' ').replaceAll("[ \\t]+", " ")
                     .replaceAll("\\n[ \\t]+", "\\n").replaceAll("\\n{3,}", "\\n\\n").trim();
+            return normalizeLegacyMyanmarOrder(clean);
         } catch (Exception ignored) {
-            return raw.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim();
+            String clean = raw.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim();
+            return normalizeLegacyMyanmarOrder(clean);
         }
     }
 
+    /**
+     * Some older Myanmar Kindle dictionaries label themselves Unicode but store glyphs in
+     * visual order: U+1031 (ေ) and medial RA U+103C (ြ) can appear before the consonant.
+     * Modern Android shaping expects logical Unicode order. Convert only those unambiguous
+     * legacy patterns and remove dictionary-only zero-width syllable separators.
+     */
+    static String normalizeLegacyMyanmarOrder(String value) {
+        if (value == null || value.isEmpty()) return "";
+        StringBuilder out = new StringBuilder(value.length());
+        int i = 0;
+        while (i < value.length()) {
+            char ch = value.charAt(i);
+            if (ch == '\u200B') { i++; continue; }
+
+            if (ch == '\u1031') {
+                int j = i + 1;
+                boolean preRa = false;
+                if (j < value.length() && value.charAt(j) == '\u103C') { preRa = true; j++; }
+                if (j < value.length() && isMyanmarBase(value.charAt(j))) {
+                    char base = value.charAt(j++);
+                    boolean ya = false, ra = preRa, wa = false, ha = false;
+                    while (j < value.length() && isMyanmarMedial(value.charAt(j))) {
+                        char m = value.charAt(j++);
+                        if (m == '\u103B') ya = true;
+                        else if (m == '\u103C') ra = true;
+                        else if (m == '\u103D') wa = true;
+                        else if (m == '\u103E') ha = true;
+                    }
+                    out.append(base);
+                    if (ya) out.append('\u103B');
+                    if (ra) out.append('\u103C');
+                    if (wa) out.append('\u103D');
+                    if (ha) out.append('\u103E');
+                    out.append('\u1031');
+                    i = j;
+                    continue;
+                }
+            }
+
+            // Medial RA is the other sign legacy visual-order dictionaries commonly place
+            // before its consonant. In valid modern text it directly follows its base.
+            if (ch == '\u103C' && i + 1 < value.length() && isMyanmarBase(value.charAt(i + 1))) {
+                char previous = i > 0 ? value.charAt(i - 1) : 0;
+                if (i == 0 || !isMyanmarBase(previous)) {
+                    char base = value.charAt(i + 1);
+                    int j = i + 2;
+                    boolean ya = false, ra = true, wa = false, ha = false;
+                    while (j < value.length() && isMyanmarMedial(value.charAt(j))) {
+                        char m = value.charAt(j++);
+                        if (m == '\u103B') ya = true;
+                        else if (m == '\u103C') ra = true;
+                        else if (m == '\u103D') wa = true;
+                        else if (m == '\u103E') ha = true;
+                    }
+                    out.append(base);
+                    if (ya) out.append('\u103B');
+                    if (ra) out.append('\u103C');
+                    if (wa) out.append('\u103D');
+                    if (ha) out.append('\u103E');
+                    i = j;
+                    continue;
+                }
+            }
+
+            out.append(ch);
+            i++;
+        }
+        return out.toString();
+    }
+
+    private static boolean isMyanmarBase(char ch) {
+        return (ch >= '\u1000' && ch <= '\u102A') || ch == '\u103F' || ch == '\u104E';
+    }
+
+    private static boolean isMyanmarMedial(char ch) {
+        return ch >= '\u103B' && ch <= '\u103E';
+    }
+
     private static String normalize(String value) {
-        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        return value == null ? "" : normalizeLegacyMyanmarOrder(value).trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
     }
 
     private static int u16(byte[] b, int p) {

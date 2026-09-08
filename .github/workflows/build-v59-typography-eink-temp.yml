@@ -54,7 +54,9 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Install Android 16 SDK
-        run: "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
       - name: Unit tests and build
         run: gradle :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease --stacktrace

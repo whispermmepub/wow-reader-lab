@@ -72,7 +72,7 @@ final class DictionaryDialog {
         } catch (Exception ignored) {}
         if (query.split("\\s+").length <= 3) VocabularyStore.record(prefs, query, direction, sourceBook);
         int theme = prefs.getInt("reader_theme", 0);
-        Palette p = palette(theme);
+        Palette p = palette(theme, prefs);
 
         Dialog dialog = new Dialog(activity);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
@@ -410,7 +410,7 @@ final class DictionaryDialog {
         return Math.round(value * c.getResources().getDisplayMetrics().density);
     }
 
-    private static Palette palette(int theme) {
+    private static Palette palette(int theme, SharedPreferences prefs) {
         if (theme == 2) {
             return new Palette(Color.rgb(24, 26, 31), Color.rgb(31, 34, 40),
                     Color.rgb(238, 240, 244), Color.rgb(165, 171, 182),
@@ -420,6 +420,15 @@ final class DictionaryDialog {
             return new Palette(Color.rgb(244, 235, 214), Color.rgb(238, 226, 199),
                     Color.rgb(61, 48, 34), Color.rgb(113, 92, 67),
                     Color.rgb(145, 95, 45), Color.rgb(207, 188, 154));
+        }
+        if (theme == 3) {
+            return new Palette(Color.rgb(230, 229, 222), Color.rgb(238, 237, 230),
+                    Color.rgb(44, 49, 47), Color.rgb(101, 111, 106),
+                    Color.rgb(75, 105, 97), Color.rgb(198, 199, 191));
+        }
+        if (theme == 4) {
+            AppThemePalette c = AppThemePalette.custom(prefs);
+            return new Palette(c.background, c.card, c.primary, c.secondary, c.accent, c.stroke);
         }
         return new Palette(Color.WHITE, Color.rgb(249, 249, 251),
                 Color.rgb(31, 34, 39), Color.rgb(100, 106, 116),

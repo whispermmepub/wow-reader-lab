@@ -46,6 +46,9 @@ final class ReadingRulerView extends View {
         } else if (theme == 1) {
             fillColor = Color.argb(34, 169, 116, 56);
             edgeColor = Color.argb(95, 145, 92, 45);
+        } else if (theme == 3) {
+            fillColor = Color.argb(30, 75, 105, 97);
+            edgeColor = Color.argb(94, 75, 105, 97);
         } else {
             fillColor = Color.argb(28, 60, 108, 210);
             edgeColor = Color.argb(85, 68, 112, 214);

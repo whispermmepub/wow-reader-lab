@@ -2011,7 +2011,7 @@ public class MainActivity extends Activity {
         addCompactPopupAction(panel, popup, "✐", "Edit title & author", false, () -> showEditBookMetadata(file));
         addCompactPopupAction(panel, popup, "✎", "Notes & highlights", false, () -> openBookAnnotations(file));
         addCompactPopupAction(panel, popup, "Aa", "Reading settings", false, () -> openBookSettings(file));
-        addCompactPopupAction(panel, popup, "↗", "Share", false, () -> shareBookReference(file));
+        addCompactPopupAction(panel, popup, "↗", "Share book", false, () -> shareBookReference(file));
         addCompactPopupAction(panel, popup, "⌫", "Delete book", true, () -> confirmDelete(file));
         int width = dp(238);
         popup.setContentView(panel);
@@ -2210,15 +2210,36 @@ public class MainActivity extends Activity {
     }
 
     private void shareBookReference(File file) {
+        if (file == null || !file.exists()) {
+            Toast.makeText(this, "Book file is unavailable", Toast.LENGTH_SHORT).show();
+            return;
+        }
         try {
+            Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                    this,
+                    getPackageName() + ".fileprovider",
+                    file);
+
+            String lower = file.getName().toLowerCase(Locale.ROOT);
+            String mime = lower.endsWith(".pdf") ? "application/pdf" :
+                    (lower.endsWith(".epub") ? "application/epub+zip" : "application/octet-stream");
+
             Intent send = new Intent(Intent.ACTION_SEND);
-            send.setType("text/plain");
+            send.setType(mime);
+            send.putExtra(Intent.EXTRA_STREAM, uri);
+            send.setClipData(ClipData.newRawUri("WoW Reader book", uri));
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
             String author = cachedLibraryAuthor(file);
-            String text = cachedLibraryTitle(file) + (author.isEmpty() ? "" : " — " + author) + "\nShared from WoW Reader";
+            String text = cachedLibraryTitle(file) +
+                    (author.isEmpty() ? "" : " — " + author) +
+                    " · Shared from WoW Reader";
             send.putExtra(Intent.EXTRA_TEXT, text);
-            startActivity(Intent.createChooser(send, "Share book"));
+            send.putExtra(Intent.EXTRA_TITLE, cachedLibraryTitle(file));
+
+            startActivity(Intent.createChooser(send, "Share book file"));
         } catch (Exception e) {
-            Toast.makeText(this, "Unable to share", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Unable to share book file", Toast.LENGTH_SHORT).show();
         }
     }
 

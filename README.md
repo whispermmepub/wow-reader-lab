@@ -12,9 +12,20 @@ WoW Reader Lab is the Android development and stable-release repository for **Wo
 - **Java:** 17
 - **Official stable branch:** `stable/v61`
 - **Equivalent file-share branch:** `stable/v61-file-share`
-- **Baseline commit:** `58f39edafe7b9a1bab9d0e4bbe39d31930056c05`
+- **Original clean v61 baseline commit:** `58f39edafe7b9a1bab9d0e4bbe39d31930056c05`
 
 The trusted v61 release is the approved v60 baseline plus **actual EPUB/PDF File Share** and the v61 version bump.
+
+## Start here for continuation
+
+For a new chat or future release/update, read these first:
+
+- `NEXT_CHAT_HANDOFF.md` — complete current Android/iOS continuation context
+- `docs/ANDROID_IOS_RELEASE_HANDOFF.md` — cross-platform release/update contract
+- `docs/STORE_PUBLICATION_STATUS.md` — Google Play/App Store publication state
+- `SIGNING.md` — public Android signing identity metadata and secret-variable names
+
+`whispermmepub/wow-reader-lab` is the current source of truth. The separate `whispermmepub/wow-reader-app` repository still contains an older source line and should not be used for new work unless it is explicitly synchronized later.
 
 ## v61 File Share
 
@@ -77,14 +88,19 @@ The current Play Store release line is **v2.19.1 / versionCode 61**. The Play St
 
 If Google Play App Signing is enabled while compatibility with previously sideloaded production-signed APKs is required, preserve the existing app-signing identity rather than allowing an unrelated new signing key.
 
+## iOS handoff
+
+A separate native SwiftUI iPhone/iPad handoff exists for version **2.19.1 (61)**. It contains the Xcode project, EPUB/PDF import/read foundation, local library, reading progress, sharing, icons and privacy manifest. It intentionally contains no Apple private signing credentials. See `docs/ANDROID_IOS_RELEASE_HANDOFF.md` for the exact iOS continuation contract.
+
 ## Development rule
 
-1. Treat `stable/v61` as the current source of truth.
+1. Treat the current aligned `main` / `stable/v61` source as the source of truth.
 2. Make new feature work on a separate branch.
 3. Build APK/AAB and run regression checks before promotion.
 4. Preserve existing reader, local data, Firebase and Drive behavior.
-5. Do not reintroduce removed experiments unless explicitly requested.
-6. Never commit private signing material or credentials.
+5. Decide explicitly which accepted Android changes also need an iOS port.
+6. Do not reintroduce removed experiments unless explicitly requested.
+7. Never commit private signing material or credentials.
 
 ## Community links
 
@@ -95,4 +111,4 @@ If Google Play App Signing is enabled while compatibility with previously sidelo
 
 ## Secrets
 
-Never commit signing passwords, private keys, keystores, Telegram tokens, Firebase server credentials, Google service-account credentials, or other secrets.
+Never commit signing passwords, private keys, keystores, Telegram tokens, Firebase server credentials, Google service-account credentials, Apple private keys, or other secrets.

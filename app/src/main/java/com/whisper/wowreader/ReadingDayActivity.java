@@ -31,6 +31,8 @@ public class ReadingDayActivity extends Activity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
+        ReadingProgressStore.init(this, prefs);
+        ReadingStatsStore.init(this, prefs);
         ui = new ReadingCalendarUi(this);
         libraryDir = new File(getFilesDir(), "library");
         year = getIntent().getIntExtra("year", Calendar.getInstance().get(Calendar.YEAR));

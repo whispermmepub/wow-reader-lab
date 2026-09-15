@@ -1,10 +1,18 @@
 package com.whisper.wowreader;
 
+import android.content.Context;
 import android.content.SharedPreferences;
+
+import java.io.File;
 
 /** Single source of truth for per-book reading percentage and completion time. */
 final class ReadingProgressStore {
     private ReadingProgressStore() {}
+
+    static void init(Context context, SharedPreferences prefs) {
+        if (context == null || prefs == null) return;
+        ReaderStateDb.initialize(context, prefs, new File(context.getFilesDir(), "library"));
+    }
 
     private static String percentKey(String fileName) { return "percent_" + fileName; }
     private static String finishedKey(String fileName) { return "finished_at_" + fileName; }
@@ -17,15 +25,19 @@ final class ReadingProgressStore {
     static void set(SharedPreferences prefs, String fileName, int percent) {
         if (prefs == null || fileName == null) return;
         int clean = clamp(percent);
+        int old = clamp(prefs.getInt(percentKey(fileName), 0));
         long addedAt = prefs.getLong("added_at_" + fileName, 0L);
         long finishedAt = prefs.getLong(finishedKey(fileName), 0L);
+        boolean shouldFinish = clean >= 100 && (finishedAt <= 0L || (addedAt > 0L && finishedAt < addedAt));
+        if (old == clean && !shouldFinish) return;
         SharedPreferences.Editor edit = prefs.edit().putInt(percentKey(fileName), clean);
-        // Completion is historical: moving back to an earlier page after finishing must not erase it.
-        // A stale timestamp from a deleted/re-imported same-name file is replaced after the new import.
-        if (clean >= 100 && (finishedAt <= 0L || (addedAt > 0L && finishedAt < addedAt))) {
-            edit.putLong(finishedKey(fileName), System.currentTimeMillis());
+        if (shouldFinish) {
+            finishedAt = System.currentTimeMillis();
+            edit.putLong(finishedKey(fileName), finishedAt);
         }
         edit.apply();
+        ReaderStateDb db = ReaderStateDb.peek();
+        if (db != null) db.updateProgress(fileName, clean, finishedAt);
     }
 
     static long finishedAt(SharedPreferences prefs, String fileName) {
@@ -41,11 +53,15 @@ final class ReadingProgressStore {
         long addedAt = prefs.getLong("added_at_" + fileName, 0L);
         if (addedAt > 0L && whenMs < addedAt) return;
         prefs.edit().putLong(finishedKey(fileName), whenMs).apply();
+        ReaderStateDb db = ReaderStateDb.peek();
+        if (db != null) db.updateProgress(fileName, get(prefs, fileName), whenMs);
     }
 
     static void remove(SharedPreferences prefs, String fileName) {
         if (prefs == null || fileName == null) return;
         prefs.edit().remove(percentKey(fileName)).remove(finishedKey(fileName)).apply();
+        ReaderStateDb db = ReaderStateDb.peek();
+        if (db != null) db.removeBook(fileName);
     }
 
     private static int clamp(int value) { return Math.max(0, Math.min(100, value)); }

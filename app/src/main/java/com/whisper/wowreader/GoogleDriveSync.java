@@ -41,6 +41,7 @@ import java.util.zip.ZipOutputStream;
 final class GoogleDriveSync {
     static final int REQUEST_AUTHORIZE = 4104;
     private static final String BACKUP_NAME = "wow_reader_backup_v1.zip";
+    private static final String STATE_BACKUP_NAME = "wow_reader_state_v2.zip";
     private static final List<Scope> SCOPES = Arrays.asList(
             new Scope(Scopes.DRIVE_APPFOLDER)
     );
@@ -180,41 +181,69 @@ final class GoogleDriveSync {
     static void smartBackup(Activity activity, String token, File libraryDir, File fontsDir,
                            SharedPreferences prefs, SyncCallback callback) {
         new Thread(() -> {
-            File remoteArchive = null;
-            File temp = null;
-            File mergedArchive = null;
+            File remoteArchive = null, remoteStateArchive = null, temp = null, stateTemp = null;
+            File mergedArchive = null, stateArchive = null;
             try {
-                BackupInfo remote = findBackupInfo(token);
+                BackupInfo remote = findFileInfo(token, BACKUP_NAME);
+                BackupInfo remoteState = findFileInfo(token, STATE_BACKUP_NAME);
                 String seenRemote = prefs.getString("google_last_seen_remote_modified", "");
+                String seenState = prefs.getString("google_last_seen_state_modified", "");
+                boolean remoteFilesChanged = remote != null && (seenRemote.isEmpty() || !seenRemote.equals(remote.modifiedTime));
+                boolean remoteStateChanged = remoteState != null && (seenState.isEmpty() || !seenState.equals(remoteState.modifiedTime));
 
-                if (remote != null && (seenRemote.isEmpty() || !seenRemote.equals(remote.modifiedTime))) {
+                if (remoteFilesChanged) {
                     remoteArchive = File.createTempFile("wow-smart-sync-", ".zip", activity.getCacheDir());
-                    downloadBackup(token, remote.id, remoteArchive);
+                    downloadFile(token, remote.id, remoteArchive);
                     temp = new File(activity.getCacheDir(), "wow_smart_merge_" + System.currentTimeMillis());
                     if (!temp.mkdirs()) throw new Exception("Unable to prepare cloud merge folder");
                     unzipSafely(remoteArchive, temp);
                     mergeMissingFiles(new File(temp, "books"), libraryDir);
                     mergeMissingFiles(new File(temp, "fonts"), fontsDir);
                     CloudMergePolicy.mergePreferences(readPreferenceValues(new File(temp, "state.json")), prefs);
+                    File remoteDb = new File(temp, "state/reader.db");
+                    if (remoteDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(remoteDb, prefs);
+                    prefs.edit().putLong("library_files_updated_ms", System.currentTimeMillis()).apply();
                 }
 
-                mergedArchive = buildBackup(activity, libraryDir, fontsDir, prefs);
-                BackupInfo latest = findBackupInfo(token);
-                if (remote == null) {
-                    if (latest != null) throw new Exception("Cloud library changed during sync; retrying safely");
-                    createBackup(token, mergedArchive);
-                } else {
-                    if (latest == null || !remote.id.equals(latest.id) ||
-                            !remote.modifiedTime.equals(latest.modifiedTime))
-                        throw new Exception("Cloud library changed during sync; retrying safely");
-                    updateBackup(token, remote.id, mergedArchive);
+                if (remoteStateChanged) {
+                    remoteStateArchive = File.createTempFile("wow-state-sync-", ".zip", activity.getCacheDir());
+                    downloadFile(token, remoteState.id, remoteStateArchive);
+                    stateTemp = new File(activity.getCacheDir(), "wow_state_merge_" + System.currentTimeMillis());
+                    if (!stateTemp.mkdirs()) throw new Exception("Unable to prepare state merge folder");
+                    unzipSafely(remoteStateArchive, stateTemp);
+                    CloudMergePolicy.mergePreferences(readPreferenceValues(new File(stateTemp, "state.json")), prefs);
+                    File remoteDb = new File(stateTemp, "state/reader.db");
+                    if (remoteDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(remoteDb, prefs);
                 }
 
-                BackupInfo updated = findBackupInfo(token);
-                SharedPreferences.Editor done = prefs.edit()
-                        .putLong("google_last_backup_ms", System.currentTimeMillis());
-                if (updated != null && updated.modifiedTime != null)
-                    done.putString("google_last_seen_remote_modified", updated.modifiedTime);
+                long filesRevision = prefs.getLong("library_files_updated_ms", 0L);
+                long lastFilesBackupRevision = prefs.getLong("google_last_files_backup_revision_ms", 0L);
+                boolean needFull = remote == null || remoteFilesChanged || filesRevision > lastFilesBackupRevision;
+                if (needFull) {
+                    mergedArchive = buildBackup(activity, libraryDir, fontsDir, prefs);
+                    BackupInfo latest = findFileInfo(token, BACKUP_NAME);
+                    if (remote == null) {
+                        if (latest == null) createNamedZip(token, BACKUP_NAME, mergedArchive);
+                        else updateNamedFile(token, latest.id, "application/zip", mergedArchive);
+                    } else {
+                        if (latest == null || !remote.id.equals(latest.id) || !remote.modifiedTime.equals(latest.modifiedTime))
+                            throw new Exception("Cloud library changed during sync; retrying safely");
+                        updateNamedFile(token, remote.id, "application/zip", mergedArchive);
+                    }
+                    prefs.edit().putLong("google_last_files_backup_revision_ms", Math.max(filesRevision, System.currentTimeMillis())).apply();
+                }
+
+                // Reading progress/settings/state are small and sync separately, so page progress never rebuilds every EPUB/PDF.
+                stateArchive = buildStateBackup(activity, prefs);
+                BackupInfo latestState = findFileInfo(token, STATE_BACKUP_NAME);
+                if (latestState == null) createNamedZip(token, STATE_BACKUP_NAME, stateArchive);
+                else updateNamedFile(token, latestState.id, "application/zip", stateArchive);
+
+                BackupInfo updated = findFileInfo(token, BACKUP_NAME);
+                BackupInfo updatedState = findFileInfo(token, STATE_BACKUP_NAME);
+                SharedPreferences.Editor done = prefs.edit().putLong("google_last_backup_ms", System.currentTimeMillis());
+                if (updated != null) done.putString("google_last_seen_remote_modified", updated.modifiedTime);
+                if (updatedState != null) done.putString("google_last_seen_state_modified", updatedState.modifiedTime);
                 done.apply();
                 activity.runOnUiThread(() -> callback.onSuccess("Google Drive smart sync is up to date"));
             } catch (Exception e) {
@@ -222,8 +251,10 @@ final class GoogleDriveSync {
                 activity.runOnUiThread(() -> callback.onError(message));
             } finally {
                 if (remoteArchive != null) remoteArchive.delete();
+                if (remoteStateArchive != null) remoteStateArchive.delete();
                 if (mergedArchive != null) mergedArchive.delete();
-                deleteRecursively(temp);
+                if (stateArchive != null) stateArchive.delete();
+                deleteRecursively(temp); deleteRecursively(stateTemp);
             }
         }, "wow-google-smart-sync").start();
     }
@@ -244,7 +275,24 @@ final class GoogleDriveSync {
                 restoreFiles(new File(temp, "books"), libraryDir);
                 restoreFiles(new File(temp, "fonts"), fontsDir);
                 restorePreferences(new File(temp, "state.json"), prefs);
+                File fullDb = new File(temp, "state/reader.db");
+                if (fullDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(fullDb, prefs);
+
+                BackupInfo stateInfo = findFileInfo(token, STATE_BACKUP_NAME);
+                if (stateInfo != null) {
+                    File stateZip = File.createTempFile("wow-state-restore-", ".zip", activity.getCacheDir());
+                    File stateDir = new File(activity.getCacheDir(), "wow_state_restore_" + System.currentTimeMillis());
+                    try {
+                        downloadFile(token, stateInfo.id, stateZip);
+                        if (!stateDir.mkdirs()) throw new Exception("Unable to prepare state restore folder");
+                        unzipSafely(stateZip, stateDir);
+                        restorePreferences(new File(stateDir, "state.json"), prefs);
+                        File stateDb = new File(stateDir, "state/reader.db");
+                        if (stateDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(stateDb, prefs);
+                    } finally { stateZip.delete(); deleteRecursively(stateDir); }
+                }
                 prefs.edit()
+                        .putLong("library_files_updated_ms", System.currentTimeMillis())
                         .putLong("google_last_backup_ms", System.currentTimeMillis())
                         .putLong("sync_updated_ms", System.currentTimeMillis())
                         .apply();
@@ -279,6 +327,22 @@ final class GoogleDriveSync {
             zip.putNextEntry(entry);
             zip.write(state);
             zip.closeEntry();
+            ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+            File dbFile = db.databaseFile(activity);
+            if (dbFile != null && dbFile.isFile()) addFile(zip, dbFile, "state/reader.db");
+        }
+        return out;
+    }
+
+    private static File buildStateBackup(Activity activity, SharedPreferences prefs) throws Exception {
+        File out = File.createTempFile("wow-reader-state-", ".zip", activity.getCacheDir());
+        try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(out)))) {
+            byte[] state = exportPreferences(prefs).toString().getBytes(StandardCharsets.UTF_8);
+            ZipEntry entry = new ZipEntry("state.json");
+            zip.putNextEntry(entry); zip.write(state); zip.closeEntry();
+            ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, new File(activity.getFilesDir(), "library"));
+            File dbFile = db.databaseFile(activity);
+            if (dbFile != null && dbFile.isFile()) addFile(zip, dbFile, "state/reader.db");
         }
         return out;
     }
@@ -336,6 +400,15 @@ final class GoogleDriveSync {
             }
         }
         edit.apply();
+    }
+
+    private static void addFile(ZipOutputStream zip, File file, String entryName) throws Exception {
+        if (file == null || !file.isFile()) return;
+        ZipEntry entry = new ZipEntry(entryName); zip.putNextEntry(entry);
+        try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
+            byte[] buffer = new byte[64 * 1024]; int n; while ((n = in.read(buffer)) > 0) zip.write(buffer, 0, n);
+        }
+        zip.closeEntry();
     }
 
     private static void addDirectory(ZipOutputStream zip, File dir, String prefix) throws Exception {
@@ -426,8 +499,10 @@ final class GoogleDriveSync {
         String modifiedTime = "";
     }
 
-    private static BackupInfo findBackupInfo(String token) throws Exception {
-        String q = "name='" + BACKUP_NAME + "' and trashed=false";
+    private static BackupInfo findBackupInfo(String token) throws Exception { return findFileInfo(token, BACKUP_NAME); }
+
+    private static BackupInfo findFileInfo(String token, String name) throws Exception {
+        String q = "name='" + name.replace("'", "\'") + "' and trashed=false";
         String url = "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&pageSize=10&orderBy=modifiedTime%20desc&fields=files(id,name,modifiedTime)&q=" +
                 URLEncoder.encode(q, "UTF-8");
         JSONObject result = authorizedJson(url, token);
@@ -446,41 +521,35 @@ final class GoogleDriveSync {
         return info == null ? null : info.id;
     }
 
-    private static void createBackup(String token, File archive) throws Exception {
+    private static void createBackup(String token, File archive) throws Exception { createNamedZip(token, BACKUP_NAME, archive); }
+
+    private static void updateBackup(String token, String id, File archive) throws Exception { updateNamedFile(token, id, "application/zip", archive); }
+
+    private static void downloadBackup(String token, String id, File destination) throws Exception { downloadFile(token, id, destination); }
+
+    private static void createNamedZip(String token, String name, File archive) throws Exception {
         String boundary = "wowreader_" + System.currentTimeMillis();
         HttpURLConnection c = open("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", "POST", token);
-        c.setRequestProperty("Content-Type", "multipart/related; boundary=" + boundary);
-        c.setDoOutput(true);
+        c.setRequestProperty("Content-Type", "multipart/related; boundary=" + boundary); c.setDoOutput(true);
         try (OutputStream out = new BufferedOutputStream(c.getOutputStream())) {
-            String metadata = "{\"name\":" + JSONObject.quote(BACKUP_NAME) + ",\"parents\":[\"appDataFolder\"],\"mimeType\":\"application/zip\"}";
+            String metadata = "{\"name\":" + JSONObject.quote(name) + ",\"parents\":[\"appDataFolder\"],\"mimeType\":\"application/zip\"}";
             writeUtf8(out, "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + metadata + "\r\n");
-            writeUtf8(out, "--" + boundary + "\r\nContent-Type: application/zip\r\n\r\n");
-            copy(new FileInputStream(archive), out);
+            writeUtf8(out, "--" + boundary + "\r\nContent-Type: application/zip\r\n\r\n"); copy(new FileInputStream(archive), out);
             writeUtf8(out, "\r\n--" + boundary + "--\r\n");
         }
-        ensureSuccess(c);
-        c.disconnect();
+        ensureSuccess(c); c.disconnect();
     }
 
-    private static void updateBackup(String token, String id, File archive) throws Exception {
+    private static void updateNamedFile(String token, String id, String mime, File file) throws Exception {
         HttpURLConnection c = open("https://www.googleapis.com/upload/drive/v3/files/" + id + "?uploadType=media&fields=id", "POST", token);
-        c.setRequestProperty("X-HTTP-Method-Override", "PATCH");
-        c.setRequestProperty("Content-Type", "application/zip");
-        c.setDoOutput(true);
-        try (OutputStream out = new BufferedOutputStream(c.getOutputStream())) {
-            copy(new FileInputStream(archive), out);
-        }
-        ensureSuccess(c);
-        c.disconnect();
+        c.setRequestProperty("X-HTTP-Method-Override", "PATCH"); c.setRequestProperty("Content-Type", mime); c.setDoOutput(true);
+        try (OutputStream out = new BufferedOutputStream(c.getOutputStream())) { copy(new FileInputStream(file), out); }
+        ensureSuccess(c); c.disconnect();
     }
 
-    private static void downloadBackup(String token, String id, File destination) throws Exception {
-        HttpURLConnection c = open("https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", "GET", token);
-        ensureSuccess(c);
-        try (InputStream in = new BufferedInputStream(c.getInputStream());
-             OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) {
-            copy(in, out);
-        }
+    private static void downloadFile(String token, String id, File destination) throws Exception {
+        HttpURLConnection c = open("https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", "GET", token); ensureSuccess(c);
+        try (InputStream in = new BufferedInputStream(c.getInputStream()); OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) { copy(in, out); }
         c.disconnect();
     }
 

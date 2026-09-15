@@ -28,6 +28,8 @@ import java.io.FileOutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.List;
 
 public class ReadingRecapActivity extends Activity {
     private ReadingCalendarUi ui;
@@ -41,6 +43,8 @@ public class ReadingRecapActivity extends Activity {
         super.onCreate(savedInstanceState);
         ui = new ReadingCalendarUi(this);
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
+        ReadingProgressStore.init(this, prefs);
+        ReadingStatsStore.init(this, prefs);
         long start = getIntent().getLongExtra("start_ms", System.currentTimeMillis());
         long end = getIntent().getLongExtra("end_ms", System.currentTimeMillis());
         mode = getIntent().getStringExtra("mode");
@@ -81,16 +85,16 @@ public class ReadingRecapActivity extends Activity {
         body.addView(shareCard, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        TextView share = label("↗  Share Image", 15, Color.WHITE, true);
+        TextView share = label("↗  Share All as Image", 15, Color.WHITE, true);
         share.setGravity(Gravity.CENTER);
         share.setBackground(ui.rounded(Color.rgb(101, 91, 235), 22, 0, 0));
-        share.setOnClickListener(v -> share.post(this::shareImage));
+        share.setOnClickListener(v -> shareAllImages(share));
         LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(52));
         shareLp.topMargin = ui.dp(12);
         body.addView(share, shareLp);
 
-        TextView hint = label("Only books completed in this period are shown.", 10.5f, ui.secondary, false);
+        TextView hint = label("All finished books are shared · large recaps are split into safe image pages.", 10.5f, ui.secondary, false);
         hint.setGravity(Gravity.CENTER);
         hint.setPadding(0, ui.dp(8), 0, 0);
         body.addView(hint);
@@ -222,36 +226,32 @@ public class ReadingRecapActivity extends Activity {
         return new SimpleDateFormat("MMM d, yyyy", Locale.ENGLISH).format(new Date(startMs));
     }
 
-    private void shareImage() {
-        if (shareCard == null || shareCard.getWidth() <= 0 || shareCard.getHeight() <= 0) return;
-        try {
-            Bitmap raw = Bitmap.createBitmap(shareCard.getWidth(), shareCard.getHeight(), Bitmap.Config.ARGB_8888);
-            Canvas canvas = new Canvas(raw);
-            shareCard.draw(canvas);
-            int targetWidth = 1080;
-            int targetHeight = Math.max(1, Math.round(raw.getHeight() * (targetWidth / (float) raw.getWidth())));
-            Bitmap output = raw.getWidth() == targetWidth ? raw : Bitmap.createScaledBitmap(raw, targetWidth, targetHeight, true);
-
-            File dir = new File(getCacheDir(), "shared_images");
-            if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Cannot create share folder");
-            File file = new File(dir, "wow-reading-recap.png");
-            try (FileOutputStream out = new FileOutputStream(file)) {
-                if (!output.compress(Bitmap.CompressFormat.PNG, 100, out))
-                    throw new IllegalStateException("Cannot create image");
+    private void shareAllImages(TextView button) {
+        if (button == null || summary == null) return;
+        button.setEnabled(false);
+        String old = button.getText().toString();
+        button.setText("Preparing recap…");
+        new Thread(() -> {
+            try {
+                List<File> files = ReadingRecapImageRenderer.render(this, summary, mode, periodLabel);
+                ArrayList<Uri> uris = new ArrayList<>();
+                for (File file : files)
+                    uris.add(FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file));
+                runOnUiThread(() -> {
+                    button.setEnabled(true); button.setText(old);
+                    if (uris.isEmpty()) { Toast.makeText(this, "Could not create recap image", Toast.LENGTH_SHORT).show(); return; }
+                    Intent send = new Intent(uris.size() == 1 ? Intent.ACTION_SEND : Intent.ACTION_SEND_MULTIPLE);
+                    send.setType("image/png");
+                    if (uris.size() == 1) send.putExtra(Intent.EXTRA_STREAM, uris.get(0));
+                    else send.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+                    send.putExtra(Intent.EXTRA_TEXT, recapTitle() + " · WoW Reader");
+                    send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivity(Intent.createChooser(send, "Share reading recap"));
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> { button.setEnabled(true); button.setText(old); Toast.makeText(this, "Could not create recap image", Toast.LENGTH_SHORT).show(); });
             }
-            if (output != raw) output.recycle();
-            raw.recycle();
-
-            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
-            Intent send = new Intent(Intent.ACTION_SEND);
-            send.setType("image/png");
-            send.putExtra(Intent.EXTRA_STREAM, uri);
-            send.putExtra(Intent.EXTRA_TEXT, recapTitle() + " · WoW Reader");
-            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(send, "Share reading recap"));
-        } catch (Exception e) {
-            Toast.makeText(this, "Could not create recap image", Toast.LENGTH_SHORT).show();
-        }
+        }, "wow-recap-render").start();
     }
 
     private TextView label(String text, float size, int color, boolean bold) {

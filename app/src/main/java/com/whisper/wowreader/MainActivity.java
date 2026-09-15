@@ -112,6 +112,8 @@ public class MainActivity extends Activity {
         if (!libraryDir.exists()) libraryDir.mkdirs();
         if (!coverCacheDir.exists()) coverCacheDir.mkdirs();
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
+        ReadingProgressStore.init(this, prefs);
+        ReadingStatsStore.init(this, prefs);
         appTheme = prefs.getString("app_theme", "white");
         if (!AppThemePalette.isSupportedTheme(appTheme)) appTheme = "white";
         applySystemBarTheme();
@@ -3101,12 +3103,13 @@ public class MainActivity extends Activity {
         }
         if(data!=null){
             intent.setAction(null);
-            importBook(data,false);
+            importBook(data,true);
         }
     }
 
     private void importBook(Uri uri,boolean openAfter){
         new Thread(()->{
+            File temp=null;
             try{
                 String name=queryDisplayName(uri);
                 if(name==null||name.trim().isEmpty())name="book_"+System.currentTimeMillis();
@@ -3116,11 +3119,35 @@ public class MainActivity extends Activity {
                     if(detectedExtension!=null)name+=detectedExtension;
                     else throw new Exception("Only EPUB and PDF files are supported");
                 }
-                File out=uniqueFile(name);
-                try(InputStream in=getContentResolver().openInputStream(uri);OutputStream os=new FileOutputStream(out)){
+
+                File importCache=new File(getCacheDir(),"incoming_books");
+                if(!importCache.exists()&&!importCache.mkdirs())throw new Exception("Unable to prepare import cache");
+                temp=File.createTempFile("wow-import-",".tmp",importCache);
+                String hash;
+                try(InputStream in=getContentResolver().openInputStream(uri);OutputStream os=new FileOutputStream(temp)){
                     if(in==null)throw new Exception("Unable to open file");
-                    copy(in,os);
+                    hash=FileIdentityUtil.copyAndSha256(in,os);
                 }
+
+                ReaderStateDb stateDb=ReaderStateDb.initialize(this,prefs,libraryDir);
+                File existing=stateDb.findExistingByHash(hash,temp.length(),libraryDir,prefs);
+                if(existing!=null&&existing.isFile()){
+                    temp.delete();
+                    File finalExisting=existing;
+                    runOnUiThread(()->{
+                        refreshLibrary();
+                        Toast.makeText(this,"Already in Library · opening existing copy",Toast.LENGTH_SHORT).show();
+                        if(openAfter)openBook(finalExisting);
+                    });
+                    return;
+                }
+
+                File out=uniqueFile(name);
+                if(!temp.renameTo(out)){
+                    try(InputStream in=new FileInputStream(temp);OutputStream os=new FileOutputStream(out)){copy(in,os);}
+                    if(!temp.delete())temp.deleteOnExit();
+                }
+                temp=null;
                 String displayTitle=stripExtension(out.getName());
                 String displayAuthor="";
                 if(out.getName().toLowerCase(Locale.ROOT).endsWith(".epub")){
@@ -3130,19 +3157,27 @@ public class MainActivity extends Activity {
                         if(summary.author!=null&&!summary.author.trim().isEmpty())displayAuthor=summary.author.trim();
                     }catch(Exception ignored){}
                 }
+                long now=System.currentTimeMillis();
                 prefs.edit()
-                        .putLong("added_at_"+out.getName(),System.currentTimeMillis())
+                        .putLong("added_at_"+out.getName(),now)
                         .putString("library_title_"+out.getName(),displayTitle)
                         .putString("library_author_"+out.getName(),displayAuthor)
                         .putBoolean("library_owned_"+out.getName(),true)
-                        .putLong("sync_updated_ms",System.currentTimeMillis())
+                        .putString("content_hash_"+out.getName(),hash)
+                        .putString("content_hash_sig_"+out.getName(),out.length()+":"+out.lastModified())
+                        .putLong("library_files_updated_ms",now)
+                        .putLong("sync_updated_ms",now)
                         .apply();
+                stateDb.upsertBook(out,hash,prefs);
+                File finalOut=out;
                 runOnUiThread(()->{
                     Toast.makeText(this,"Added to Library · local copy saved",Toast.LENGTH_SHORT).show();
                     refreshLibrary();
                     maybeAutoGoogleSync();
+                    if(openAfter)openBook(finalOut);
                 });
             }catch(Exception e){
+                if(temp!=null&&temp.exists())temp.delete();
                 runOnUiThread(()->Toast.makeText(this,e.getMessage(),Toast.LENGTH_LONG).show());
             }
         },"wow-import-book").start();
@@ -3156,7 +3191,7 @@ public class MainActivity extends Activity {
 
     private String queryDisplayName(Uri uri){ if("file".equalsIgnoreCase(uri.getScheme()))return new File(uri.getPath()).getName(); Cursor c=null; try{c=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null);if(c!=null&&c.moveToFirst())return c.getString(0);}catch(Exception ignored){}finally{if(c!=null)c.close();}return null; }
     private File uniqueFile(String originalName){ String safe=originalName.replaceAll("[\\\\/:*?\"<>|]","_"); File f=new File(libraryDir,safe);if(!f.exists())return f;int dot=safe.lastIndexOf('.');String base=dot>0?safe.substring(0,dot):safe,ext=dot>0?safe.substring(dot):"";return new File(libraryDir,base+"_"+System.currentTimeMillis()+ext); }
-    private void openBook(File file){prefs.edit().putLong("last_opened_"+file.getName(),System.currentTimeMillis()).apply();readerUiRefreshPending=true;Intent i=new Intent(this,BookReaderActivity.class);i.putExtra("path",file.getAbsolutePath());startActivity(i);overridePendingTransition(android.R.anim.fade_in,android.R.anim.fade_out);}
+    private void openBook(File file){GoogleAutoSync.cancelPending();long now=System.currentTimeMillis();prefs.edit().putLong("last_opened_"+file.getName(),now).apply();ReaderStateDb db=ReaderStateDb.peek();if(db!=null)db.updateLastOpened(file.getName(),now);readerUiRefreshPending=true;Intent i=new Intent(this,BookReaderActivity.class);i.putExtra("path",file.getAbsolutePath());startActivity(i);overridePendingTransition(android.R.anim.fade_in,android.R.anim.fade_out);}
     private void confirmDelete(File file) {
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
@@ -3187,6 +3222,8 @@ public class MainActivity extends Activity {
                 prefs.edit().remove("library_title_" + file.getName())
                         .remove("library_author_" + file.getName()).remove(customMetadataFlag(file)).remove("library_owned_" + file.getName())
                         .remove("added_at_" + file.getName()).remove("last_opened_" + file.getName())
+                        .remove("content_hash_" + file.getName()).remove("content_hash_sig_" + file.getName())
+                        .putLong("library_files_updated_ms", System.currentTimeMillis())
                         .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
                 refreshLibrary();
                 maybeAutoGoogleSync();

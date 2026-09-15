@@ -29,7 +29,9 @@ public class ReadingMemoryActivity extends Activity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        prefs = getSharedPreferences("wow_reader", MODE_PRIVATE); ui = new ReadingCalendarUi(this);
+        prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
+        ReadingProgressStore.init(this, prefs);
+        ReadingStatsStore.init(this, prefs); ui = new ReadingCalendarUi(this);
         bookName = getIntent().getStringExtra("book_name"); dayKey = getIntent().getStringExtra("day_key");
         year = getIntent().getIntExtra("year", Calendar.getInstance().get(Calendar.YEAR)); month = getIntent().getIntExtra("month", Calendar.getInstance().get(Calendar.MONTH) + 1); day = getIntent().getIntExtra("day", Calendar.getInstance().get(Calendar.DAY_OF_MONTH));
         if (dayKey == null) dayKey = ReadingStatsStore.dayKey(year, month, day);

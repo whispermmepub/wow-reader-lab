@@ -144,6 +144,10 @@ public class BookReaderActivity extends Activity {
     private boolean paperGestureChapterBoundary;
     private final List<File> spine = new ArrayList<>();
     private final List<String> chapterTitles = new ArrayList<>();
+    private EpubProgressModel epubProgressModel = EpubProgressModel.uniform(0);
+    private int lastPersistedSpine = -1;
+    private int lastPersistedScroll = -1;
+    private long lastEpubStateWriteElapsedMs = 0L;
     private final List<Integer> tocSpineIndices = new ArrayList<>();
     private final List<String> tocTitles = new ArrayList<>();
     private final List<String> tocFragments = new ArrayList<>();
@@ -263,6 +267,8 @@ public class BookReaderActivity extends Activity {
 
         bookFile = new File(path);
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
+        ReadingProgressStore.init(this, prefs);
+        ReadingStatsStore.init(this, prefs);
         isPdf = bookFile.getName().toLowerCase(Locale.ROOT).endsWith(".pdf");
 
         readerTheme = Math.max(0, Math.min(4, prefs.getInt("reader_theme", 0)));
@@ -1826,7 +1832,6 @@ public class BookReaderActivity extends Activity {
     private void saveAnnotation(SelectionData data, String color, String note) {
         ReaderAnnotationStore.add(prefs, bookFile.getName(), currentSpine,
                 data.start, data.end, data.text, color, note);
-        GoogleAutoSync.scheduleSoon(this);
         applySavedAnnotations();
         updateAnnotationButton();
         Toast.makeText(this, note == null || note.trim().isEmpty() ? "Highlighted" : "Note saved",
@@ -1962,8 +1967,7 @@ public class BookReaderActivity extends Activity {
         remove.setOnClickListener(v -> {
             dialog.dismiss();
             ReaderAnnotationStore.remove(prefs, bookFile.getName(), a.id);
-            GoogleAutoSync.scheduleSoon(this);
-            applySavedAnnotations();
+                applySavedAnnotations();
             updateAnnotationButton();
             Toast.makeText(this, "Removed", Toast.LENGTH_SHORT).show();
         });
@@ -2478,8 +2482,7 @@ public class BookReaderActivity extends Activity {
                     List<android.graphics.RectF> rects = wholeLine ? selection.lineRects : selection.wordRects;
                     String quote = wholeLine ? selection.line : selection.word;
                     PdfHighlightStore.add(prefs, bookFile.getName(), selection.page, quote, colors[which], rects);
-                    GoogleAutoSync.scheduleSoon(this);
-                    if (pdfPageHighlightOverlay != null && selection.page == currentPdfPage)
+                                if (pdfPageHighlightOverlay != null && selection.page == currentPdfPage)
                         pdfPageHighlightOverlay.setHighlights(PdfHighlightStore.forPage(prefs, bookFile.getName(), selection.page));
                     if (pdfContinuousView != null) pdfContinuousView.refreshHighlights(selection.page);
                     Toast.makeText(this, "Highlighted", Toast.LENGTH_SHORT).show();
@@ -2512,12 +2515,14 @@ public class BookReaderActivity extends Activity {
                 }
 
                 EpubUtil.BookInfo info = EpubUtil.parseExtracted(extractDir);
+                EpubProgressModel progressModel = EpubProgressModel.loadOrBuild(extractDir, info.spine, info.chapterTitles);
 
                 runOnUiThread(() -> {
                     spine.clear();
                     spine.addAll(info.spine);
                     chapterTitles.clear();
                     chapterTitles.addAll(info.chapterTitles);
+                    epubProgressModel = progressModel;
                     tocSpineIndices.clear();
                     tocSpineIndices.addAll(info.tocSpineIndices);
                     tocTitles.clear();
@@ -4931,6 +4936,7 @@ public class BookReaderActivity extends Activity {
                             .setPositiveButton("Remove", (d, w) -> {
                                 boolean wasSelected = target.id.equals(fontChoice);
                                 if (ReaderFontStore.delete(this, target.id)) {
+                                    prefs.edit().putLong("library_files_updated_ms", System.currentTimeMillis()).putLong("sync_updated_ms", System.currentTimeMillis()).apply();
                                     if (wasSelected) {
                                         fontChoice = "publisher";
                                         saveReaderPreferences();
@@ -4952,6 +4958,7 @@ public class BookReaderActivity extends Activity {
         if (uri == null) return;
         try {
             ReaderFontStore.FontEntry imported = ReaderFontStore.importFont(this, uri);
+            prefs.edit().putLong("library_files_updated_ms", System.currentTimeMillis()).putLong("sync_updated_ms", System.currentTimeMillis()).apply();
             fontChoice = imported.id;
             saveReaderPreferences();
             applyReaderStyleSmooth(true);
@@ -5108,7 +5115,6 @@ public class BookReaderActivity extends Activity {
                 .putLong("sync_updated_ms", System.currentTimeMillis())
                 .apply();
         refreshAdvancedReaderSettingsRows();
-        GoogleAutoSync.scheduleSoon(this);
     }
 
     private int normalizeFontWeight(int value) {
@@ -5217,7 +5223,7 @@ public class BookReaderActivity extends Activity {
         currentProgressPermille = Math.max(0, Math.min(1000, p));
         if (spine.isEmpty()) return;
 
-        double overall = (currentSpine + currentProgressPermille / 1000.0) / spine.size();
+        double overall = epubProgressModel.overallFraction(currentSpine, currentProgressPermille);
         int percent = Math.max(0, Math.min(100, (int) Math.round(overall * 100.0)));
 
         String chapter = currentSpine < chapterTitles.size()
@@ -5244,12 +5250,22 @@ public class BookReaderActivity extends Activity {
     }
 
     private void saveEpubStateOnly() {
-        if (footnoteNavigationActive || footnoteReturnPending || searchNavigationActive) return;
+        if (footnoteNavigationActive || footnoteReturnPending || searchNavigationActive || bookFile == null) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        boolean chapterChanged = currentSpine != lastPersistedSpine;
+        boolean movedEnough = Math.abs(currentProgressPermille - lastPersistedScroll) >= 20;
+        boolean timeDue = now - lastEpubStateWriteElapsedMs >= 5000L;
+        if (!chapterChanged && !movedEnough && !timeDue) return;
+        lastPersistedSpine = currentSpine;
+        lastPersistedScroll = currentProgressPermille;
+        lastEpubStateWriteElapsedMs = now;
         prefs.edit()
                 .putInt("epub_chapter_" + bookFile.getName(), currentSpine)
                 .putInt("epub_scroll_" + bookFile.getName(), currentProgressPermille)
                 .putLong("sync_updated_ms", System.currentTimeMillis())
                 .apply();
+        ReaderStateDb db = ReaderStateDb.peek();
+        if (db != null) db.updateEpubLocator(bookFile.getName(), currentSpine, currentProgressPermille);
     }
 
     private void saveEpubState() {
@@ -5270,7 +5286,7 @@ public class BookReaderActivity extends Activity {
         }
         saveSpine = Math.max(0, Math.min(spine.size() - 1, saveSpine));
         saveProgress = Math.max(0, Math.min(1000, saveProgress));
-        double overall = (saveSpine + saveProgress / 1000.0) / spine.size();
+        double overall = epubProgressModel.overallFraction(saveSpine, saveProgress);
         int percent = Math.max(0, Math.min(100, (int) Math.round(overall * 100.0)));
         ReadingProgressStore.set(prefs, bookFile.getName(), percent);
         prefs.edit()
@@ -5278,6 +5294,11 @@ public class BookReaderActivity extends Activity {
                 .putInt("epub_scroll_" + bookFile.getName(), saveProgress)
                 .putLong("sync_updated_ms", System.currentTimeMillis())
                 .commit();
+        lastPersistedSpine = saveSpine;
+        lastPersistedScroll = saveProgress;
+        lastEpubStateWriteElapsedMs = android.os.SystemClock.elapsedRealtime();
+        ReaderStateDb db = ReaderStateDb.peek();
+        if (db != null) db.updateEpubLocator(bookFile.getName(), saveSpine, saveProgress);
     }
 
     private void savePdfStateDurable() {
@@ -5292,6 +5313,8 @@ public class BookReaderActivity extends Activity {
                 .putInt("pdf_page_" + bookFile.getName(), Math.max(0, currentPdfPage))
                 .putLong("sync_updated_ms", System.currentTimeMillis())
                 .commit();
+        ReaderStateDb db = ReaderStateDb.peek();
+        if (db != null) db.updatePdfPage(bookFile.getName(), Math.max(0, currentPdfPage));
     }
 
     private void saveReaderLocationDurable() {
@@ -5310,10 +5333,9 @@ public class BookReaderActivity extends Activity {
             return;
         }
         if (spine.isEmpty() || webView == null) return;
-        double absolute = (p / 1000.0) * spine.size();
-        int targetSpine = Math.min(spine.size() - 1, Math.max(0, (int) Math.floor(absolute)));
-        int targetChapterProgress = targetSpine == spine.size() - 1 && p >= 1000
-                ? 1000 : Math.max(0, Math.min(1000, (int) Math.round((absolute - targetSpine) * 1000.0)));
+        EpubProgressModel.Position targetPosition = epubProgressModel.positionForOverall(p);
+        int targetSpine = Math.max(0, Math.min(spine.size() - 1, targetPosition.spineIndex));
+        int targetChapterProgress = Math.max(0, Math.min(1000, targetPosition.chapterPermille));
         if (targetSpine != currentSpine) {
             int direction = targetSpine > currentSpine ? 1 : -1;
             prepareChapterTransition(direction);
@@ -6301,7 +6323,6 @@ public class BookReaderActivity extends Activity {
         updateNightLightOverlay();
         scheduleEyeBreakReminder();
         if (root != null) root.postDelayed(this::updateAutoScrollState, 260L);
-        GoogleAutoSync.schedule(this);
         getWindow().getDecorView().postDelayed(this::enterImmersive, 80L);
     }
 
@@ -6338,7 +6359,6 @@ public class BookReaderActivity extends Activity {
         cancelEyeBreakReminder();
         stopAutoScrollEngine();
         saveReaderLocationDurable();
-        GoogleAutoSync.flush(this);
         super.onPause();
     }
 

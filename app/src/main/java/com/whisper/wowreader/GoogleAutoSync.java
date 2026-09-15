@@ -84,7 +84,7 @@ final class GoogleAutoSync {
     }
 
     private static boolean needsSync(Activity activity) {
-        if (activity == null) return false;
+        if (activity == null || activity.isFinishing() || !(activity instanceof MainActivity)) return false;
         SharedPreferences prefs = activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE);
         if (!prefs.getBoolean("google_sync_connected", false) ||
                 !prefs.getBoolean("google_sync_enabled", true)) return false;
@@ -96,6 +96,11 @@ final class GoogleAutoSync {
 
     private static void runSync(Activity activity) {
         if (!needsSync(activity)) return;
+        // Never start a whole-library cloud operation while Reader/another screen is covering Home.
+        if (!activity.hasWindowFocus()) {
+            scheduleWithDelay(activity, NORMAL_DELAY_MS);
+            return;
+        }
         SharedPreferences prefs = activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE);
         long now = System.currentTimeMillis();
         synchronized (GoogleAutoSync.class) {

@@ -1,5 +1,6 @@
 package com.whisper.wowreader;
 
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.SystemClock;
 
@@ -20,6 +21,18 @@ import java.util.Set;
 /** Local-first reading statistics plus calendar/memory data. */
 public final class ReadingStatsStore {
     private ReadingStatsStore() {}
+
+    private static volatile ReaderStateDb stateDb;
+
+    public static void init(Context context, SharedPreferences prefs) {
+        if (context == null || prefs == null) return;
+        stateDb = ReaderStateDb.initialize(context, prefs, new java.io.File(context.getFilesDir(), "library"));
+    }
+
+    private static boolean useDb() {
+        ReaderStateDb db = stateDb;
+        return db != null && db.isLegacyMigrated();
+    }
 
     private static final String KEY_TOTAL_MS = "reading_stats_total_ms";
     private static final String KEY_DAYS = "reading_stats_days_json";
@@ -66,14 +79,28 @@ public final class ReadingStatsStore {
 
     static void record(SharedPreferences prefs, String bookName, long durationMs, long wallClockMs) {
         if (prefs == null || durationMs <= 0L) return;
+        String today = dayKey(wallClockMs);
+        String cleanBook = bookName == null ? "" : bookName.trim();
+        if (useDb()) {
+            try {
+                stateDb.recordReading(today, cleanBook, durationMs);
+                Snapshot snap = stateDb.snapshot(cleanBook.isEmpty() ? null : cleanBook);
+                prefs.edit()
+                        .putLong(KEY_TOTAL_MS, snap.totalMs)
+                        .putInt(KEY_CURRENT_STREAK, snap.currentStreak)
+                        .putInt(KEY_LONGEST_STREAK, snap.longestStreak)
+                        .putString(KEY_LAST_DAY, today)
+                        .putLong("sync_updated_ms", System.currentTimeMillis())
+                        .apply();
+                return;
+            } catch (Exception ignored) {}
+        }
         try {
-            String today = dayKey(wallClockMs);
             JSONObject days = object(prefs.getString(KEY_DAYS, "{}"));
             JSONObject books = object(prefs.getString(KEY_BOOKS, "{}"));
             JSONObject dayBooks = object(prefs.getString(KEY_DAY_BOOKS, "{}"));
 
             days.put(today, safeAdd(days.optLong(today, 0L), durationMs));
-            String cleanBook = bookName == null ? "" : bookName.trim();
             if (!cleanBook.isEmpty()) {
                 String hashedBook = bookKey(cleanBook);
                 books.put(hashedBook, safeAdd(books.optLong(hashedBook, 0L), durationMs));
@@ -109,6 +136,9 @@ public final class ReadingStatsStore {
     public static Snapshot snapshot(SharedPreferences prefs, String bookName) {
         Snapshot s = new Snapshot();
         if (prefs == null) return s;
+        if (useDb()) {
+            try { return stateDb.snapshot(bookName); } catch (Exception ignored) {}
+        }
         try {
             JSONObject days = object(prefs.getString(KEY_DAYS, "{}"));
             JSONObject books = object(prefs.getString(KEY_BOOKS, "{}"));
@@ -133,23 +163,27 @@ public final class ReadingStatsStore {
 
     public static long dayTime(SharedPreferences prefs, String key) {
         if (prefs == null || key == null) return 0L;
+        if (useDb()) return stateDb.dayTime(key);
         return object(prefs.getString(KEY_DAYS, "{}")).optLong(key, 0L);
     }
 
     public static long bookTimeForDay(SharedPreferences prefs, String key, String fileName) {
         if (prefs == null || key == null || fileName == null) return 0L;
+        if (useDb()) return stateDb.bookTimeForDay(key, fileName);
         JSONObject date = object(prefs.getString(KEY_DAY_BOOKS, "{}")).optJSONObject(key);
         return date == null ? 0L : date.optLong(fileName, 0L);
     }
 
     public static long totalBookTime(SharedPreferences prefs, String fileName) {
         if (prefs == null || fileName == null) return 0L;
+        if (useDb()) return stateDb.totalBookTime(fileName);
         return object(prefs.getString(KEY_BOOKS, "{}")).optLong(bookKey(fileName), 0L);
     }
 
     public static List<DayBook> booksForDay(SharedPreferences prefs, String key) {
         List<DayBook> out = new ArrayList<>();
         if (prefs == null || key == null) return out;
+        if (useDb()) return stateDb.booksForDay(key);
         JSONObject date = object(prefs.getString(KEY_DAY_BOOKS, "{}")).optJSONObject(key);
         if (date == null) return out;
         Iterator<String> names = date.keys();
@@ -166,6 +200,7 @@ public final class ReadingStatsStore {
 
     public static long readingTimeForMonth(SharedPreferences prefs, int year, int monthOneBased) {
         if (prefs == null) return 0L;
+        if (useDb()) return stateDb.readingTimeForMonth(year, monthOneBased);
         String prefix = monthPrefix(year, monthOneBased);
         JSONObject days = object(prefs.getString(KEY_DAYS, "{}"));
         long total = 0L;
@@ -179,6 +214,7 @@ public final class ReadingStatsStore {
 
     public static int activeDaysForMonth(SharedPreferences prefs, int year, int monthOneBased) {
         if (prefs == null) return 0;
+        if (useDb()) return stateDb.activeDaysForMonth(year, monthOneBased);
         String prefix = monthPrefix(year, monthOneBased);
         JSONObject days = object(prefs.getString(KEY_DAYS, "{}"));
         int count = 0;
@@ -192,6 +228,7 @@ public final class ReadingStatsStore {
 
     public static int uniqueBooksForMonth(SharedPreferences prefs, int year, int monthOneBased) {
         if (prefs == null) return 0;
+        if (useDb()) return stateDb.uniqueBooksForMonth(year, monthOneBased);
         String prefix = monthPrefix(year, monthOneBased);
         JSONObject root = object(prefs.getString(KEY_DAY_BOOKS, "{}"));
         Set<String> books = new HashSet<>();
@@ -212,11 +249,17 @@ public final class ReadingStatsStore {
 
     public static String dailyNote(SharedPreferences prefs, String key) {
         if (prefs == null || key == null) return "";
+        if (useDb()) return stateDb.dailyNote(key);
         return object(prefs.getString(KEY_DAY_NOTES, "{}")).optString(key, "");
     }
 
     public static void setDailyNote(SharedPreferences prefs, String key, String note) {
         if (prefs == null || key == null) return;
+        if (useDb()) {
+            stateDb.setDailyNote(key, note == null ? "" : note.trim());
+            prefs.edit().putLong("sync_updated_ms", System.currentTimeMillis()).apply();
+            return;
+        }
         try {
             JSONObject root = object(prefs.getString(KEY_DAY_NOTES, "{}"));
             String clean = note == null ? "" : note.trim();
@@ -228,12 +271,18 @@ public final class ReadingStatsStore {
 
     public static String bookDayNote(SharedPreferences prefs, String key, String fileName) {
         if (prefs == null || key == null || fileName == null) return "";
+        if (useDb()) return stateDb.bookDayNote(key, fileName);
         JSONObject date = object(prefs.getString(KEY_BOOK_DAY_NOTES, "{}")).optJSONObject(key);
         return date == null ? "" : date.optString(fileName, "");
     }
 
     public static void setBookDayNote(SharedPreferences prefs, String key, String fileName, String note) {
         if (prefs == null || key == null || fileName == null) return;
+        if (useDb()) {
+            stateDb.setBookDayNote(key, fileName, note == null ? "" : note.trim());
+            prefs.edit().putLong("sync_updated_ms", System.currentTimeMillis()).apply();
+            return;
+        }
         try {
             JSONObject root = object(prefs.getString(KEY_BOOK_DAY_NOTES, "{}"));
             JSONObject date = root.optJSONObject(key);

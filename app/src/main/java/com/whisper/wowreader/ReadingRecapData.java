@@ -59,6 +59,12 @@ final class ReadingRecapData {
     static Summary summarize(Context context, SharedPreferences prefs, long rawStartMs, long rawEndMs) {
         long startMs = startOfDay(rawStartMs);
         long endMs = endOfDay(rawEndMs);
+        ReaderStateDb stateDb = ReaderStateDb.initialize(context, prefs, new File(context.getFilesDir(), "library"));
+        if (stateDb.isLegacyMigrated()) {
+            ReaderStateDb.RangeSummary range = stateDb.summarizeRange(startMs, endMs);
+            List<FinishedBook> finished = finishedBooks(context, prefs, startMs, endMs);
+            return new Summary(startMs, endMs, range.readingMs, range.activeDays, range.touchedBooks, finished);
+        }
         long readingMs = 0L;
         int activeDays = 0;
         Set<String> touched = new HashSet<>();
@@ -84,32 +90,40 @@ final class ReadingRecapData {
     static List<FinishedBook> finishedBooks(Context context, SharedPreferences prefs, long startMs, long endMs) {
         List<FinishedBook> out = new ArrayList<>();
         File library = new File(context.getFilesDir(), "library");
+        ReaderStateDb db = ReaderStateDb.initialize(context, prefs, library);
+        if (db.isLegacyMigrated()) {
+            for (ReaderStateDb.FinishedRow row : db.finishedBetween(startMs, endMs)) {
+                File file = new File(library, row.fileName);
+                if (!file.isFile()) continue;
+                String title = prefs.getString("library_title_" + row.fileName, "");
+                if (title == null || title.trim().isEmpty()) title = stripExtension(row.fileName);
+                String author = prefs.getString("library_author_" + row.fileName, "");
+                if (author == null) author = "";
+                out.add(new FinishedBook(file, title.trim(), author.trim(), row.finishedAt));
+            }
+            return out;
+        }
+
         File[] files = library.listFiles();
         if (files == null) return out;
-
         for (File file : files) {
             if (file == null || !file.isFile()) continue;
             String lower = file.getName().toLowerCase(Locale.ROOT);
             if (!lower.endsWith(".epub") && !lower.endsWith(".pdf")) continue;
-
             long finishedAt = ReadingProgressStore.finishedAt(prefs, file.getName());
             if (finishedAt <= 0L && ReadingProgressStore.get(prefs, file.getName()) >= 100) {
                 finishedAt = inferLegacyFinishedAt(prefs, file.getName());
                 if (finishedAt > 0L) ReadingProgressStore.backfillFinishedAt(prefs, file.getName(), finishedAt);
             }
             if (finishedAt < startMs || finishedAt > endMs) continue;
-
             String title = prefs.getString("library_title_" + file.getName(), "");
             if (title == null || title.trim().isEmpty()) title = stripExtension(file.getName());
             String author = prefs.getString("library_author_" + file.getName(), "");
             if (author == null) author = "";
             out.add(new FinishedBook(file, title.trim(), author.trim(), finishedAt));
         }
-
         Collections.sort(out, new Comparator<FinishedBook>() {
-            @Override public int compare(FinishedBook a, FinishedBook b) {
-                return Long.compare(b.finishedAt, a.finishedAt);
-            }
+            @Override public int compare(FinishedBook a, FinishedBook b) { return Long.compare(b.finishedAt, a.finishedAt); }
         });
         return out;
     }

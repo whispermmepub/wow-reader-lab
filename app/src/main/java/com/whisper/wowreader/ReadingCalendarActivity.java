@@ -33,6 +33,8 @@ public class ReadingCalendarActivity extends Activity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
+        ReadingProgressStore.init(this, prefs);
+        ReadingStatsStore.init(this, prefs);
         ui = new ReadingCalendarUi(this);
         libraryDir = new File(getFilesDir(), "library");
         anchor = Calendar.getInstance();

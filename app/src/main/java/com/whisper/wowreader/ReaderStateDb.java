@@ -316,11 +316,16 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
-            db.execSQL("INSERT INTO reading_day(day,total_ms,daily_note) VALUES(?,?, '') ON CONFLICT(day) DO UPDATE SET total_ms=total_ms+excluded.total_ms",
-                    new Object[]{day, durationMs});
+            // API 23-safe upsert: SQLite bundled with Android 6 predates UPSERT ... DO UPDATE.
+            db.execSQL("INSERT OR IGNORE INTO reading_day(day,total_ms,daily_note) VALUES(?,0,'')",
+                    new Object[]{day});
+            db.execSQL("UPDATE reading_day SET total_ms=total_ms+? WHERE day=?",
+                    new Object[]{durationMs, day});
             if (fileName != null && !fileName.trim().isEmpty()) {
-                db.execSQL("INSERT INTO book_day(day,file_name,duration_ms,book_note) VALUES(?,?,?, '') ON CONFLICT(day,file_name) DO UPDATE SET duration_ms=duration_ms+excluded.duration_ms",
-                        new Object[]{day, fileName, durationMs});
+                db.execSQL("INSERT OR IGNORE INTO book_day(day,file_name,duration_ms,book_note) VALUES(?,?,0,'')",
+                        new Object[]{day, fileName});
+                db.execSQL("UPDATE book_day SET duration_ms=duration_ms+? WHERE day=? AND file_name=?",
+                        new Object[]{durationMs, day, fileName});
             }
             db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
@@ -355,12 +360,22 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     String dailyNote(String day) { return scalarString("SELECT daily_note FROM reading_day WHERE day=?", new String[]{day}); }
     String bookDayNote(String day, String fileName) { return scalarString("SELECT book_note FROM book_day WHERE day=? AND file_name=?", new String[]{day,fileName}); }
     void setDailyNote(String day, String note) {
-        getWritableDatabase().execSQL("INSERT INTO reading_day(day,total_ms,daily_note) VALUES(?,0,?) ON CONFLICT(day) DO UPDATE SET daily_note=excluded.daily_note",
-                new Object[]{day, note == null ? "" : note});
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.execSQL("INSERT OR IGNORE INTO reading_day(day,total_ms,daily_note) VALUES(?,0,'')", new Object[]{day});
+            db.execSQL("UPDATE reading_day SET daily_note=? WHERE day=?", new Object[]{note == null ? "" : note, day});
+            db.setTransactionSuccessful();
+        } finally { db.endTransaction(); }
     }
     void setBookDayNote(String day, String fileName, String note) {
-        getWritableDatabase().execSQL("INSERT INTO book_day(day,file_name,duration_ms,book_note) VALUES(?,?,0,?) ON CONFLICT(day,file_name) DO UPDATE SET book_note=excluded.book_note",
-                new Object[]{day,fileName,note == null ? "" : note});
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            db.execSQL("INSERT OR IGNORE INTO book_day(day,file_name,duration_ms,book_note) VALUES(?,?,0,'')", new Object[]{day,fileName});
+            db.execSQL("UPDATE book_day SET book_note=? WHERE day=? AND file_name=?", new Object[]{note == null ? "" : note, day, fileName});
+            db.setTransactionSuccessful();
+        } finally { db.endTransaction(); }
     }
 
     ReadingStatsStore.Snapshot snapshot(String bookName) {

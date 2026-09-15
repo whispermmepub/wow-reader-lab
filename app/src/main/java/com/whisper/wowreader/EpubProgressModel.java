@@ -94,9 +94,14 @@ final class EpubProgressModel {
     private static long contentWeight(File file, String title) {
         try {
             byte[] buffer = new byte[64 * 1024];
-            ByteArrayOutputStream bout = new ByteArrayOutputStream((int)Math.min(Math.max(1024L, file.length()), 4L * 1024L * 1024L));
+            final int maxSampleBytes = 4 * 1024 * 1024;
+            ByteArrayOutputStream bout = new ByteArrayOutputStream((int)Math.min(Math.max(1024L, file.length()), maxSampleBytes));
             try (InputStream in = new FileInputStream(file)) {
-                int n; while ((n = in.read(buffer)) > 0) bout.write(buffer, 0, n);
+                int n, remaining = maxSampleBytes;
+                while (remaining > 0 && (n = in.read(buffer, 0, Math.min(buffer.length, remaining))) > 0) {
+                    bout.write(buffer, 0, n);
+                    remaining -= n;
+                }
             }
             String raw = new String(bout.toByteArray(), StandardCharsets.UTF_8);
             String lower = raw.toLowerCase(Locale.ROOT);

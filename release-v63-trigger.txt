@@ -1,0 +1,1 @@
+WoW Reader v2.19.3 / versionCode 63 stability and scalable-library release candidate build trigger.

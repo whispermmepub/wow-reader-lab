@@ -1,1 +1,1 @@
-WoW Reader v2.19.3 / versionCode 63 stability and scalable-library release candidate build trigger.
+WoW Reader v2.19.3 / versionCode 63 final stability build after API23 SQLite compatibility and bounded EPUB progress audit.

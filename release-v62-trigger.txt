@@ -1,0 +1,2 @@
+WoW Reader v2.19.2 / versionCode 62 signed release build trigger.
+Google Play app-signing SHA-1 expected: 21:17:D3:1E:01:EB:24:EA:E3:FE:4A:26:88:C8:C7:12:CD:76:71:F1

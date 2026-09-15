@@ -1,8 +1,17 @@
-name: WoW Reader Lab CI
+name: WoW Reader CI
 
 on:
   push:
-    branches: ['feature/**']
+    branches:
+      - 'feature/**'
+      - 'fix/**'
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - '.github/workflows/lab-ci.yml'
+  pull_request:
     paths:
       - 'app/**'
       - 'build.gradle'
@@ -24,20 +33,18 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      - name: Install Android 16 SDK
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"'
-      - name: Lab regression source checks
+      - name: Install Android SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+      - name: Source sanity
         shell: bash
         run: |
           set -euo pipefail
-          test -s app/src/main/java/com/whisper/wowreader/ReadingStatsStore.java
-          grep -q 'ReadingStatsStore.beginSession' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q 'ReadingStatsStore.finishSession' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q 'showReadingStatsDialog' app/src/main/java/com/whisper/wowreader/MainActivity.java
-          grep -q 'GoogleAuthProvider.getCredential' app/src/main/java/com/whisper/wowreader/GoogleAccountAuth.java
-          grep -q 'Scopes.DRIVE_APPFOLDER' app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
-          grep -q 'ReaderAnnotationStore.add' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          grep -q 'prewarmAdjacentChapters' app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
+          grep -q "minSdk 23" app/build.gradle
+          grep -q "targetSdk 36" app/build.gradle
+          test -s app/src/main/java/com/whisper/wowreader/MainActivity.java
+          test -s app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
+          test -s app/google-services.json
           git diff --check
-      - name: Compile and lint lab app
+      - name: Compile and lint
         run: gradle :app:assembleDebug :app:lintDebug --stacktrace

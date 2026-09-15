@@ -1,106 +1,99 @@
 # WoW Reader Lab
 
-WoW Reader Lab is the Android development and stable-release repository for **WoW Reader**.
+Official Android source repository for **WoW Reader**.
 
-## Current official state
+## Current Android release candidate
 
-- **Version:** `2.19.1`
-- **versionCode:** `61`
+- **Version:** `2.19.3`
+- **versionCode:** `63`
 - **Package:** `com.whisper.wowreader`
 - **Minimum Android:** 6.0 / API 23
 - **Target SDK:** 36
 - **Java:** 17
-- **Official stable branch:** `stable/v61`
-- **Equivalent file-share branch:** `stable/v61-file-share`
-- **Original clean v61 baseline commit:** `58f39edafe7b9a1bab9d0e4bbe39d31930056c05`
+- **Current source:** `main`
+- **Play Store release branch:** `release/v63-playstore`
+- **Previous stable production baseline:** `stable/v61` (`2.19.1 / 61`)
 
-The trusted v61 release is the approved v60 baseline plus **actual EPUB/PDF File Share** and the v61 version bump.
+The v63 source is the current Play Store update candidate. It has passed repository CI build, lint, package/version checks and production-signing verification. Real-device Closed Testing is still the final gate before Production promotion.
 
-## Start here for continuation
+## Start here in a new chat
 
-For a new chat or future release/update, read these first:
+Read these files before changing anything:
 
-- `NEXT_CHAT_HANDOFF.md` — complete current Android/iOS continuation context
-- `docs/ANDROID_IOS_RELEASE_HANDOFF.md` — cross-platform release/update contract
+- `NEXT_CHAT_HANDOFF.md` — exact current continuation and Play Store update instructions
 - `docs/STORE_PUBLICATION_STATUS.md` — Google Play/App Store publication state
-- `SIGNING.md` — public Android signing identity metadata and secret-variable names
+- `docs/ANDROID_IOS_RELEASE_HANDOFF.md` — cross-platform release contract
+- `docs/V63_STABILITY_SCALABLE_STORAGE_PLAN.md` — v63 stability/scalability design background
+- `SIGNING.md` — public signing identity metadata; no private secrets
 
-`whispermmepub/wow-reader-lab` is the current source of truth. The separate `whispermmepub/wow-reader-app` repository still contains an older source line and should not be used for new work unless it is explicitly synchronized later.
+`whispermmepub/wow-reader-lab` is the source of truth. Do not switch to the older `whispermmepub/wow-reader-app` line unless explicitly requested.
 
-## v61 File Share
+## What v63 fixes
 
-WoW Reader can share the original EPUB or PDF file through the Android system share sheet.
+- More accurate EPUB overall progress using readable-content weighting instead of equal chapter count
+- Avoids TOC/cover/front-matter causing large progress jumps near the beginning
+- SHA-256 content identity for idempotent EPUB/PDF imports from Telegram and other apps
+- Scalable structured reader state in indexed SQLite (`ReaderStateDb`) with non-destructive legacy migration
+- Local-first reader behavior: cloud sync no longer runs inside active reading sessions
+- Reading Calendar/recap data queries optimized for larger libraries
+- Finished-book share cards support more than 12 books by generating multiple pages
+- Share-card image rendering moved off the UI thread
+- API 23-safe SQLite update logic
+- Bounded EPUB progress analysis to reduce memory risk with unusually large chapter files
 
-Implementation uses:
+The original v63 design document discussed Room as an option. The shipped v63 candidate deliberately uses Android `SQLiteOpenHelper`/SQLite instead, reducing migration/dependency risk while keeping indexed structured storage.
 
-- `Intent.ACTION_SEND`
-- `EXTRA_STREAM`
-- `ClipData`
-- `FLAG_GRANT_READ_URI_PERMISSION`
-- Android `FileProvider`
-- EPUB MIME: `application/epub+zip`
-- PDF MIME: `application/pdf`
-- fallback MIME: `application/octet-stream`
-
-This v61 release intentionally contains **no WoW Audio handoff/integration**.
-
-## Stable feature set
+## Stable feature set preserved
 
 - Offline EPUB/PDF reading
-- Google sign-in with Firebase Authentication
-- Private Google Drive `appDataFolder` backup / restore / auto sync
-- Reading Statistics and streaks
-- Myanmar Reading Calendar with book covers by reading day
-- Daily Reading Notes and per-book Reading Memory
+- Firebase Google sign-in
+- Private Google Drive `appDataFolder` backup/restore/sync
+- Reading Statistics, streaks, Reading Calendar and Reading Memory
+- Notes/highlights
 - Smart Library and custom shelves
-- Custom shelf rename/delete
-- Notes & Highlights Hub
 - Per-book typography and custom fonts
-- Myanmar / English dictionary support
-- Smart Sync Merge
-- Home / Library / Notes / Explore navigation
-- Coming Soon / book-review feed
-- Custom App Theme
-- `Justify · Normal` and `Justify · Auto spacing`
-- Fast chapter transitions with adjacent-chapter preloading
-- Multi-book EPUB/PDF import
-- EPUB footnote/endnote navigation fixes
-- PDF continuous reading and import handling fixes
-- Corrected highlight/note text mapping
-- System-inset, scrolling, font-scaling and OEM compatibility fixes
-- Actual EPUB/PDF File Share
+- Myanmar/English dictionary support
+- EPUB footnote/endnote handling
+- PDF continuous reading/import handling
+- Multi-book import
+- EPUB/PDF Android File Share
 
-## Update compatibility
+Existing user books, progress, notes, shelves, calendar/history and settings must remain compatible with in-place updates.
 
-Production updates must preserve:
+## Production signing and Google identity
 
-- package `com.whisper.wowreader`
-- the original WoW Reader production signing identity
-- a monotonically increasing `versionCode`
+Do not generate a replacement production key.
 
-Do not generate a replacement production signing key.
+Production / Play App Signing SHA-1:
 
-Existing library data, reading progress/history, shelves, notes/highlights, Reading Calendar data, SharedPreferences and Google/Firebase sync data must remain compatible with in-place updates.
+`21:17:D3:1E:01:EB:24:EA:E3:FE:4A:26:88:C8:C7:12:CD:76:71:F1`
 
-## Play Store release
+The Play Console App signing key certificate now matches this original production identity. Firebase/Google configuration for `com.whisper.wowreader` is aligned with it.
 
-The current Play Store release line is **v2.19.1 / versionCode 61**. The Play Store artifact must be an Android App Bundle (`.aab`) built from the trusted v61 source and signed with the preserved production identity.
+Private keystore/password material must never be committed.
 
-If Google Play App Signing is enabled while compatibility with previously sideloaded production-signed APKs is required, preserve the existing app-signing identity rather than allowing an unrelated new signing key.
+## Verified v63 release artifacts
 
-## iOS handoff
+- `WoW-Reader-v2.19.3-v63-PlayStore-production.aab`
+  - SHA-256: `3587777e5f9586ca112bd92cbee65e74c82b0b29f615167da075f75d584e35ae`
+- `WoW-Reader-v2.19.3-v63-production-signed.apk`
+  - SHA-256: `2ca3a1b4487e98c1ae2e0969cb571457dee032b2daff4ec05656d2ab07a3db25`
 
-A separate native SwiftUI iPhone/iPad handoff exists for version **2.19.1 (61)**. It contains the Xcode project, EPUB/PDF import/read foundation, local library, reading progress, sharing, icons and privacy manifest. It intentionally contains no Apple private signing credentials. See `docs/ANDROID_IOS_RELEASE_HANDOFF.md` for the exact iOS continuation contract.
+These artifacts were built from app source commit `21894db4f10a5ea588e99b4b07dbaba181ecd70f` and verified with the original production signer. Subsequent repository cleanup/documentation commits do not alter the v63 app source.
 
-## Development rule
+## Play Store update note
 
-1. Treat the current aligned `main` / `stable/v61` source as the source of truth.
-2. Make new feature work on a separate branch.
-3. Build APK/AAB and run regression checks before promotion.
-4. Preserve existing reader, local data, Firebase and Drive behavior.
-5. Decide explicitly which accepted Android changes also need an iOS port.
-6. Do not reintroduce removed experiments unless explicitly requested.
-7. Never commit private signing material or credentials.
+> Improved reading progress accuracy, fixed duplicate EPUB imports, optimized Reading Calendar and sharing performance, improved stability with Google account sync, and enhanced library performance for large book collections.
+
+## Release rule
+
+1. Keep package `com.whisper.wowreader` unchanged.
+2. Keep the original production signing identity unchanged.
+3. Always check every Play track and use a `versionCode` higher than all existing tracks.
+4. Preserve user data; never introduce destructive migration/reset without explicit approval.
+5. Build/lint/verify APK+AAB before upload.
+6. Test v62/v61 → v63 update, Google sign-in/sync, long reading sessions, duplicate imports and large recaps in Closed Testing.
+7. Promote to Production only after device testing passes.
 
 ## Community links
 
@@ -111,4 +104,4 @@ A separate native SwiftUI iPhone/iPad handoff exists for version **2.19.1 (61)**
 
 ## Secrets
 
-Never commit signing passwords, private keys, keystores, Telegram tokens, Firebase server credentials, Google service-account credentials, Apple private keys, or other secrets.
+Never commit signing passwords, keystores, private certificates/keys, recovery files, Telegram tokens, service-account credentials, Apple private keys or other secrets.

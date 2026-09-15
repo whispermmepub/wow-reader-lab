@@ -1,11 +1,17 @@
-name: Build WoW Reader v2.19.2 v62 unsigned release
+name: Build WoW Reader release
 
 on:
-  push:
-    branches: [release/v62-google-signin]
-    paths:
-      - 'release-v62-trigger.txt'
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release/**'
+    paths:
+      - 'app/**'
+      - 'build.gradle'
+      - 'settings.gradle'
+      - 'gradle.properties'
+      - '.github/workflows/build-production.yml'
 
 permissions:
   contents: read
@@ -28,32 +34,36 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Install Android 16 SDK
+      - name: Install Android SDK
         shell: bash
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+          set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Verify v62 release configuration
+      - name: Read and verify release configuration
         shell: bash
         run: |
           set -euo pipefail
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
-          grep -q "versionCode 62" app/build.gradle
-          grep -q "versionName '2.19.2'" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
+          grep -q "minSdk 23" app/build.gradle
           test -s app/google-services.json
           grep -q '"package_name": "com.whisper.wowreader"' app/google-services.json
           grep -qi '2117d31e01eb24eae3fe4a2688c8c712cd7671f1' app/google-services.json
-          test -s app/src/main/java/com/whisper/wowreader/MainActivity.java
-          test -s app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
-          test -s app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
-          test -s app/src/main/res/xml/share_paths.xml
+
+          VERSION_CODE=$(sed -n "s/.*versionCode[[:space:]]\+\([0-9][0-9]*\).*/\1/p" app/build.gradle | head -n1)
+          VERSION_NAME=$(sed -n "s/.*versionName[[:space:]]\+'\([^']*\)'.*/\1/p" app/build.gradle | head -n1)
+          test -n "$VERSION_CODE"
+          test -n "$VERSION_NAME"
+          test "$VERSION_CODE" -gt 0
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
 
       - name: Build and lint
         run: gradle :app:clean :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
 
-      - name: Verify unsigned v62 artifacts
+      - name: Verify unsigned release artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -61,31 +71,35 @@ jobs:
           AAB=app/build/outputs/bundle/release/app-release.aab
           test -s "$APK"
           test -s "$AAB"
-          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
-          "$AAPT" dump badging "$APK" | grep -q "package: name='com.whisper.wowreader'"
-          "$AAPT" dump badging "$APK" | grep -q "versionCode='62'"
-          "$AAPT" dump badging "$APK" | grep -q "versionName='2.19.2'"
-          "$AAPT" dump badging "$APK" | grep -q "sdkVersion:'23'"
-          "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
 
-      - name: Collect unsigned release
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          "$AAPT" dump badging "$APK" | tee /tmp/badging.txt
+          grep -q "package: name='com.whisper.wowreader'" /tmp/badging.txt
+          grep -q "versionCode='$VERSION_CODE'" /tmp/badging.txt
+          grep -q "versionName='$VERSION_NAME'" /tmp/badging.txt
+          grep -q "sdkVersion:'23'" /tmp/badging.txt
+          grep -q "targetSdkVersion:'36'" /tmp/badging.txt
+
+      - name: Collect release artifacts and reports
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-v2.19.2-v62-unsigned.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-v2.19.2-v62-unsigned.aab
-          APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
-          test -n "$APKSIGNER_JAR"
-          cp "$APKSIGNER_JAR" apksigner.jar
-          sha256sum WoW-Reader-v2.19.2-v62-unsigned.apk WoW-Reader-v2.19.2-v62-unsigned.aab > WoW-Reader-v2.19.2-v62-unsigned-SHA256SUMS.txt
+          set -euo pipefail
+          BASE="WoW-Reader-v${VERSION_NAME}-v${VERSION_CODE}"
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "${BASE}-unsigned.apk"
+          cp app/build/outputs/bundle/release/app-release.aab "${BASE}-unsigned.aab"
+          cp app/build/reports/lint-results-release.html lint-results-release.html
+          git rev-parse HEAD > SOURCE_COMMIT.txt
+          sha256sum "${BASE}-unsigned.apk" "${BASE}-unsigned.aab" > "${BASE}-unsigned-SHA256SUMS.txt"
 
-      - name: Upload unsigned artifacts
+      - name: Upload unsigned release
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-v2.19.2-v62-unsigned
+          name: WoW-Reader-release-unsigned
           path: |
-            WoW-Reader-v2.19.2-v62-unsigned.apk
-            WoW-Reader-v2.19.2-v62-unsigned.aab
-            WoW-Reader-v2.19.2-v62-unsigned-SHA256SUMS.txt
-            apksigner.jar
+            WoW-Reader-v*-unsigned.apk
+            WoW-Reader-v*-unsigned.aab
+            WoW-Reader-v*-unsigned-SHA256SUMS.txt
+            SOURCE_COMMIT.txt
+            lint-results-release.html
           if-no-files-found: error
           retention-days: 14

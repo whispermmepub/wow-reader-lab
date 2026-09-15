@@ -1,71 +1,60 @@
-# WoW Reader — new chat handoff
+# WoW Reader — New Chat / Play Store v63 Handoff
 
-Use this file as the **first source of truth** when continuing WoW Reader work in a new chat.
+Use this file as the **first source of truth** in a new chat. The goal is to continue the Google Play update without rediscovering signing, Firebase, source, or release-state details.
 
-## 1. Current trusted Android release
+## 1. Current Android candidate
 
-- Product: **WoW Reader / WoW Reader Lab**
-- Version: **2.19.1**
-- `versionCode`: **61**
-- Package / applicationId: `com.whisper.wowreader`
+- App: **WoW Reader / WoW Reader Lab**
+- Repository: `whispermmepub/wow-reader-lab`
+- Current source branch: `main`
+- Play Store release branch: `release/v63-playstore`
+- Version name: **2.19.3**
+- versionCode: **63**
+- Package/applicationId: `com.whisper.wowreader`
 - minSdk: 23
 - targetSdk: 36
 - Java: 17
-- Repository: `whispermmepub/wow-reader-lab`
-- Current source-of-truth branches: `main`, `stable/v61`, `stable/v61-file-share`
-- Original clean v61 baseline commit: `58f39edafe7b9a1bab9d0e4bbe39d31930056c05`
+- Previous stable production baseline: `stable/v61` (`2.19.1 / 61`)
+- v62 test/release branch: `release/v62-google-signin`
 
-The three source-of-truth branches are intentionally kept aligned. Future feature work should branch from the current aligned v61 head, not from the older `wow-reader-app` repository.
+Do not use the older `whispermmepub/wow-reader-app` repository as the current source.
 
-### Important repository note
+## 2. Why v63 exists
 
-`whispermmepub/wow-reader-app` still contains an older production-era source line and must **not** be treated as the current source of truth unless it is explicitly synchronized later. The current release source is `whispermmepub/wow-reader-lab`.
+Closed-test feedback exposed these problems:
 
-## 2. Exact v61 definition
+1. EPUB progress could show around 20% while the reader was still near the TOC/front matter.
+2. Reading Calendar / finished-book sharing became slow.
+3. Opening an EPUB from Telegram could create duplicate library files.
+4. Finished-book share cards only showed 12 books.
+5. Google-account sync could interrupt reading or return the reader to Home, often after roughly a minute.
+6. Large libraries/history needed a storage design that remains responsive with hundreds or thousands of books.
 
-Trusted v61 = trusted v60 baseline + **actual EPUB/PDF File Share** + version bump to 61.
+v63 addresses those issues while preserving existing user data.
 
-Android File Share uses:
+## 3. v63 implementation summary
 
-- `Intent.ACTION_SEND`
-- `EXTRA_STREAM`
-- `ClipData`
-- `FLAG_GRANT_READ_URI_PERMISSION`
-- `FileProvider`
-- EPUB MIME: `application/epub+zip`
-- PDF MIME: `application/pdf`
-- fallback MIME: `application/octet-stream`
+- EPUB progress uses cached readable-content weighting instead of equal-spine/chapter weighting.
+- TOC/cover/title/copyright-style front matter is excluded or heavily reduced when identifiable.
+- EPUB progress analysis is bounded so unusually large chapter HTML does not cause unbounded memory growth.
+- Incoming EPUB/PDF imports use SHA-256 content identity. The same content should open the existing library copy instead of creating a timestamp-suffixed duplicate.
+- `ReaderStateDb` uses indexed Android SQLite via `SQLiteOpenHelper` for scalable book/progress/day statistics state.
+- The migration is non-destructive: legacy SharedPreferences/stat JSON remain as compatibility/fallback data during the transition release.
+- Only the latest durable reading locator is kept per book; the app does not accumulate hundreds of raw page/scroll checkpoints.
+- Reading duration is aggregated per day/book instead of saving every page event.
+- API-23-safe SQLite `INSERT OR IGNORE + UPDATE` logic is used instead of newer UPSERT syntax unavailable on older Android SQLite.
+- Active `BookReaderActivity` no longer starts/flushes Google cloud sync. Reading is local-first; sync is deferred outside the active reading session.
+- Reading recap/calendar queries use structured indexed state instead of repeatedly scanning/parsing growing data where possible.
+- Share-card generation runs off the UI thread.
+- More than 12 finished books are shared as multiple card pages instead of truncating or creating one giant OOM-prone bitmap.
 
-**Do not reintroduce WoW Audio handoff/integration into this v61 baseline.** Earlier experimental v61/v62 builds containing WoW Audio handoff are not trusted release artifacts.
+The design document originally considered Room. The actual v63 candidate intentionally uses `SQLiteOpenHelper`/SQLite to reduce dependency and migration risk for this reliability release.
 
-## 3. Stable behavior that must survive Android updates
+## 4. Production signing — never replace this identity
 
-Preserve all existing user data and behavior unless explicitly changing it:
+Keep the original production keystore permanently. Never generate a new signing key for a normal update.
 
-- Offline EPUB/PDF library and local files
-- Reading progress/history
-- Shelves and custom shelf rename/delete
-- Notes, highlights and Reading Memory
-- Reading Statistics and streaks
-- Myanmar Reading Calendar
-- Google/Firebase sign-in
-- Google Drive `appDataFolder` backup / restore / auto-sync
-- Smart Sync Merge
-- Custom fonts and per-book typography
-- Myanmar / English dictionary support
-- EPUB footnote/endnote navigation fixes
-- PDF continuous reading/import behavior
-- Multi-book import
-- Existing SharedPreferences and settings
-- Actual EPUB/PDF File Share
-
-Do not add destructive database/preference resets or migrations that wipe existing users.
-
-## 4. Android production signing identity
-
-Never generate a replacement production key for normal updates.
-
-Safe identity metadata:
+Safe metadata:
 
 - Keystore filename: `wow-reader-production.jks`
 - Alias: `wowreader-production`
@@ -73,162 +62,131 @@ Safe identity metadata:
 - SHA-1: `21:17:D3:1E:01:EB:24:EA:E3:FE:4A:26:88:C8:C7:12:CD:76:71:F1`
 - SHA-256: `29:FC:A2:9F:8D:B1:84:AA:F5:13:35:EF:BE:A8:C5:0D:51:76:9D:77:48:AE:53:56:17:C2:47:9E:39:89:AC:A5`
 
-Private signing passwords/key material are intentionally **not** stored in this public repository. The private recovery archive contains the original JKS, certificate and `SIGNING-RECOVERY.txt`.
+Play Console → App integrity → **App signing key certificate SHA-1 now matches the same production SHA-1 above**.
 
-Gradle release variables:
+Private signing passwords/JKS are not stored in this public repository. If a rebuild must be production-signed in a new chat, the user must provide the private signing kit/recovery files from their secure backup.
+
+Gradle release environment variables:
 
 - `WOW_RELEASE_STORE_FILE`
 - `WOW_RELEASE_STORE_PASSWORD`
 - `WOW_RELEASE_KEY_ALIAS`
 - `WOW_RELEASE_KEY_PASSWORD`
 
-Earlier GitHub Actions production signing used:
+Do not print raw passwords in chat or commit them.
 
-- `WOW_RELEASE_KEYSTORE_BASE64`
-- `WOW_RELEASE_STORE_PASSWORD`
-- `WOW_RELEASE_KEY_ALIAS`
-- `WOW_RELEASE_KEY_PASSWORD`
+## 5. Firebase / Google identity
 
-## 5. Current Android release artifacts
-
-Known verified v61 artifacts:
-
-- `WoW-Reader-v2.19.1-v61-PlayStore-production.aab`
-  - SHA-256: `67eb5d6270e5ca6ba353fc6c1a9f7e5eb6643fb80a1a4277a47d2f0664b790db`
-- `WoW-Reader-v2.19.1-v61-production-signed-file-share.apk`
-  - SHA-256: `32fb93eb0d8c912847d626369a735ac55a3ad683984010dcc28b6fa96fec2090`
-
-The APK/AAB were verified against the preserved production signing identity. Use the AAB for Google Play release tracks. Use the production-signed APK for direct install/update testing where appropriate.
-
-For any next Android release:
-
-1. Branch from current trusted v61.
-2. Keep package `com.whisper.wowreader`.
-3. Increment `versionCode` above 61 after checking all Play tracks.
-4. Do **not** reuse an old experimental v62 APK as a release artifact.
-5. Build APK + AAB.
-6. Sign with the preserved production identity.
-7. Verify signer, package, version and update-from-v61 behavior before promotion.
-
-## 6. Firebase / Google identity
-
-- Firebase project ID: `wow-reader`
+- Firebase project: `wow-reader`
 - Project number: `1027420568326`
-- Storage bucket: `wow-reader.firebasestorage.app`
-- Android Firebase App ID: `1:1027420568326:android:a0e7e4dc4cddb8b3d2fc87`
 - Package: `com.whisper.wowreader`
+- Production Android OAuth client: `1027420568326-m9f98kke24it1uvsfdlki6uanvrd2lna.apps.googleusercontent.com`
+- Production SHA-1: `21:17:D3:1E:01:EB:24:EA:E3:FE:4A:26:88:C8:C7:12:CD:76:71:F1`
 
-OAuth clients currently recorded:
+The current `app/google-services.json` is aligned with the package and original production signing identity. Do not casually replace it with an older config.
 
-- Production Android client: `1027420568326-m9f98kke24it1uvsfdlki6uanvrd2lna.apps.googleusercontent.com`
-  - SHA-1: production SHA-1 above
-- Older/test Android client: `1027420568326-pdbi6ecrdvv6nhnhj00fskq715e1ugtq.apps.googleusercontent.com`
-  - SHA-1: `7B:E3:95:61:C7:05:E5:09:5A:2E:EF:4F:A0:BF:80:E7:32:C7:10:91`
-- Web OAuth client: `1027420568326-3504abjnba1vjil1dgl590jctf3sr4pv.apps.googleusercontent.com`
+Historical context: Play-only Google Sign-In previously failed with `[16] Account reauth failed` when the Play-distributed signer did not match the Firebase/OAuth identity. The Play App Signing certificate has since been changed/aligned to the original production certificate above.
 
-Keep the original `google-services.json` in the private handoff/backup. Do not publish private credentials or service-account secrets.
+## 6. Verified v63 artifacts
 
-## 7. Google Play publication state
+Use the AAB for Google Play.
 
-Current Play line is **2.19.1 / 61**.
+- `WoW-Reader-v2.19.3-v63-PlayStore-production.aab`
+  - SHA-256: `3587777e5f9586ca112bd92cbee65e74c82b0b29f615167da075f75d584e35ae`
+- `WoW-Reader-v2.19.3-v63-production-signed.apk`
+  - SHA-256: `2ca3a1b4487e98c1ae2e0969cb571457dee032b2daff4ec05656d2ab07a3db25`
+- Release candidate bundle SHA-256: `8fbe4070a60e67ad6a61ad580eec2c8cc35719bb2cfa7e44a3f9d09139b36d38`
 
-Working publication details:
+Artifact app-source commit: `21894db4f10a5ea588e99b4b07dbaba181ecd70f`.
 
-- Category: Books & Reference
-- Support email: `aungsoemoe.mm0@gmail.com`
-- Privacy policy: `https://wowreaderapp.blogspot.com/p/privacy-policy.html`
-- A separate public **Account Deletion** Blogger page is being prepared for the Play Console deletion URL.
-- Closed testing is being configured; the tester opt-in link had not yet been received at the time of this handoff.
-- Tester email addresses are private and must **not** be committed to this public repository.
+Repository cleanup/docs can be newer than the artifact source commit. Before rebuilding, compare `app/` against that release candidate and do not introduce unrelated feature changes.
 
-Because the app uses Firebase Google sign-in, keep Play Console account/data deletion declarations consistent with the actual implemented sign-in/account behavior. Re-check current Play policy at submission time.
+## 7. CI state
 
-### Play App Signing warning
+The final v63 release-candidate CI run completed successfully:
 
-WoW Reader already has production-signed sideloaded installs. If direct update compatibility from those installs is required, Play App Signing must preserve a compatible app-signing identity. Do not casually replace the existing app signing identity with an unrelated key.
+- configuration/safety invariant checks: PASS
+- Gradle release build: PASS
+- release lint: PASS
+- APK package/version/minSdk/targetSdk verification: PASS
+- AAB/APK artifact collection: PASS
 
-## 8. Current iOS / App Store handoff
+The repository now keeps a generic `.github/workflows/build-production.yml` for future releases instead of old one-off v52/v54/v62/v63 verification workflows.
 
-A separate native SwiftUI iPhone/iPad handoff exists:
+## 8. Play Store status and exact next action
 
-- Archive: `WoW-Reader-iOS-v1.0-AppStore-Handoff.zip`
-- SHA-256: `d62efd5272ec1d751d0d3b124bd34ae5d6ece2e7eec0340eae165fbdd6705c7e`
-- Xcode project: `WoWReader.xcodeproj`
-- Marketing version: `2.19.1`
-- Build: `61`
-- Default bundle ID: `com.whisper.wowreader`
-- Deployment target: iOS 16.0
-- Target devices: iPhone + iPad
-- SwiftUI / Swift 5
-- Xcode project generated for Xcode 26
-- Package dependency: ZIPFoundation 0.9.20
-- Code signing style: Automatic
+Tester opt-in URL:
 
-Implemented iOS handoff foundation:
+`https://play.google.com/apps/testing/com.whisper.wowreader`
 
-- EPUB import/read
-- PDF import/read
-- Offline local library
-- Search
-- Reading progress
-- Book details / author / shelf / notes
-- Reading activity summary
-- Actual EPUB/PDF iOS share sheet
-- App icon assets
-- Privacy manifest
+The next chat should **not** redesign v63 first. Continue the release path:
 
-### iOS signing state
+1. Re-check Play Console tracks and confirm no `versionCode >= 63` is already active/drafted. If 63 is already consumed, increment above the highest Play track before building a replacement.
+2. Upload `WoW-Reader-v2.19.3-v63-PlayStore-production.aab` to Closed Testing if code 63 is still available.
+3. Use the English release note below.
+4. Roll out to testers.
+5. Test update from the previous Play build without clearing data.
+6. For a clean auth verification device/account, uninstall only when it is safe to lose local-only data, reinstall from the Play tester link, then test Google Sign-In.
+7. Do not promote to Production until the runtime checklist passes.
 
-The iOS handoff intentionally contains **no Apple private keys, distribution certificates, provisioning profiles, App Store Connect API keys, or Apple account credentials**.
+### Play Store “What’s new”
 
-Publishing requires the eventual publisher to supply:
+`Improved reading progress accuracy, fixed duplicate EPUB imports, optimized Reading Calendar and sharing performance, improved stability with Google account sync, and enhanced library performance for large book collections.`
 
-1. Apple Developer Team ID
-2. Explicit App ID / Bundle ID (prefer `com.whisper.wowreader` if available in that team)
-3. Apple Distribution certificate + private key
-4. App Store distribution provisioning profile, or Xcode Automatic Signing
-5. Optional CI/App Store Connect API items: `.p8` key, Key ID and Issuer ID
+## 9. Mandatory Closed Testing checklist
 
-For a future iOS update, increment `CURRENT_PROJECT_VERSION` above 61 and set the intended `MARKETING_VERSION`, then archive/sign/upload on macOS with Xcode. Never invent or replace Apple ownership/signing information.
+Verify on real devices, including with Google account connected:
 
-### iOS parity warning
+- v61/v62 → v63 in-place update keeps books, progress, shelves, notes/highlights, Reading Memory, calendar/history and settings.
+- Google Sign-In succeeds from the Play-installed build; `[16] Account reauth failed` does not return.
+- Read continuously for at least 30 minutes with Google connected; reader must not unexpectedly return to Home.
+- Repeat-open the same EPUB from Telegram several times; library count must not increase.
+- Repeat the duplicate test with the same content under a renamed incoming filename.
+- Test an EPUB with large TOC/front matter; progress should stay near the beginning until real content is read.
+- Test normal EPUBs and PDFs for resume position after app restart.
+- Test Reading Calendar and recap with >12 and preferably >50 finished books; all books must be shareable across generated card pages.
+- Verify share generation does not freeze the UI or crash on lower-memory devices.
+- Test Google Drive backup, restore, manual Sync and automatic sync behavior.
+- Test large-library browsing/search/calendar behavior; target at least 100 books, and synthetic/engineering testing toward 1,000 where practical.
+- Verify EPUB/PDF system File Share still works.
 
-The iOS project is a native port foundation, not a claim that every Android-only feature is already at full parity. Before each iOS release, compare its implemented behavior with the current Android stable feature set and explicitly decide which features are included.
+If any test fails, fix on a new branch from current `main`, increment `versionCode` if the uploaded Play code is already consumed, rebuild/sign/verify, and repeat Closed Testing.
 
-## 9. Cross-platform update workflow
+## 10. Production promotion rule
 
-When the user asks for a new WoW Reader update:
+Only after Closed Testing passes:
 
-1. Read this handoff first.
-2. Check the current `main` / `stable/v61` head before making changes.
-3. Treat Android v61 as the current stable product baseline.
-4. Make Android changes on a new feature/release branch.
-5. Preserve package, signing identity and user data compatibility.
-6. Decide whether the same feature should also be ported to the iOS SwiftUI project.
-7. Keep Android `versionCode` and iOS build numbers monotonically increasing for their respective stores.
-8. Build and verify Android artifacts before promotion.
-9. For iOS, perform static/source validation here when possible, but final Xcode build/archive/codesign/App Store upload requires macOS/Xcode and the publisher's Apple signing account.
-10. Update this handoff, README and release notes at the end of each accepted release.
+- move/merge the accepted v63 code to the stable release line,
+- keep `main` and release docs synchronized,
+- upload/promote the exact verified AAB through Play Console,
+- re-check Data safety, account deletion URL, privacy policy and store listing before Production,
+- keep the previous known-good artifacts and signing recovery kit permanently.
 
-## 10. Files the user should keep permanently
+Never regenerate the Android signing identity for an update.
 
-Private/offline backups should include:
+## 11. Data that must survive every update
 
-- `wow-reader-production.jks`
-- `wow-reader-production-cert.pem`
-- `SIGNING-RECOVERY.txt`
-- `google-services.json`
-- `WoW-Reader-production-signing-kit.zip`
-- v61 production AAB
-- v61 production-signed APK
-- `WoW-Reader-iOS-v1.0-AppStore-Handoff.zip`
-- Store/signing recovery note
-- New-chat handoff package
+Preserve:
 
-Do not commit raw secrets to GitHub.
+- local EPUB/PDF files
+- reading progress and resume location
+- finished timestamps/history
+- Reading Calendar and statistics/streaks
+- shelves/custom shelves
+- notes/highlights/Reading Memory
+- custom fonts/typography/settings
+- dictionary settings/data
+- Firebase Google account state
+- Drive `appDataFolder` backup/restore/sync compatibility
 
-## 11. New-chat instruction
+Do not add a destructive database reset or preference wipe merely to simplify migration.
 
-A new chat can start with:
+## 12. iOS note
 
-> Continue WoW Reader from `whispermmepub/wow-reader-lab`. Read `NEXT_CHAT_HANDOFF.md` first. Treat the current aligned `main` / `stable/v61` line as the trusted Android v2.19.1 (61) File Share baseline. Preserve production signing/update compatibility and all user data. Also use the existing iOS App Store handoff for iPhone/iPad work; do not invent Apple signing credentials. Check current repository state before changing anything.
+The existing SwiftUI iOS handoff remains a separate older foundation around Android-era v2.19.1/61. Do not claim it has automatic parity with the Android v63 changes. Any iOS release must explicitly port/test required v63 behavior and still requires macOS/Xcode plus the publisher’s Apple signing credentials.
+
+## 13. New-chat prompt
+
+Paste this into a new chat:
+
+> Continue the WoW Reader Google Play update from `whispermmepub/wow-reader-lab`. Read `NEXT_CHAT_HANDOFF.md`, `README.md`, `docs/STORE_PUBLICATION_STATUS.md`, and `SIGNING.md` first. Current Android candidate is v2.19.3 / versionCode 63 / package `com.whisper.wowreader`. The verified Play AAB is `WoW-Reader-v2.19.3-v63-PlayStore-production.aab` with SHA-256 `3587777e5f9586ca112bd92cbee65e74c82b0b29f615167da075f75d584e35ae`. Production and Play App Signing SHA-1 is `21:17:D3:1E:01:EB:24:EA:E3:FE:4A:26:88:C8:C7:12:CD:76:71:F1`. Preserve the signing identity and all user data. Continue from Closed Testing through runtime verification and only then Production. Do not redesign or regenerate keys unless a test proves a change is required.

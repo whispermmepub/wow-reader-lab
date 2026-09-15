@@ -3,8 +3,21 @@
 local.properties
 **/build/
 *.iml
+
+# Android / Apple signing material and recovery secrets
 *.jks
 *.keystore
 *.p12
+*.p8
+*.pem
+*.key
 keystore.properties
 signing.properties
+SIGNING-RECOVERY.txt
+.env
+.env.*
+
+# Generated release artifacts
+*.apk
+*.aab
+*.apks

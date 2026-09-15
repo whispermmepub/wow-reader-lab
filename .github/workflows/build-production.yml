@@ -1,4 +1,4 @@
-name: Build signed WoW Reader v2.19.2 v62 release
+name: Build WoW Reader v2.19.2 v62 unsigned release
 
 on:
   push:
@@ -11,12 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  signed-release:
+  build-release:
     runs-on: ubuntu-latest
-    env:
-      WOW_RELEASE_STORE_PASSWORD: ${{ secrets.WOW_RELEASE_STORE_PASSWORD }}
-      WOW_RELEASE_KEY_ALIAS: ${{ secrets.WOW_RELEASE_KEY_ALIAS }}
-      WOW_RELEASE_KEY_PASSWORD: ${{ secrets.WOW_RELEASE_KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,29 +50,14 @@ jobs:
           test -s app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
           test -s app/src/main/res/xml/share_paths.xml
 
-      - name: Prepare protected signing key
-        env:
-          WOW_RELEASE_KEYSTORE_BASE64: ${{ secrets.WOW_RELEASE_KEYSTORE_BASE64 }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$WOW_RELEASE_KEYSTORE_BASE64"
-          test -n "$WOW_RELEASE_STORE_PASSWORD"
-          test -n "$WOW_RELEASE_KEY_ALIAS"
-          test -n "$WOW_RELEASE_KEY_PASSWORD"
-          WOW_RELEASE_STORE_FILE="$RUNNER_TEMP/wow-reader-production.jks"
-          printf '%s' "$WOW_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$WOW_RELEASE_STORE_FILE"
-          chmod 600 "$WOW_RELEASE_STORE_FILE"
-          echo "WOW_RELEASE_STORE_FILE=$WOW_RELEASE_STORE_FILE" >> "$GITHUB_ENV"
-
-      - name: Build, lint and sign
+      - name: Build and lint
         run: gradle :app:clean :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
 
-      - name: Verify signed v62 artifacts
+      - name: Verify unsigned v62 artifacts
         shell: bash
         run: |
           set -euo pipefail
-          APK=app/build/outputs/apk/release/app-release.apk
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
           AAB=app/build/outputs/bundle/release/app-release.aab
           test -s "$APK"
           test -s "$AAB"
@@ -86,26 +67,25 @@ jobs:
           "$AAPT" dump badging "$APK" | grep -q "versionName='2.19.2'"
           "$AAPT" dump badging "$APK" | grep -q "sdkVersion:'23'"
           "$AAPT" dump badging "$APK" | grep -q "targetSdkVersion:'36'"
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
-          "$APKSIGNER" verify --verbose --print-certs "$APK"
-          jarsigner -verify -certs "$AAB"
-          keytool -printcert -jarfile "$AAB" | grep -qi '21:17:d3:1e:01:eb:24:ea:e3:fe:4a:26:88:c8:c7:12:cd:76:71:f1'
-          "$APKSIGNER" verify --print-certs "$APK" | grep -qi '21:17:d3:1e:01:eb:24:ea:e3:fe:4a:26:88:c8:c7:12:cd:76:71:f1'
 
-      - name: Collect signed release
+      - name: Collect unsigned release
         shell: bash
         run: |
-          cp app/build/outputs/apk/release/app-release.apk WoW-Reader-v2.19.2-v62-production-signed.apk
-          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-v2.19.2-v62-PlayStore-production.aab
-          sha256sum WoW-Reader-v2.19.2-v62-production-signed.apk WoW-Reader-v2.19.2-v62-PlayStore-production.aab > WoW-Reader-v2.19.2-v62-SHA256SUMS.txt
+          cp app/build/outputs/apk/release/app-release-unsigned.apk WoW-Reader-v2.19.2-v62-unsigned.apk
+          cp app/build/outputs/bundle/release/app-release.aab WoW-Reader-v2.19.2-v62-unsigned.aab
+          APKSIGNER_JAR=$(find "$ANDROID_HOME/build-tools" -path '*/lib/apksigner.jar' | sort -V | tail -n 1)
+          test -n "$APKSIGNER_JAR"
+          cp "$APKSIGNER_JAR" apksigner.jar
+          sha256sum WoW-Reader-v2.19.2-v62-unsigned.apk WoW-Reader-v2.19.2-v62-unsigned.aab > WoW-Reader-v2.19.2-v62-unsigned-SHA256SUMS.txt
 
-      - name: Upload signed artifacts
+      - name: Upload unsigned artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WoW-Reader-v2.19.2-v62-production
+          name: WoW-Reader-v2.19.2-v62-unsigned
           path: |
-            WoW-Reader-v2.19.2-v62-production-signed.apk
-            WoW-Reader-v2.19.2-v62-PlayStore-production.aab
-            WoW-Reader-v2.19.2-v62-SHA256SUMS.txt
+            WoW-Reader-v2.19.2-v62-unsigned.apk
+            WoW-Reader-v2.19.2-v62-unsigned.aab
+            WoW-Reader-v2.19.2-v62-unsigned-SHA256SUMS.txt
+            apksigner.jar
           if-no-files-found: error
           retention-days: 14

@@ -146,7 +146,7 @@ jobs:
           set -euo pipefail
           git config user.name "WoW Reader Build Bot"
           git config user.email "actions@users.noreply.github.com"
-          git add app tools .github/workflows/lab-ci.yml .github/workflows/build-production.yml
+          git add app tools
           if git diff --cached --quiet; then
             echo "No source changes to commit"
             exit 0

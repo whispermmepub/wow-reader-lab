@@ -11,6 +11,7 @@ on:
       - 'build.gradle'
       - 'settings.gradle'
       - 'gradle.properties'
+      - 'tools/**'
       - '.github/workflows/build-production.yml'
 
 permissions:
@@ -59,6 +60,9 @@ jobs:
           test "$VERSION_CODE" -gt 0
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+
+      - name: 100k contract tests
+        run: bash tools/run-contract-tests.sh
 
       - name: Build and lint
         run: gradle :app:clean :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace

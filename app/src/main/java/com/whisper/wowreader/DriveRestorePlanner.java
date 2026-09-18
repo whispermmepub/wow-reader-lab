@@ -28,6 +28,12 @@ final class DriveRestorePlanner {
         return m.matches()?m.group(1).toLowerCase(Locale.ROOT):"";
     }
 
+    static String chooseRemoteId(String current,String restored){
+        String next=restored==null?"":restored.trim();
+        if(!next.isEmpty())return next;
+        return current==null?"":current.trim();
+    }
+
     static String safeLocalName(String preferred,BookObject object){
         if(object==null)return "";
         String fallback=object.hash+"."+object.extension;

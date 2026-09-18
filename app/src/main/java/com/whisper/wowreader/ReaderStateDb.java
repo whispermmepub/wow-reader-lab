@@ -486,7 +486,8 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         ContentValues v=new ContentValues();
         v.put("file_path",file.getAbsolutePath());v.put("file_size",file.length());v.put("modified_at",file.lastModified());
         v.put("format",file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")?"pdf":"epub");
-        v.put("remote_file_id",remoteId==null?"":remoteId);v.put("sync_dirty",0);v.put("upload_session_url","");v.put("upload_offset",0L);
+        String knownRemote=scalarString("SELECT remote_file_id FROM books WHERE content_hash=? LIMIT 1",new String[]{hash});
+        v.put("remote_file_id",DriveRestorePlanner.chooseRemoteId(knownRemote,remoteId));v.put("sync_dirty",0);v.put("upload_session_url","");v.put("upload_offset",0L);
         int n=sql.update("books",v,"content_hash=?",new String[]{hash});
         if(n==0)sql.update("books",v,"file_name=?",new String[]{existing});
     }

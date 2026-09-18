@@ -1,0 +1,155 @@
+name: Integrate v64 tested 100k source
+
+on:
+  push:
+    branches: [v64-100k-sync]
+    paths:
+      - '.github/workflows/v64-integrate-tested-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout WoW Reader branch
+        uses: actions/checkout@v4
+        with:
+          ref: v64-100k-sync
+          path: reader
+          fetch-depth: 0
+
+      - name: Checkout tested experimental patch source
+        uses: actions/checkout@v4
+        with:
+          repository: whispermmepub/Whisper-Of-Words-App-Store
+          ref: reader-exp-100k
+          path: experimental
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android 36 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+
+      - name: Apply device-tested source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 experimental/reader-exp/apply.py "$GITHUB_WORKSPACE/reader"
+          for patch in $(find experimental/reader-exp/patches -maxdepth 1 -name '*.py' | sort); do
+            echo "Applying $patch"
+            python3 "$patch" "$GITHUB_WORKSPACE/reader"
+          done
+
+      - name: Set v64 release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('reader/app/build.gradle')
+          s=p.read_text()
+          s=s.replace('versionCode 63','versionCode 64',1)
+          s=s.replace("versionName '2.19.3'","versionName '2.20.0'",1)
+          p.write_text(s)
+          PY
+          grep -q "applicationId 'com.whisper.wowreader'" reader/app/build.gradle
+          grep -q 'versionCode 64' reader/app/build.gradle
+          grep -q "versionName '2.20.0'" reader/app/build.gradle
+
+      - name: Add permanent contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reader/tools/contract-tests/com/whisper/wowreader
+          cp experimental/reader-exp/tests/*.java reader/tools/contract-tests/com/whisper/wowreader/
+          cat > reader/tools/run-contract-tests.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+          OUT="/tmp/wow-reader-contract-tests"
+          rm -rf "$OUT" && mkdir -p "$OUT"
+          javac -d "$OUT" \
+            "$ROOT/app/src/main/java/com/whisper/wowreader/LibraryQuerySpec.java" \
+            "$ROOT/app/src/main/java/com/whisper/wowreader/DriveObjectNamer.java" \
+            "$ROOT/app/src/main/java/com/whisper/wowreader/SyncBatchPolicy.java" \
+            "$ROOT/app/src/main/java/com/whisper/wowreader/WholeBookPageModel.java" \
+            "$ROOT/app/src/main/java/com/whisper/wowreader/DriveAppPropertyPolicy.java" \
+            "$ROOT/app/src/main/java/com/whisper/wowreader/CoverSearchPlanner.java" \
+            "$ROOT"/tools/contract-tests/com/whisper/wowreader/*.java
+          for t in LibraryQuerySpecTest IncrementalSyncContractTest WholeBookPageModelTest DriveAppPropertyPolicyTest CoverSearchPlannerTest; do
+            java -cp "$OUT" "com.whisper.wowreader.$t"
+          done
+          SH
+          chmod +x reader/tools/run-contract-tests.sh
+
+      - name: Harden permanent CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          for rel in ['reader/.github/workflows/lab-ci.yml','reader/.github/workflows/build-production.yml']:
+              p=Path(rel); s=p.read_text()
+              if "tools/**" not in s:
+                  s=s.replace("      - 'gradle.properties'\n", "      - 'gradle.properties'\n      - 'tools/**'\n", 1)
+              marker="      - name: Compile and lint\n" if rel.endswith('lab-ci.yml') else "      - name: Build and lint\n"
+              step="      - name: 100k contract tests\n        run: bash tools/run-contract-tests.sh\n\n"
+              if "name: 100k contract tests" not in s:
+                  s=s.replace(marker, step+marker, 1)
+              p.write_text(s)
+          PY
+
+      - name: Verify Drive metadata/session hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          DRIVE=reader/app/src/main/java/com/whisper/wowreader/GoogleDriveSync.java
+          DB=reader/app/src/main/java/com/whisper/wowreader/ReaderStateDb.java
+          ! grep -n 'meta.put("appProperties"\|meta.put("properties"' "$DRIVE"
+          grep -q 'DB_VERSION = 6' "$DB"
+          grep -q "UPDATE books SET upload_session_url='', upload_offset=0 WHERE sync_dirty=1" "$DB"
+          grep -q "UPDATE books SET cover_upload_session_url='', cover_upload_offset=0 WHERE cover_sync_dirty=1" "$DB"
+
+      - name: Run contract tests
+        working-directory: reader
+        run: bash tools/run-contract-tests.sh
+
+      - name: Build debug, release, bundle and lint
+        working-directory: reader
+        run: |
+          gradle :app:clean :app:assembleDebug :app:assembleRelease :app:bundleRelease :app:lintRelease --stacktrace
+          git diff --check
+
+      - name: Commit integrated source
+        working-directory: reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "WoW Reader Build Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add app tools .github/workflows/lab-ci.yml .github/workflows/build-production.yml
+          if git diff --cached --quiet; then
+            echo "No source changes to commit"
+            exit 0
+          fi
+          git commit -m "Integrate v64 scalable library and incremental sync"
+          git push origin HEAD:v64-100k-sync

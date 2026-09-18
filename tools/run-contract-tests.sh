@@ -10,7 +10,8 @@ javac -d "$OUT" \
   "$ROOT/app/src/main/java/com/whisper/wowreader/WholeBookPageModel.java" \
   "$ROOT/app/src/main/java/com/whisper/wowreader/DriveAppPropertyPolicy.java" \
   "$ROOT/app/src/main/java/com/whisper/wowreader/CoverSearchPlanner.java" \
+    "$ROOT/app/src/main/java/com/whisper/wowreader/DriveRestorePlanner.java" \
   "$ROOT"/tools/contract-tests/com/whisper/wowreader/*.java
-for t in LibraryQuerySpecTest IncrementalSyncContractTest WholeBookPageModelTest DriveAppPropertyPolicyTest CoverSearchPlannerTest; do
+for t in LibraryQuerySpecTest IncrementalSyncContractTest WholeBookPageModelTest DriveAppPropertyPolicyTest CoverSearchPlannerTest DriveRestorePlannerTest; do
   java -cp "$OUT" "com.whisper.wowreader.$t"
 done

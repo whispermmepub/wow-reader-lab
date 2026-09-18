@@ -20,6 +20,8 @@ public final class DriveRestorePlannerTest {
         ok(DriveRestorePlanner.parseBookObject("wow_cover_"+hash+".jpg")==null,"cover is not a book");
         ok(DriveRestorePlanner.parseBookObject("wow_book_short.epub")==null,"short hash rejected");
         ok(DriveRestorePlanner.parseBookObject("random.epub")==null,"unrelated file rejected");
+        eq(DriveRestorePlanner.parseCoverHash("wow_cover_"+hash+".jpg"),hash,"cover hash parses");
+        eq(DriveRestorePlanner.parseCoverHash("wow_cover_bad.jpg"),"","invalid cover rejected");
 
         eq(DriveRestorePlanner.safeLocalName("မြန်မာ စာအုပ်.epub",epub),"မြန်မာ စာအုပ်.epub","Unicode filename preserved");
         eq(DriveRestorePlanner.safeLocalName("../outside.epub",epub),"outside.epub","path traversal stripped");

@@ -27,6 +27,9 @@ public final class DriveRestorePlannerTest {
         eq(DriveRestorePlanner.safeLocalName("../outside.epub",epub),"outside.epub","path traversal stripped");
         eq(DriveRestorePlanner.safeLocalName("wrong.pdf",epub),hash+".epub","wrong extension falls back safely");
         eq(DriveRestorePlanner.safeLocalName("",epub),hash+".epub","empty name uses hash fallback");
+        eq(DriveRestorePlanner.chooseRemoteId("remote-1",""),"remote-1","empty restore id must preserve known remote id");
+        eq(DriveRestorePlanner.chooseRemoteId("remote-1","remote-2"),"remote-2","fresh remote id replaces stale id");
+        eq(DriveRestorePlanner.chooseRemoteId("","remote-2"),"remote-2","fresh remote id is recorded");
 
         System.out.println("DRIVE_RESTORE_PLANNER_TEST_PASS");
     }

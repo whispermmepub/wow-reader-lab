@@ -44,6 +44,12 @@ final class BookVisualUtil {
         EXECUTOR.execute(() -> {
             Bitmap bitmap = null;
             try {
+                ReaderStateDb stateDb = ReaderStateDb.peek();
+                if (stateDb != null && "everywhere".equals(stateDb.coverScope(file.getName()))) {
+                    String custom = stateDb.customCoverPath(file.getName());
+                    if (custom != null && !custom.isEmpty()) bitmap = CustomCoverStore.decodeSampled(new File(custom), widthPx, heightPx);
+                }
+                if (bitmap != null) { final Bitmap ready=bitmap; activity.runOnUiThread(() -> { Object current=target.getTag(); if(!activity.isFinishing()&&current instanceof Integer&&((Integer)current)==tag)target.setImageBitmap(ready); }); return; }
                 if (file.getName().toLowerCase(Locale.ROOT).endsWith(".epub")) {
                     File cache = new File(activity.getFilesDir(), "cover_cache");
                     if (!cache.exists()) cache.mkdirs();

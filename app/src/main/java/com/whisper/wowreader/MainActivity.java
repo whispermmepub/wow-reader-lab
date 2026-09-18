@@ -56,13 +56,20 @@ public class MainActivity extends Activity {
     private static final int REQ_IMPORT = 1001;
     private static final int REQ_BACKUP = 1002;
     private static final int REQ_RESTORE = 1003;
+    private static final int REQ_COVER_IMAGE = 1004;
+    private File pendingCoverBook;
+    private String pendingCoverScope = "library_only";
     private File libraryDir;
     private File coverCacheDir;
     private LinearLayout booksContainer;
     private RecyclerView libraryRecycler;
     private SwipeRefreshLayout swipeRefresh;
     private LibraryAdapter libraryAdapter;
-    private final List<File> visibleBooks = new ArrayList<>();
+    private ReaderStateDb stateDb;
+    private volatile int libraryResultCount = 0;
+    private final java.util.concurrent.ExecutorService libraryQueryExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "wow-library-query"); t.setDaemon(true); return t;
+    });
     private EditText searchInput;
     private TextView floatingAdd;
     private int libraryColumns = 2;
@@ -112,6 +119,7 @@ public class MainActivity extends Activity {
         if (!libraryDir.exists()) libraryDir.mkdirs();
         if (!coverCacheDir.exists()) coverCacheDir.mkdirs();
         prefs = getSharedPreferences("wow_reader", MODE_PRIVATE);
+        stateDb = ReaderStateDb.initialize(this, prefs, libraryDir);
         ReadingProgressStore.init(this, prefs);
         ReadingStatsStore.init(this, prefs);
         appTheme = prefs.getString("app_theme", "white");
@@ -532,36 +540,28 @@ public class MainActivity extends Activity {
     }
 
     private void refreshLibrary() {
-        File[] all = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
-        if (all == null) all = new File[0];
-        sortLibraryFiles(all);
-
-        visibleBooks.clear();
-        for (File f : all) {
-            String cachedTitle = cachedLibraryTitle(f).toLowerCase(Locale.ROOT);
-            String fileTitle = stripExtension(f.getName()).toLowerCase(Locale.ROOT);
-            String author = cachedLibraryAuthor(f);
-            String authorLower = author.toLowerCase(Locale.ROOT);
-            if (!authorFilter.isEmpty() && !authorFilter.equals(author)) continue;
-            int progress = ReadingProgressStore.get(prefs, f.getName());
-            if (!matchesLibraryStatus(progress)) continue;
-            if (!shelfFilter.isEmpty() && !LibraryShelfStore.contains(prefs, shelfFilter, f.getName())) continue;
-            if (searchQuery.isEmpty() || cachedTitle.contains(searchQuery) || fileTitle.contains(searchQuery) || authorLower.contains(searchQuery))
-                visibleBooks.add(f);
+        if (stateDb == null) stateDb = ReaderStateDb.initialize(this, prefs, libraryDir);
+        if (!stateDb.isLibraryIndexReady()) {
+            libraryResultCount = 0;
+            if (libraryAdapter != null) libraryAdapter.resetPaged(new LibraryQuerySpec("", "", "all", "", sortMode), 0);
+            if (countView != null) countView.setText("Indexing library…");
+            if (libraryRecycler != null) libraryRecycler.postDelayed(this::refreshLibrary, 550L);
+            return;
         }
-        if (libraryAdapter != null) libraryAdapter.submit(visibleBooks);
+        LibraryQuerySpec spec = new LibraryQuerySpec(searchQuery, authorFilter, libraryStatusFilter, shelfFilter, sortMode);
+        final int total = stateDb.countLibraryBooks(spec);
+        libraryResultCount = total;
+        if (libraryAdapter != null) libraryAdapter.resetPaged(spec, total);
         if (countView != null) {
-            String suffix = visibleBooks.size() == 1 ? " book" : " books";
+            String suffix = total == 1 ? " book" : " books";
             String filters = libraryFilterDescription();
-            countView.setText(visibleBooks.size() + suffix + (filters.isEmpty() ? "" : " · " + filters));
+            countView.setText(total + suffix + (filters.isEmpty() ? "" : " · " + filters));
         }
         if (sortButton != null) sortButton.setText(sortButtonLabel());
         if (authorButton != null) authorButton.setText(authorButtonLabel());
         updateLibraryFilterChips();
         updateReadingStatsSummary();
         updateNotesHubSummary();
-
-        warmSortMetadataIfNeeded(all);
     }
 
     private void sortLibraryFiles(File[] files) {
@@ -592,11 +592,13 @@ public class MainActivity extends Activity {
 
     private String cachedLibraryTitle(File file) {
         String fallback = stripExtension(file.getName());
+        if (stateDb != null && stateDb.isLibraryIndexReady()) return stateDb.indexedTitle(file.getName(), fallback);
         String value = prefs.getString("library_title_" + file.getName(), fallback);
         return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 
     private String cachedLibraryAuthor(File file) {
+        if (stateDb != null && stateDb.isLibraryIndexReady()) return stateDb.indexedAuthor(file.getName());
         String value = prefs.getString("library_author_" + file.getName(), "");
         return value == null ? "" : value.trim();
     }
@@ -646,6 +648,7 @@ public class MainActivity extends Activity {
     }
 
     private void warmSortMetadataIfNeeded(File[] files) {
+        if (stateDb != null && stateDb.isLibraryIndexReady()) return;
         if (metadataWarmupRunning || files == null || files.length == 0) return;
         boolean missing = false;
         for (File f : files) {
@@ -874,7 +877,7 @@ public class MainActivity extends Activity {
         layout.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
             @Override public int getSpanSize(int position) {
                 if (position <= 1) return libraryColumns;
-                if (visibleBooks.isEmpty() && position == 2) return libraryColumns;
+                if (libraryResultCount == 0 && position == 2) return libraryColumns;
                 return 1;
             }
         });
@@ -890,7 +893,7 @@ public class MainActivity extends Activity {
         layout.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
             @Override public int getSpanSize(int position) {
                 if (position <= 1) return libraryColumns;
-                if (visibleBooks.isEmpty() && position == 2) return libraryColumns;
+                if (libraryResultCount == 0 && position == 2) return libraryColumns;
                 return 1;
             }
         });
@@ -1032,20 +1035,11 @@ public class MainActivity extends Activity {
         heading.addView(all, new LinearLayout.LayoutParams(dp(84), dp(38)));
         root.addView(heading);
 
-        File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
-        if (books == null) books = new File[0];
-        java.util.Arrays.sort(books, (a, b) -> {
-            long ao = openedTime(a), bo = openedTime(b);
-            if (ao != bo) return Long.compare(bo, ao);
-            return Long.compare(addedTime(b), addedTime(a));
-        });
         java.util.List<File> preferred = new java.util.ArrayList<>();
-        for (File f : books) {
-            int p = ReadingProgressStore.get(prefs, f.getName());
-            if (p > 0 && p < 100) preferred.add(f);
-        }
-        if (preferred.isEmpty()) {
-            for (File f : books) preferred.add(f);
+        if (stateDb != null && stateDb.isLibraryIndexReady()) {
+            java.util.List<ReaderStateDb.LibraryBookRow> rows = stateDb.recentBooks(8, true);
+            if (rows.isEmpty()) rows = stateDb.recentBooks(8, false);
+            for (ReaderStateDb.LibraryBookRow row : rows) preferred.add(row.asFile());
         }
 
         HorizontalScrollView scroller = new HorizontalScrollView(this);
@@ -1186,9 +1180,7 @@ public class MainActivity extends Activity {
 
     private void addPremiumReadingStrip(LinearLayout root) {
         ReadingStatsStore.Snapshot stats = ReadingStatsStore.snapshot(prefs);
-        int annotationCount = 0;
-        File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
-        if (books != null) for (File f : books) annotationCount += ReaderAnnotationStore.count(prefs, f.getName());
+        int annotationCount = stateDb != null && stateDb.isLibraryIndexReady() ? stateDb.totalAnnotationCount() : 0;
 
         LinearLayout strip = new LinearLayout(this);
         strip.setOrientation(LinearLayout.HORIZONTAL);
@@ -1310,19 +1302,16 @@ public class MainActivity extends Activity {
     }
 
     private void updateNotesHubSummary() {
-        if (notesSummaryView == null || prefs == null || libraryDir == null) return;
-        File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
-        int itemCount = 0;
-        if (books != null) for (File book : books) itemCount += ReaderAnnotationStore.count(prefs, book.getName());
+        if (notesSummaryView == null) return;
+        int itemCount = stateDb != null && stateDb.isLibraryIndexReady() ? stateDb.totalAnnotationCount() : 0;
         notesSummaryView.setText(String.valueOf(itemCount));
     }
 
     private void showNotesHighlightsHub() {
-        File[] books = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
-        if (books == null) books = new File[0];
-        sortLibraryFiles(books);
         java.util.List<File> annotatedBooks = new java.util.ArrayList<>();
-        for (File book : books) if (ReaderAnnotationStore.count(prefs, book.getName()) > 0) annotatedBooks.add(book);
+        if (stateDb != null && stateDb.isLibraryIndexReady()) {
+            for (ReaderStateDb.LibraryBookRow row : stateDb.annotatedBooks(200)) annotatedBooks.add(row.asFile());
+        }
 
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
@@ -1390,7 +1379,7 @@ public class MainActivity extends Activity {
                 arrow.setGravity(Gravity.CENTER);
                 row.addView(arrow, new LinearLayout.LayoutParams(dp(28), dp(54)));
                 TextView dummyMeta = new TextView(this);
-                loadBookVisual(book, cover, title, dummyMeta);
+                loadBookVisual(book, cover, title, dummyMeta, false);
                 row.setOnClickListener(v -> { dialog.dismiss(); openBookAnnotations(book); });
                 LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80));
                 rowLp.topMargin = dp(7);
@@ -2010,7 +1999,7 @@ public class MainActivity extends Activity {
         panel.setElevation(dp(12));
         addCompactPopupAction(panel, popup, "▷", "Continue reading", false, () -> openBook(file));
         addCompactPopupAction(panel, popup, "▥", "Add to shelf", false, () -> showBookShelves(file));
-        addCompactPopupAction(panel, popup, "✐", "Edit title & author", false, () -> showEditBookMetadata(file));
+        addCompactPopupAction(panel, popup, "✐", "Edit book details", false, () -> showEditBookMetadata(file));
         addCompactPopupAction(panel, popup, "✎", "Notes & highlights", false, () -> openBookAnnotations(file));
         addCompactPopupAction(panel, popup, "Aa", "Reading settings", false, () -> openBookSettings(file));
         addCompactPopupAction(panel, popup, "↗", "Share book", false, () -> shareBookReference(file));
@@ -2082,105 +2071,27 @@ public class MainActivity extends Activity {
     }
 
     private void showEditBookMetadata(File file) {
-        if (file == null) return;
-        android.app.Dialog dialog = new android.app.Dialog(this);
-        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
-        dialog.setCanceledOnTouchOutside(true);
-        LinearLayout sheet = premiumSheet("Edit book details",
-                "Custom title and author are saved in WoW Reader and included in backup/restore.", dialog);
-
-        TextView titleLabel = new TextView(this);
-        titleLabel.setText("Book title");
-        titleLabel.setTextSize(12.5f);
-        titleLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        titleLabel.setTextColor(themeSecondaryText());
-        titleLabel.setPadding(dp(2), dp(6), dp(2), dp(5));
-        sheet.addView(titleLabel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(34)));
-
-        EditText titleInput = new EditText(this);
-        titleInput.setSingleLine(true);
-        titleInput.setText(cachedLibraryTitle(file));
-        titleInput.setSelection(titleInput.length());
-        titleInput.setTextSize(15f);
-        titleInput.setTextColor(themePrimaryText());
-        titleInput.setHintTextColor(themeSecondaryText());
-        titleInput.setHint("Book title");
-        titleInput.setPadding(dp(14), 0, dp(14), 0);
-        titleInput.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
-        applyBookTitleTypeface(titleInput);
-        sheet.addView(titleInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
-
-        TextView authorLabel = new TextView(this);
-        authorLabel.setText("Author name");
-        authorLabel.setTextSize(12.5f);
-        authorLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        authorLabel.setTextColor(themeSecondaryText());
-        authorLabel.setPadding(dp(2), dp(8), dp(2), dp(5));
-        LinearLayout.LayoutParams authorLabelLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
-        authorLabelLp.topMargin = dp(4);
-        sheet.addView(authorLabel, authorLabelLp);
-
-        EditText authorInput = new EditText(this);
-        authorInput.setSingleLine(true);
-        authorInput.setText(cachedLibraryAuthor(file));
-        authorInput.setSelection(authorInput.length());
-        authorInput.setTextSize(15f);
-        authorInput.setTextColor(themePrimaryText());
-        authorInput.setHintTextColor(themeSecondaryText());
-        authorInput.setHint("Author name (optional)");
-        authorInput.setPadding(dp(14), 0, dp(14), 0);
-        authorInput.setBackground(roundRect(themeControlSurface(), dp(16), dp(1), themeStroke()));
-        if (pyidaungsuTypeface != null) authorInput.setTypeface(pyidaungsuTypeface);
-        sheet.addView(authorInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
-
-        TextView source = filterChoice("Use book metadata", false);
-        source.setGravity(Gravity.CENTER);
-        source.setOnClickListener(v -> {
-            dialog.dismiss();
-            resetBookMetadataFromSource(file);
-        });
-        LinearLayout.LayoutParams sourceLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
-        sourceLp.topMargin = dp(11);
-        sheet.addView(source, sourceLp);
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        TextView cancel = filterChoice("Cancel", false);
-        cancel.setOnClickListener(v -> dialog.dismiss());
-        TextView save = filterChoice("Save", true);
-        save.setTextColor(Color.WHITE);
-        save.setBackground(roundRect(themeAccent(), dp(17), 0, 0));
-        save.setOnClickListener(v -> {
-            String title = titleInput.getText() == null ? "" : titleInput.getText().toString().trim();
-            String author = authorInput.getText() == null ? "" : authorInput.getText().toString().trim();
-            if (title.isEmpty()) {
-                titleInput.setError("Book title is required");
-                titleInput.requestFocus();
-                return;
-            }
-            prefs.edit()
-                    .putString("library_title_" + file.getName(), title)
-                    .putString("library_author_" + file.getName(), author)
-                    .putBoolean(customMetadataFlag(file), true)
-                    .putLong("sync_updated_ms", System.currentTimeMillis())
-                    .apply();
-            dialog.dismiss();
-            if (homeMode) buildUi(); else refreshLibrary();
-            maybeAutoGoogleSync();
-            Toast.makeText(this, "Book details saved", Toast.LENGTH_SHORT).show();
-        });
-        LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(96), dp(40));
-        cancelLp.rightMargin = dp(8);
-        actions.addView(cancel, cancelLp);
-        actions.addView(save, new LinearLayout.LayoutParams(dp(96), dp(40)));
-        LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
-        actionLp.topMargin = dp(7);
-        sheet.addView(actions, actionLp);
-
-        presentBottomSheet(dialog, sheet, 0.74f);
-        titleInput.requestFocus();
+        if(file==null)return;android.app.Dialog dialog=new android.app.Dialog(this);dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);dialog.setCanceledOnTouchOutside(true);
+        LinearLayout sheet=premiumSheet("Edit Book Details","Personal library appearance · original EPUB/PDF stays unchanged",dialog);
+        ImageView preview=new ImageView(this);preview.setScaleType(ImageView.ScaleType.CENTER_CROP);preview.setBackground(roundRect(themeControlSurface(),dp(14),dp(1),themeStroke()));preview.setClipToOutline(true);loadCustomCoverPreview(file,preview);LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(dp(132),dp(194));pp.gravity=Gravity.CENTER_HORIZONTAL;sheet.addView(preview,pp);
+        LinearLayout coverButtons=new LinearLayout(this);coverButtons.setOrientation(LinearLayout.HORIZONTAL);TextView choose=filterChoice("Choose from device",false);TextView online=filterChoice("Find cover online",false);coverButtons.addView(choose,new LinearLayout.LayoutParams(0,dp(42),1f));LinearLayout.LayoutParams op=new LinearLayout.LayoutParams(0,dp(42),1f);op.leftMargin=dp(7);coverButtons.addView(online,op);LinearLayout.LayoutParams cbp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(48));cbp.topMargin=dp(8);sheet.addView(coverButtons,cbp);
+        EditText titleInput=editField(cachedLibraryTitle(file),"Book title");EditText authorInput=editField(cachedLibraryAuthor(file),"Author name (optional)");LinearLayout.LayoutParams fp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(50));fp.topMargin=dp(7);sheet.addView(titleInput,fp);sheet.addView(authorInput,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(50)));
+        TextView scopeLabel=new TextView(this);scopeLabel.setText("Cover display");scopeLabel.setTextSize(12.5f);scopeLabel.setTypeface(Typeface.DEFAULT,Typeface.BOLD);scopeLabel.setTextColor(themeSecondaryText());scopeLabel.setPadding(dp(2),dp(10),0,dp(3));sheet.addView(scopeLabel);
+        android.widget.RadioGroup scopes=new android.widget.RadioGroup(this);scopes.setOrientation(android.widget.RadioGroup.VERTICAL);android.widget.RadioButton libraryOnly=new android.widget.RadioButton(this);libraryOnly.setText("Library Card Only — Recommended");android.widget.RadioButton everywhere=new android.widget.RadioButton(this);everywhere.setText("Everywhere in WoW Reader");scopes.addView(libraryOnly);scopes.addView(everywhere);String currentScope=stateDb==null?"library_only":stateDb.coverScope(file.getName());("everywhere".equals(currentScope)?everywhere:libraryOnly).setChecked(true);sheet.addView(scopes);
+        choose.setOnClickListener(v->{pendingCoverBook=file;pendingCoverScope=everywhere.isChecked()?"everywhere":"library_only";Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("image/*");i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivityForResult(i,REQ_COVER_IMAGE);});
+        online.setOnClickListener(v->showOnlineCoverSearch(file,everywhere.isChecked()?"everywhere":"library_only"));
+        TextView restore=filterChoice("Restore Original Cover",false);restore.setGravity(Gravity.CENTER);restore.setOnClickListener(v->{String old=stateDb==null?"":stateDb.customCoverPath(file.getName());if(stateDb!=null)stateDb.clearCustomCover(file.getName());if(old!=null&&!old.isEmpty())CustomCoverStore.delete(new File(old));prefs.edit().putLong("sync_updated_ms",System.currentTimeMillis()).apply();dialog.dismiss();refreshAfterBookEdit();maybeAutoGoogleSync();});LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(40));rp.topMargin=dp(5);sheet.addView(restore,rp);
+        LinearLayout actions=new LinearLayout(this);actions.setOrientation(LinearLayout.HORIZONTAL);actions.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);TextView cancel=filterChoice("Cancel",false);cancel.setOnClickListener(v->dialog.dismiss());TextView save=filterChoice("Save",true);save.setTextColor(Color.WHITE);save.setBackground(roundRect(themeAccent(),dp(17),0,0));save.setOnClickListener(v->{String title=titleInput.getText()==null?"":titleInput.getText().toString().trim();String author=authorInput.getText()==null?"":authorInput.getText().toString().trim();if(title.isEmpty()){titleInput.setError("Book title is required");return;}if(stateDb!=null){stateDb.updateBookMetadata(file.getName(),title,author);stateDb.setCoverScope(file.getName(),everywhere.isChecked()?"everywhere":"library_only");}prefs.edit().putString("library_title_"+file.getName(),title).putString("library_author_"+file.getName(),author).putBoolean(customMetadataFlag(file),true).putLong("sync_updated_ms",System.currentTimeMillis()).apply();dialog.dismiss();refreshAfterBookEdit();maybeAutoGoogleSync();Toast.makeText(this,"Book details saved",Toast.LENGTH_SHORT).show();});LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(dp(96),dp(40));cp.rightMargin=dp(8);actions.addView(cancel,cp);actions.addView(save,new LinearLayout.LayoutParams(dp(96),dp(40)));LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(52));ap.topMargin=dp(6);sheet.addView(actions,ap);
+        presentBottomSheet(dialog,sheet,.88f);
     }
+
+    private EditText editField(String value,String hint){EditText e=new EditText(this);e.setSingleLine(true);e.setText(value);e.setTextSize(15f);e.setTextColor(themePrimaryText());e.setHintTextColor(themeSecondaryText());e.setHint(hint);e.setPadding(dp(14),0,dp(14),0);e.setBackground(roundRect(themeControlSurface(),dp(16),dp(1),themeStroke()));if(pyidaungsuTypeface!=null)e.setTypeface(pyidaungsuTypeface);return e;}
+    private void refreshAfterBookEdit(){if(homeMode)buildUi();else refreshLibrary();}
+    private void loadCustomCoverPreview(File file,ImageView target){String path=stateDb==null?"":stateDb.customCoverPath(file.getName());if(path!=null&&!path.isEmpty()){Bitmap b=CustomCoverStore.decodeSampled(new File(path),300,440);if(b!=null){target.setImageBitmap(b);return;}}TextView t=new TextView(this),m=new TextView(this);loadBookVisual(file,target,t,m,true);}
+
+    private void showOnlineCoverSearch(File file,String scope){android.app.Dialog d=new android.app.Dialog(this);d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);LinearLayout sheet=premiumSheet("Find cover online","Google Books + Open Library · edit Title / Author / ISBN and search",d);EditText title=editField(cachedLibraryTitle(file),"Title");EditText author=editField(cachedLibraryAuthor(file),"Author");EditText isbn=editField("","ISBN (optional)");sheet.addView(title,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(48)));sheet.addView(author,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(48)));sheet.addView(isbn,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(48)));TextView search=filterChoice("Search covers",true);search.setTextColor(Color.WHITE);search.setBackground(roundRect(themeAccent(),dp(16),0,0));LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(42));sp.topMargin=dp(7);sheet.addView(search,sp);TextView webImages=filterChoice("Search Google Images",false);webImages.setGravity(Gravity.CENTER);LinearLayout.LayoutParams wip=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(40));wip.topMargin=dp(5);sheet.addView(webImages,wip);webImages.setOnClickListener(v->{try{String q=CoverSearchPlanner.webImageQuery(title.getText().toString(),author.getText().toString(),isbn.getText().toString());startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://www.google.com/search?tbm=isch&q="+Uri.encode(q))));}catch(Exception e){Toast.makeText(this,"Unable to open Google Images",Toast.LENGTH_SHORT).show();}});ScrollView scroll=new ScrollView(this);android.widget.GridLayout grid=new android.widget.GridLayout(this);grid.setColumnCount(3);grid.setUseDefaultMargins(true);scroll.addView(grid);LinearLayout.LayoutParams slp=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(360));slp.topMargin=dp(7);sheet.addView(scroll,slp);search.setOnClickListener(v->{grid.removeAllViews();TextView loading=new TextView(this);loading.setText("Searching…");loading.setPadding(dp(10),dp(16),dp(10),dp(16));grid.addView(loading);bookVisualExecutor.execute(()->{try{java.util.List<GoogleBooksCoverSearch.Result> results=GoogleBooksCoverSearch.search(title.getText().toString(),author.getText().toString(),isbn.getText().toString());runOnUiThread(()->{grid.removeAllViews();if(results.isEmpty()){TextView none=new TextView(this);none.setText("No catalog cover results. Try a simpler/original title or Search Google Images.");grid.addView(none);return;}for(GoogleBooksCoverSearch.Result r:results)addOnlineCoverResult(grid,file,r,scope,d);});}catch(Exception e){runOnUiThread(()->{grid.removeAllViews();TextView err=new TextView(this);err.setText(e.getMessage());grid.addView(err);});}});});presentBottomSheet(d,sheet,.92f);}
+    private void addOnlineCoverResult(android.widget.GridLayout grid,File file,GoogleBooksCoverSearch.Result r,String scope,android.app.Dialog searchDialog){LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.VERTICAL);card.setPadding(dp(4),dp(4),dp(4),dp(4));ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.CENTER_CROP);image.setImageBitmap(placeholderBitmap(r.title,180,260));card.addView(image,new LinearLayout.LayoutParams(dp(96),dp(138)));TextView text=new TextView(this);text.setText(r.title+(r.source.isEmpty()?"":" · "+r.source));text.setTextSize(9f);text.setMaxLines(3);card.addView(text,new LinearLayout.LayoutParams(dp(96),dp(34)));bookVisualExecutor.execute(()->{try{Bitmap b=CustomCoverStore.downloadBitmap(r.imageUrl,220,320);runOnUiThread(()->{if(!isFinishing())image.setImageBitmap(b);});}catch(Exception ignored){}});card.setOnClickListener(v->showOnlineCoverPreview(file,r,scope,searchDialog));grid.addView(card,new android.widget.GridLayout.LayoutParams());}
+    private void showOnlineCoverPreview(File file,GoogleBooksCoverSearch.Result r,String scope,android.app.Dialog searchDialog){android.app.Dialog d=new android.app.Dialog(this);d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);LinearLayout sheet=premiumSheet("Cover preview",r.title+(r.author.isEmpty()?"":" · "+r.author),d);ImageView image=new ImageView(this);image.setScaleType(ImageView.ScaleType.CENTER_CROP);image.setImageBitmap(placeholderBitmap(r.title,300,440));sheet.addView(image,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(360)));bookVisualExecutor.execute(()->{try{Bitmap b=CustomCoverStore.downloadBitmap(r.imageUrl,700,1000);runOnUiThread(()->{if(!isFinishing())image.setImageBitmap(b);});}catch(Exception ignored){}});TextView use=filterChoice("Use this cover",true);use.setTextColor(Color.WHITE);use.setBackground(roundRect(themeAccent(),dp(16),0,0));use.setOnClickListener(v->{use.setEnabled(false);bookVisualExecutor.execute(()->{try{String hash=stateDb==null?file.getName():stateDb.contentHash(file.getName());if((hash==null||hash.isEmpty())&&stateDb!=null)hash=stateDb.ensureHash(file,prefs);File saved=CustomCoverStore.importUrl(this,r.imageUrl,hash==null?file.getName():hash);String finalHash=hash;if(stateDb!=null)stateDb.updateCustomCover(file.getName(),saved.getAbsolutePath(),scope);prefs.edit().putLong("sync_updated_ms",System.currentTimeMillis()).apply();runOnUiThread(()->{d.dismiss();searchDialog.dismiss();refreshAfterBookEdit();maybeAutoGoogleSync();Toast.makeText(this,"Custom cover saved",Toast.LENGTH_SHORT).show();});}catch(Exception e){runOnUiThread(()->{use.setEnabled(true);Toast.makeText(this,e.getMessage(),Toast.LENGTH_LONG).show();});}});});LinearLayout.LayoutParams up=new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(44));up.topMargin=dp(7);sheet.addView(use,up);presentBottomSheet(d,sheet,.82f);}
 
     private void resetBookMetadataFromSource(File file) {
         if (file == null) return;
@@ -2196,6 +2107,7 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {}
             final String resolvedTitle = title;
             final String resolvedAuthor = author;
+            if (stateDb != null) stateDb.updateBookMetadata(file.getName(), resolvedTitle, resolvedAuthor);
             prefs.edit()
                     .putString("library_title_" + file.getName(), resolvedTitle)
                     .putString("library_author_" + file.getName(), resolvedAuthor)
@@ -2493,32 +2405,23 @@ public class MainActivity extends Activity {
     }
 
     private void showAuthorsDialog() {
-        File[] files = libraryDir.listFiles(file -> file.isFile() && isBook(file.getName()));
-        if (files == null) files = new File[0];
         java.util.Map<String, Integer> counts = new java.util.HashMap<>();
-        for (File f : files) {
-            String author = cachedLibraryAuthor(f);
-            if (author.isEmpty()) continue;
-            Integer oldCount = counts.get(author);
-            counts.put(author, (oldCount == null ? 0 : oldCount) + 1);
+        java.util.List<String> authors = new java.util.ArrayList<>();
+        if (stateDb != null && stateDb.isLibraryIndexReady()) {
+            for (ReaderStateDb.AuthorCount row : stateDb.authors(500)) { authors.add(row.author); counts.put(row.author,row.count); }
         }
-        java.util.List<String> authors = new java.util.ArrayList<>(counts.keySet());
-        java.util.Collections.sort(authors, (a, b) -> {
-            int ga = titleScriptGroup(a), gb = titleScriptGroup(b);
-            if (ga != gb) return Integer.compare(ga, gb);
-            return ga == 0 ? myanmarCollator.compare(a, b) : englishCollator.compare(a, b);
-        });
+        final int totalBooks = stateDb == null ? 0 : stateDb.totalBookCount();
+        final int totalAuthors = stateDb == null ? authors.size() : stateDb.totalAuthorCount();
 
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         dialog.setCanceledOnTouchOutside(true);
-        LinearLayout sheet = premiumSheet("Authors", authors.isEmpty() ? "No author metadata yet" : authors.size() + " authors", dialog);
+        LinearLayout sheet = premiumSheet("Authors", authors.isEmpty() ? "No author metadata yet" : totalAuthors + " authors", dialog);
         ScrollView scroll = new ScrollView(this);
         scroll.setVerticalScrollBarEnabled(false);
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         scroll.addView(list);
-        final int totalBooks = files.length;
         list.addView(premiumChoiceRow("All authors", totalBooks + (totalBooks == 1 ? " book" : " books"), authorFilter.isEmpty(), () -> {
             authorFilter = "";
             dialog.dismiss();
@@ -2535,7 +2438,6 @@ public class MainActivity extends Activity {
         int h = Math.min(dp(430), Math.max(dp(110), (authors.size() + 1) * dp(58)));
         sheet.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h));
         presentBottomSheet(dialog, sheet, 0.84f);
-        warmSortMetadataIfNeeded(files);
     }
 
     private String sortButtonLabel() {
@@ -2966,69 +2868,103 @@ public class MainActivity extends Activity {
     }
 
     private final class LibraryAdapter extends RecyclerView.Adapter<LibraryHolder> {
-        private static final int HOME_HEADER = 0;
-        private static final int LIBRARY_SECTION = 1;
-        private static final int BOOK = 2;
-        private static final int EMPTY = 3;
-        private static final int LIBRARY_HEADER = 4;
-        private static final int HOME_SECTION = 5;
-        private final List<File> items = new ArrayList<>();
+        private static final int HOME_HEADER = 0, LIBRARY_SECTION = 1, BOOK = 2, EMPTY = 3, LIBRARY_HEADER = 4, HOME_SECTION = 5;
+        private static final int PAGE_SIZE = 120;
+        private static final int MAX_CACHED_PAGES = 6;
+        private final java.util.LinkedHashMap<Integer, java.util.List<File>> pages =
+                new java.util.LinkedHashMap<Integer, java.util.List<File>>(8, .75f, true) {
+                    @Override protected boolean removeEldestEntry(java.util.Map.Entry<Integer, java.util.List<File>> e) {
+                        return size() > MAX_CACHED_PAGES;
+                    }
+                };
+        private final java.util.HashSet<Integer> loadingPages = new java.util.HashSet<>();
+        private LibraryQuerySpec spec = new LibraryQuerySpec("", "", "all", "", "added");
+        private int total = 0;
+        private int generation = 0;
+
+        void resetPaged(LibraryQuerySpec nextSpec, int nextTotal) {
+            generation++;
+            spec = nextSpec == null ? new LibraryQuerySpec("", "", "all", "", "added") : nextSpec;
+            total = Math.max(0, nextTotal);
+            synchronized (pages) { pages.clear(); loadingPages.clear(); }
+            notifyDataSetChanged();
+            if (total > 0) requestPage(0);
+        }
 
         void submit(List<File> next) {
-            items.clear();
-            if (next != null) items.addAll(next);
+            generation++;
+            total = next == null ? 0 : next.size();
+            synchronized (pages) {
+                pages.clear(); loadingPages.clear();
+                if (next != null && !next.isEmpty()) pages.put(0, new ArrayList<>(next.subList(0, Math.min(PAGE_SIZE, next.size()))));
+            }
             notifyDataSetChanged();
         }
 
-        private int shownBookCount() {
-            return homeMode ? Math.min(4, items.size()) : items.size();
+        private int shownBookCount() { return homeMode ? Math.min(4, total) : total; }
+        private File fileAt(int index) {
+            int page = index / PAGE_SIZE, inPage = index % PAGE_SIZE;
+            java.util.List<File> rows;
+            synchronized (pages) { rows = pages.get(page); }
+            if (rows == null || inPage >= rows.size()) { requestPage(page); return null; }
+            return rows.get(inPage);
+        }
+        private void requestPage(int page) {
+            if (page < 0 || stateDb == null || total <= 0) return;
+            final int requestGeneration = generation;
+            synchronized (pages) {
+                if (pages.containsKey(page) || loadingPages.contains(page)) return;
+                loadingPages.add(page);
+            }
+            final LibraryQuerySpec requestSpec = spec;
+            libraryQueryExecutor.execute(() -> {
+                int start = page * PAGE_SIZE;
+                java.util.List<ReaderStateDb.LibraryBookRow> rows = stateDb.pageLibraryBooks(requestSpec, start, PAGE_SIZE);
+                java.util.List<File> files = new ArrayList<>(rows.size());
+                for (ReaderStateDb.LibraryBookRow row : rows) files.add(row.asFile());
+                runOnUiThread(() -> {
+                    synchronized (pages) {
+                        loadingPages.remove(page);
+                        if (requestGeneration != generation) return;
+                        pages.put(page, files);
+                    }
+                    if (requestGeneration == generation && !files.isEmpty())
+                        notifyItemRangeChanged(2 + start, Math.min(files.size(), Math.max(0, shownBookCount() - start)));
+                });
+            });
         }
 
-        @Override public int getItemCount() {
-            int shown = shownBookCount();
-            return 2 + (shown == 0 ? 1 : shown);
-        }
-
+        @Override public int getItemCount() { int shown = shownBookCount(); return 2 + (shown == 0 ? 1 : shown); }
         @Override public int getItemViewType(int position) {
             if (position == 0) return homeMode ? HOME_HEADER : LIBRARY_HEADER;
             if (position == 1) return homeMode ? HOME_SECTION : LIBRARY_SECTION;
             if (shownBookCount() == 0) return EMPTY;
             return BOOK;
         }
-
         @Override public LibraryHolder onCreateViewHolder(ViewGroup parent, int viewType) {
             if (viewType == HOME_HEADER) return new LibraryHolder(buildLibraryHeader());
             if (viewType == LIBRARY_HEADER) return new LibraryHolder(buildLibraryOnlyHeader());
             if (viewType == HOME_SECTION) return new LibraryHolder(buildHomeBooksSectionHeader());
             if (viewType == LIBRARY_SECTION) return new LibraryHolder(buildLibrarySectionHeader());
             if (viewType == EMPTY) return new LibraryHolder(buildEmptyState());
-            FrameLayout shell = new FrameLayout(MainActivity.this);
-            shell.setPadding(dp(7), 0, dp(7), dp(14));
-            return new LibraryHolder(shell);
+            FrameLayout shell = new FrameLayout(MainActivity.this); shell.setPadding(dp(7), 0, dp(7), dp(14)); return new LibraryHolder(shell);
         }
-
         @Override public void onBindViewHolder(LibraryHolder holder, int position) {
             int type = getItemViewType(position);
-            if (type == LIBRARY_SECTION) {
-                if (countView != null) countView.setText(items.size() + (items.size() == 1 ? " book" : " books"));
-                return;
-            }
+            if (type == LIBRARY_SECTION) { if (countView != null) countView.setText(total + (total == 1 ? " book" : " books")); return; }
             if (type == HOME_SECTION || type == HOME_HEADER || type == LIBRARY_HEADER) return;
-            if (type == EMPTY) {
-                ((TextView) holder.itemView).setText(searchQuery.isEmpty()
-                        ? "Your library is ready.\nTap Add book to add an EPUB or PDF."
-                        : "No books match your search.");
+            if (type == EMPTY) { ((TextView) holder.itemView).setText(searchQuery.isEmpty() ?
+                    "Your library is ready.\nTap Add book to add an EPUB or PDF." : "No books match your search."); return; }
+            int index = position - 2; if (index < 0 || index >= shownBookCount()) return;
+            FrameLayout shell = (FrameLayout) holder.itemView; shell.removeAllViews();
+            File file = fileAt(index);
+            if (file == null) {
+                TextView loading = new TextView(MainActivity.this); loading.setText("Loading…"); loading.setGravity(Gravity.CENTER);
+                loading.setTextColor(themeSecondaryText()); loading.setMinHeight(dp(gridMode ? 190 : 92)); shell.addView(loading);
                 return;
             }
-            if (type != BOOK) return;
-            int index = position - 2;
-            if (index < 0 || index >= shownBookCount()) return;
-            File file = items.get(index);
-            FrameLayout shell = (FrameLayout) holder.itemView;
-            shell.removeAllViews();
             View card = gridMode ? createGridCard(file, libraryCardWidth()) : createListCard(file);
-            shell.addView(card, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            shell.addView(card, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
     }
 
@@ -3036,14 +2972,20 @@ public class MainActivity extends Activity {
         LibraryHolder(View itemView) { super(itemView); }
     }
 
-    private void loadBookVisual(File file, ImageView cover, TextView titleView, TextView metaView) {
-        new Thread(() -> {
-            boolean customMetadata = prefs.getBoolean(customMetadataFlag(file), false);
+    private final java.util.concurrent.ExecutorService bookVisualExecutor = java.util.concurrent.Executors.newFixedThreadPool(3, r -> {
+        Thread t = new Thread(r, "wow-book-visual"); t.setDaemon(true); return t;
+    });
+
+    private void loadBookVisual(File file, ImageView cover, TextView titleView, TextView metaView) { loadBookVisual(file,cover,titleView,metaView,true); }
+    private void loadBookVisual(File file, ImageView cover, TextView titleView, TextView metaView, boolean libraryCardContext) {
+        bookVisualExecutor.execute(() -> {
+            boolean customMetadata = (stateDb != null && stateDb.isLibraryIndexReady()) || prefs.getBoolean(customMetadataFlag(file), false);
             String title = cachedLibraryTitle(file);
             String author = cachedLibraryAuthor(file);
             Bitmap bitmap = null;
             try {
-                if (file.getName().toLowerCase(Locale.ROOT).endsWith(".epub")) {
+                if (stateDb != null) { String path=stateDb.customCoverPath(file.getName()); String scope=stateDb.coverScope(file.getName()); if(path!=null&&!path.isEmpty()&&(libraryCardContext||"everywhere".equals(scope))) bitmap=CustomCoverStore.decodeSampled(new File(path),360,520); }
+                if (bitmap == null && file.getName().toLowerCase(Locale.ROOT).endsWith(".epub")) {
                     EpubUtil.Summary summary = EpubUtil.extractSummary(file, coverCacheDir);
                     if (!customMetadata) {
                         if (summary.title != null && !summary.title.trim().isEmpty()) title = summary.title.trim();
@@ -3051,7 +2993,7 @@ public class MainActivity extends Activity {
                     }
                     if (summary.cover != null && summary.cover.isFile())
                         bitmap = BitmapFactory.decodeFile(summary.cover.getAbsolutePath());
-                } else {
+                } else if (bitmap == null) {
                     bitmap = renderPdfCover(file);
                 }
             } catch (Exception ignored) {}
@@ -3085,7 +3027,7 @@ public class MainActivity extends Activity {
                     metaView.setOnClickListener(null);
                 }
             });
-        }, "wow-book-visual").start();
+        });
     }
 
     private Bitmap renderPdfCover(File file){ ParcelFileDescriptor pfd=null; PdfRenderer renderer=null; PdfRenderer.Page page=null; try{ pfd=ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY); renderer=new PdfRenderer(pfd); if(renderer.getPageCount()==0)return null; page=renderer.openPage(0); int width=360,height=Math.max(1,Math.round(width*(page.getHeight()/(float)page.getWidth()))); Bitmap b=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888); b.eraseColor(Color.WHITE); page.render(b,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY); return b; }catch(Exception e){return null;} finally{try{if(page!=null)page.close();}catch(Exception ignored){} try{if(renderer!=null)renderer.close();}catch(Exception ignored){} try{if(pfd!=null)pfd.close();}catch(Exception ignored){}} }
@@ -3158,17 +3100,9 @@ public class MainActivity extends Activity {
                     }catch(Exception ignored){}
                 }
                 long now=System.currentTimeMillis();
-                prefs.edit()
-                        .putLong("added_at_"+out.getName(),now)
-                        .putString("library_title_"+out.getName(),displayTitle)
-                        .putString("library_author_"+out.getName(),displayAuthor)
-                        .putBoolean("library_owned_"+out.getName(),true)
-                        .putString("content_hash_"+out.getName(),hash)
-                        .putString("content_hash_sig_"+out.getName(),out.length()+":"+out.lastModified())
-                        .putLong("library_files_updated_ms",now)
-                        .putLong("sync_updated_ms",now)
-                        .apply();
-                stateDb.upsertBook(out,hash,prefs);
+                // 100k-safe path: one indexed DB row, not six SharedPreferences keys per imported book.
+                stateDb.upsertImportedBook(out,hash,displayTitle,displayAuthor,now);
+                prefs.edit().putLong("library_files_updated_ms",now).putLong("sync_updated_ms",now).apply();
                 File finalOut=out;
                 runOnUiThread(()->{
                     Toast.makeText(this,"Added to Library · local copy saved",Toast.LENGTH_SHORT).show();
@@ -3554,8 +3488,7 @@ public class MainActivity extends Activity {
                 signedInProfile.accessToken=driveProfile.accessToken;
                 rememberGoogleProfile(signedInProfile,true);
                 googleSyncBusy=false;
-                File[] local=libraryDir.listFiles(file->file.isFile()&&isBook(file.getName()));
-                boolean empty=local==null||local.length==0;
+                boolean empty=stateDb==null||!stateDb.isLibraryIndexReady()?false:stateDb.totalBookCount()==0;
                 if(!empty&&prefs.getLong("sync_updated_ms",0L)==0L)
                     prefs.edit().putLong("sync_updated_ms",System.currentTimeMillis()).apply();
                 GoogleDriveSync.hasBackup(MainActivity.this,driveProfile.accessToken,found->{
@@ -3700,6 +3633,7 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode,resultCode,data);
         if(googleDrive!=null&&googleDrive.handleActivityResult(requestCode,resultCode,data))return;
         if(resultCode!=RESULT_OK||data==null)return;
+        if(requestCode==REQ_COVER_IMAGE){ Uri imageUri=data.getData(); File targetBook=pendingCoverBook; String scope=pendingCoverScope; pendingCoverBook=null; if(imageUri==null||targetBook==null)return; bookVisualExecutor.execute(()->{try{String hash=stateDb==null?targetBook.getName():stateDb.contentHash(targetBook.getName());if((hash==null||hash.isEmpty())&&stateDb!=null)hash=stateDb.ensureHash(targetBook,prefs);File saved=CustomCoverStore.importUri(this,imageUri,hash==null?targetBook.getName():hash);if(stateDb!=null)stateDb.updateCustomCover(targetBook.getName(),saved.getAbsolutePath(),scope);prefs.edit().putLong("sync_updated_ms",System.currentTimeMillis()).apply();runOnUiThread(()->{refreshAfterBookEdit();maybeAutoGoogleSync();Toast.makeText(this,"Custom cover saved",Toast.LENGTH_SHORT).show();});}catch(Exception e){runOnUiThread(()->Toast.makeText(this,e.getMessage(),Toast.LENGTH_LONG).show());}});return;}
         if(requestCode==REQ_IMPORT){
             ArrayList<Uri> selected=new ArrayList<>();
             ClipData clip=data.getClipData();
@@ -3716,8 +3650,38 @@ public class MainActivity extends Activity {
         if(requestCode==REQ_BACKUP)backupLibrary(uri);else if(requestCode==REQ_RESTORE)restoreLibrary(uri);
     }
 
-    private void backupLibrary(Uri treeUri){new Thread(()->{int count=0;try{File[] files=libraryDir.listFiles();if(files!=null)for(File file:files){if(!isBook(file.getName()))continue;Uri target=findChild(treeUri,file.getName());if(target==null){String mime=file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")?"application/pdf":"application/epub+zip";target=DocumentsContract.createDocument(getContentResolver(),treeDocumentUri(treeUri),mime,file.getName());}if(target!=null)try(InputStream in=new FileInputStream(file);OutputStream out=getContentResolver().openOutputStream(target,"wt")){if(out!=null){copy(in,out);count++;}}}int n=count;runOnUiThread(()->Toast.makeText(this,"Backup complete: "+n+" books",Toast.LENGTH_LONG).show());}catch(Exception e){runOnUiThread(()->Toast.makeText(this,"Backup failed: "+e.getMessage(),Toast.LENGTH_LONG).show());}}).start();}
-    private void restoreLibrary(Uri treeUri){new Thread(()->{int count=0;Cursor c=null;try{Uri children=DocumentsContract.buildChildDocumentsUriUsingTree(treeUri,DocumentsContract.getTreeDocumentId(treeUri));c=getContentResolver().query(children,new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME},null,null,null);if(c!=null)while(c.moveToNext()){String id=c.getString(0),name=c.getString(1);if(!isBook(name))continue;Uri doc=DocumentsContract.buildDocumentUriUsingTree(treeUri,id);File out=new File(libraryDir,name.replaceAll("[\\\\/:*?\"<>|]","_"));try(InputStream in=getContentResolver().openInputStream(doc);OutputStream os=new FileOutputStream(out)){if(in!=null){copy(in,os);prefs.edit().putLong("added_at_"+out.getName(),System.currentTimeMillis()).apply();count++;}}}int n=count;runOnUiThread(()->{refreshLibrary();Toast.makeText(this,"Restored: "+n+" books",Toast.LENGTH_LONG).show();});}catch(Exception e){runOnUiThread(()->Toast.makeText(this,"Restore failed: "+e.getMessage(),Toast.LENGTH_LONG).show());}finally{if(c!=null)c.close();}}).start();}
+    private void backupLibrary(Uri treeUri){
+        new Thread(()->{
+            int count=0;File indexFile=null;android.database.sqlite.SQLiteDatabase index=null;
+            try{
+                if(stateDb==null||!stateDb.isLibraryIndexReady())throw new Exception("Library index is still preparing");
+                indexFile=File.createTempFile("wow-saf-index-",".db",getCacheDir());
+                index=android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(indexFile,null);
+                index.execSQL("CREATE TABLE docs(name TEXT PRIMARY KEY, document_id TEXT NOT NULL)");
+                Uri children=DocumentsContract.buildChildDocumentsUriUsingTree(treeUri,DocumentsContract.getTreeDocumentId(treeUri));
+                Cursor dc=null;index.beginTransaction();
+                try{
+                    dc=getContentResolver().query(children,new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME},null,null,null);
+                    if(dc!=null)while(dc.moveToNext()){String id=dc.getString(0),name=dc.getString(1);if(name==null||id==null)continue;android.content.ContentValues v=new android.content.ContentValues();v.put("name",name);v.put("document_id",id);index.insertWithOnConflict("docs",null,v,android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE);}
+                    index.setTransactionSuccessful();
+                }finally{if(dc!=null)dc.close();index.endTransaction();}
+                LibraryQuerySpec all=new LibraryQuerySpec("","","all","","added");int offset=0;
+                while(true){java.util.List<ReaderStateDb.LibraryBookRow> page=stateDb.pageLibraryBooks(all,offset,200);if(page.isEmpty())break;
+                    for(ReaderStateDb.LibraryBookRow row:page){File file=row.asFile();if(!file.isFile())continue;Uri target=null;Cursor q=index.rawQuery("SELECT document_id FROM docs WHERE name=? LIMIT 1",new String[]{file.getName()});try{if(q.moveToFirst())target=DocumentsContract.buildDocumentUriUsingTree(treeUri,q.getString(0));}finally{q.close();}
+                        if(target==null){String mime=file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")?"application/pdf":"application/epub+zip";target=DocumentsContract.createDocument(getContentResolver(),treeDocumentUri(treeUri),mime,file.getName());if(target!=null){android.content.ContentValues v=new android.content.ContentValues();v.put("name",file.getName());v.put("document_id",DocumentsContract.getDocumentId(target));index.insertWithOnConflict("docs",null,v,android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE);}}
+                        if(target!=null)try(InputStream in=new FileInputStream(file);OutputStream out=getContentResolver().openOutputStream(target,"wt")){if(out!=null){copy(in,out);count++;}}
+                    }
+                    offset+=page.size();if(page.size()<200)break;
+                }
+                int n=count;runOnUiThread(()->Toast.makeText(this,"Backup complete: "+n+" books",Toast.LENGTH_LONG).show());
+            }catch(Exception e){String message=e.getMessage();runOnUiThread(()->Toast.makeText(this,"Backup failed: "+message,Toast.LENGTH_LONG).show());}
+            finally{try{if(index!=null)index.close();}catch(Exception ignored){}if(indexFile!=null)indexFile.delete();}
+        },"wow-manual-backup").start();
+    }
+
+    private void restoreLibrary(Uri treeUri){
+        new Thread(()->{int count=0;Cursor c=null;try{if(stateDb==null)stateDb=ReaderStateDb.initialize(this,prefs,libraryDir);Uri children=DocumentsContract.buildChildDocumentsUriUsingTree(treeUri,DocumentsContract.getTreeDocumentId(treeUri));c=getContentResolver().query(children,new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME},null,null,null);if(c!=null)while(c.moveToNext()){String id=c.getString(0),name=c.getString(1);if(!isBook(name))continue;Uri doc=DocumentsContract.buildDocumentUriUsingTree(treeUri,id);File out=new File(libraryDir,name.replaceAll("[\\\\/:*?\"<>|]","_"));try(InputStream in=getContentResolver().openInputStream(doc);OutputStream os=new FileOutputStream(out)){if(in!=null){copy(in,os);long now=System.currentTimeMillis();stateDb.upsertImportedBook(out,"",stripExtension(out.getName()),"",now);count++;}}}long now=System.currentTimeMillis();prefs.edit().putLong("library_files_updated_ms",now).putLong("sync_updated_ms",now).apply();int n=count;runOnUiThread(()->{refreshLibrary();maybeAutoGoogleSync();Toast.makeText(this,"Restored: "+n+" books",Toast.LENGTH_LONG).show();});}catch(Exception e){String message=e.getMessage();runOnUiThread(()->Toast.makeText(this,"Restore failed: "+message,Toast.LENGTH_LONG).show());}finally{if(c!=null)c.close();}},"wow-manual-restore").start();
+    }
     private Uri findChild(Uri treeUri,String name){Cursor c=null;try{Uri children=DocumentsContract.buildChildDocumentsUriUsingTree(treeUri,DocumentsContract.getTreeDocumentId(treeUri));c=getContentResolver().query(children,new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME},null,null,null);if(c!=null)while(c.moveToNext())if(name.equals(c.getString(1)))return DocumentsContract.buildDocumentUriUsingTree(treeUri,c.getString(0));}catch(Exception ignored){}finally{if(c!=null)c.close();}return null;}
     private Uri treeDocumentUri(Uri treeUri){return DocumentsContract.buildDocumentUriUsingTree(treeUri,DocumentsContract.getTreeDocumentId(treeUri));}
     private boolean isBook(String n){String s=n==null?"":n.toLowerCase(Locale.ROOT);return s.endsWith(".epub")||s.endsWith(".pdf");}

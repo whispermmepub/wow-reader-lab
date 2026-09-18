@@ -127,5 +127,7 @@ public final class ReaderAnnotationStore {
                 .putString(key(bookName), arr.toString())
                 .putLong("sync_updated_ms", System.currentTimeMillis())
                 .apply();
+        ReaderStateDb db = ReaderStateDb.peek();
+        if (db != null) db.updateAnnotationCount(bookName, items.size());
     }
 }

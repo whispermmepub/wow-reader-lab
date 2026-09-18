@@ -30,8 +30,10 @@ import java.util.concurrent.Executors;
  */
 final class ReaderStateDb extends SQLiteOpenHelper {
     private static final String DB_NAME = "wow_reader_state_v2.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 6;
     private static final String META_LEGACY_MIGRATED = "legacy_migrated_v1";
+    private static final String META_V2_MIGRATED = "library_metadata_migrated_v2";
+    private static final String META_HOME_INDEXED = "home_indexed_v4";
     private static volatile ReaderStateDb INSTANCE;
     private static final ExecutorService WRITER = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "wow-reader-state-db");
@@ -45,6 +47,8 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     static ReaderStateDb initialize(Context context, SharedPreferences prefs, File libraryDir) {
         ReaderStateDb db = get(context);
         if (!db.isLegacyMigrated()) db.migrateLegacyAsync(prefs, libraryDir);
+        db.migrateV2Async(prefs);
+        db.migrateHomeIndexAsync(prefs);
         return db;
     }
 
@@ -69,21 +73,77 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS books (" +
                 "file_name TEXT PRIMARY KEY, content_hash TEXT UNIQUE, file_path TEXT, format TEXT," +
+                "title TEXT NOT NULL DEFAULT '', author TEXT NOT NULL DEFAULT '', annotation_count INTEGER NOT NULL DEFAULT 0," +
+                "custom_cover_path TEXT NOT NULL DEFAULT '', cover_scope TEXT NOT NULL DEFAULT 'library_only', cover_updated_at INTEGER NOT NULL DEFAULT 0," +
+                "remote_cover_file_id TEXT NOT NULL DEFAULT '', cover_sync_dirty INTEGER NOT NULL DEFAULT 0, cover_upload_session_url TEXT NOT NULL DEFAULT '', cover_upload_offset INTEGER NOT NULL DEFAULT 0," +
                 "file_size INTEGER NOT NULL DEFAULT 0, modified_at INTEGER NOT NULL DEFAULT 0," +
                 "added_at INTEGER NOT NULL DEFAULT 0, last_opened_at INTEGER NOT NULL DEFAULT 0," +
                 "progress INTEGER NOT NULL DEFAULT 0, finished_at INTEGER NOT NULL DEFAULT 0," +
                 "epub_spine INTEGER NOT NULL DEFAULT 0, epub_offset INTEGER NOT NULL DEFAULT 0," +
-                "pdf_page INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)");
+                "pdf_page INTEGER NOT NULL DEFAULT 0," +
+                "remote_file_id TEXT NOT NULL DEFAULT '', remote_modified_time TEXT NOT NULL DEFAULT ''," +
+                "sync_dirty INTEGER NOT NULL DEFAULT 1, upload_session_url TEXT NOT NULL DEFAULT ''," +
+                "upload_offset INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_hash ON books(content_hash)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_last_opened ON books(last_opened_at DESC)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_added ON books(added_at DESC)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_title ON books(title COLLATE NOCASE)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_author ON books(author COLLATE NOCASE)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_progress ON books(progress)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_annotations ON books(annotation_count,last_opened_at DESC)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_sync_dirty ON books(sync_dirty,updated_at)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS book_tombstones (content_hash TEXT PRIMARY KEY, file_name TEXT NOT NULL DEFAULT '', remote_file_id TEXT NOT NULL DEFAULT '', deleted_at INTEGER NOT NULL DEFAULT 0, sync_dirty INTEGER NOT NULL DEFAULT 1)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_tombstones_dirty ON book_tombstones(sync_dirty,deleted_at)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_finished ON books(finished_at DESC)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS shelves (name TEXT PRIMARY KEY, updated_at INTEGER NOT NULL DEFAULT 0)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS shelf_books (shelf_name TEXT NOT NULL, file_name TEXT NOT NULL, added_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(shelf_name,file_name))");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_shelf_books_file ON shelf_books(file_name)");
         db.execSQL("CREATE TABLE IF NOT EXISTS reading_day (day TEXT PRIMARY KEY, total_ms INTEGER NOT NULL DEFAULT 0, daily_note TEXT NOT NULL DEFAULT '')");
         db.execSQL("CREATE TABLE IF NOT EXISTS book_day (day TEXT NOT NULL, file_name TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0, book_note TEXT NOT NULL DEFAULT '', PRIMARY KEY(day,file_name))");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_book_day_file ON book_day(file_name)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_book_day_day ON book_day(day)");
     }
 
-    @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {}
+    @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        if (oldVersion < 2) {
+            try { db.execSQL("ALTER TABLE books ADD COLUMN title TEXT NOT NULL DEFAULT ''"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN author TEXT NOT NULL DEFAULT ''"); } catch (Exception ignored) {}
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_added ON books(added_at DESC)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_title ON books(title COLLATE NOCASE)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_author ON books(author COLLATE NOCASE)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_progress ON books(progress)");
+            db.execSQL("CREATE TABLE IF NOT EXISTS shelves (name TEXT PRIMARY KEY, updated_at INTEGER NOT NULL DEFAULT 0)");
+            db.execSQL("CREATE TABLE IF NOT EXISTS shelf_books (shelf_name TEXT NOT NULL, file_name TEXT NOT NULL, added_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(shelf_name,file_name))");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_shelf_books_file ON shelf_books(file_name)");
+        }
+        if (oldVersion < 3) {
+            try { db.execSQL("ALTER TABLE books ADD COLUMN remote_file_id TEXT NOT NULL DEFAULT ''"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN remote_modified_time TEXT NOT NULL DEFAULT ''"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN sync_dirty INTEGER NOT NULL DEFAULT 1"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN upload_session_url TEXT NOT NULL DEFAULT ''"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN upload_offset INTEGER NOT NULL DEFAULT 0"); } catch (Exception ignored) {}
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_sync_dirty ON books(sync_dirty,updated_at)");
+            db.execSQL("CREATE TABLE IF NOT EXISTS book_tombstones (content_hash TEXT PRIMARY KEY, file_name TEXT NOT NULL DEFAULT '', remote_file_id TEXT NOT NULL DEFAULT '', deleted_at INTEGER NOT NULL DEFAULT 0, sync_dirty INTEGER NOT NULL DEFAULT 1)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_tombstones_dirty ON book_tombstones(sync_dirty,deleted_at)");
+        }
+        if (oldVersion < 4) {
+            try { db.execSQL("ALTER TABLE books ADD COLUMN annotation_count INTEGER NOT NULL DEFAULT 0"); } catch (Exception ignored) {}
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_annotations ON books(annotation_count,last_opened_at DESC)");
+        }
+        if (oldVersion < 5) {
+            try { db.execSQL("ALTER TABLE books ADD COLUMN custom_cover_path TEXT NOT NULL DEFAULT ''"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN cover_scope TEXT NOT NULL DEFAULT 'library_only'"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN cover_updated_at INTEGER NOT NULL DEFAULT 0"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN remote_cover_file_id TEXT NOT NULL DEFAULT ''"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN cover_sync_dirty INTEGER NOT NULL DEFAULT 0"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN cover_upload_session_url TEXT NOT NULL DEFAULT ''"); } catch (Exception ignored) {}
+            try { db.execSQL("ALTER TABLE books ADD COLUMN cover_upload_offset INTEGER NOT NULL DEFAULT 0"); } catch (Exception ignored) {}
+        }
+        if (oldVersion < 6) {
+            db.execSQL("UPDATE books SET upload_session_url='', upload_offset=0 WHERE sync_dirty=1");
+            db.execSQL("UPDATE books SET cover_upload_session_url='', cover_upload_offset=0 WHERE cover_sync_dirty=1");
+        }
+    }
 
     boolean isLegacyMigrated() {
         Cursor c = null;
@@ -185,17 +245,23 @@ final class ReaderStateDb extends SQLiteOpenHelper {
 
     String ensureHash(File file, SharedPreferences prefs) throws Exception {
         if (file == null || !file.isFile()) return "";
+        Cursor c = null;
+        try {
+            c = getReadableDatabase().rawQuery("SELECT content_hash,file_size,modified_at FROM books WHERE file_name=? LIMIT 1", new String[]{file.getName()});
+            if (c.moveToFirst()) {
+                String cached = c.getString(0);
+                if (cached != null && !cached.isEmpty() && c.getLong(1) == file.length() && c.getLong(2) == file.lastModified()) return cached;
+            }
+        } catch (Exception ignored) {} finally { if (c != null) c.close(); }
         String sig = file.length() + ":" + file.lastModified();
-        String key = "content_hash_" + file.getName();
-        String sigKey = "content_hash_sig_" + file.getName();
-        String cached = prefs == null ? "" : prefs.getString(key, "");
-        String oldSig = prefs == null ? "" : prefs.getString(sigKey, "");
-        if (cached != null && !cached.isEmpty() && sig.equals(oldSig)) {
-            updateBookHash(file, cached);
-            return cached;
+        String legacy = prefs == null ? "" : prefs.getString("content_hash_" + file.getName(), "");
+        String legacySig = prefs == null ? "" : prefs.getString("content_hash_sig_" + file.getName(), "");
+        if (legacy != null && !legacy.isEmpty() && sig.equals(legacySig)) {
+            updateBookHash(file, legacy); return legacy;
         }
         String hash = FileIdentityUtil.sha256(file);
-        if (prefs != null) prefs.edit().putString(key, hash).putString(sigKey, sig).apply();
+        if (!isLibraryIndexReady() && prefs != null)
+            prefs.edit().putString("content_hash_" + file.getName(), hash).putString("content_hash_sig_" + file.getName(), sig).apply();
         updateBookHash(file, hash);
         return hash;
     }
@@ -217,6 +283,11 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         v.put("file_size", file.length()); v.put("modified_at", file.lastModified());
         if (hash != null && !hash.isEmpty()) v.put("content_hash", hash);
         if (prefs != null) {
+            String fallbackTitle = stripExtension(name);
+            String title = prefs.getString("library_title_" + name, fallbackTitle);
+            String author = prefs.getString("library_author_" + name, "");
+            v.put("title", title == null || title.trim().isEmpty() ? fallbackTitle : title.trim());
+            v.put("author", author == null ? "" : author.trim());
             v.put("added_at", prefs.getLong("added_at_" + name, 0L));
             v.put("last_opened_at", prefs.getLong("last_opened_" + name, 0L));
             v.put("progress", ReadingProgressStore.get(prefs, name));
@@ -227,6 +298,205 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         }
         v.put("updated_at", System.currentTimeMillis());
         db.insertWithOnConflict("books", null, v, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    boolean isLibraryIndexReady() {
+        if (!isLegacyMigrated()) return false;
+        Cursor c = null;
+        try {
+            c = getReadableDatabase().rawQuery("SELECT v FROM meta WHERE k=?", new String[]{META_V2_MIGRATED});
+            return c.moveToFirst() && "1".equals(c.getString(0));
+        } catch (Exception ignored) { return false; }
+        finally { if (c != null) c.close(); }
+    }
+
+    private void migrateV2Async(SharedPreferences prefs) {
+        if (prefs == null || isLibraryIndexReady()) return;
+        WRITER.execute(() -> {
+            if (!isLegacyMigrated() || isLibraryIndexReady()) return;
+            SQLiteDatabase sql = getWritableDatabase();
+            sql.beginTransaction();
+            Cursor c = null;
+            try {
+                c = sql.rawQuery("SELECT file_name FROM books", null);
+                while (c.moveToNext()) {
+                    String name = c.getString(0);
+                    String fallback = stripExtension(name);
+                    String title = prefs.getString("library_title_" + name, fallback);
+                    String author = prefs.getString("library_author_" + name, "");
+                    ContentValues v = new ContentValues();
+                    v.put("title", title == null || title.trim().isEmpty() ? fallback : title.trim());
+                    v.put("author", author == null ? "" : author.trim());
+                    sql.update("books", v, "file_name=?", new String[]{name});
+                }
+                if (c != null) { c.close(); c = null; }
+                JSONObject shelves = object(prefs.getString("library_shelves_json", "{}"));
+                Iterator<String> keys = shelves.keys();
+                while (keys.hasNext()) {
+                    String shelf = keys.next();
+                    ContentValues sv = new ContentValues(); sv.put("name", shelf); sv.put("updated_at", System.currentTimeMillis());
+                    sql.insertWithOnConflict("shelves", null, sv, SQLiteDatabase.CONFLICT_IGNORE);
+                    org.json.JSONArray books = shelves.optJSONArray(shelf);
+                    if (books == null) continue;
+                    for (int i = 0; i < books.length(); i++) {
+                        String fileName = books.optString(i, ""); if (fileName.isEmpty()) continue;
+                        ContentValues bv = new ContentValues(); bv.put("shelf_name", shelf); bv.put("file_name", fileName); bv.put("added_at", 0L);
+                        sql.insertWithOnConflict("shelf_books", null, bv, SQLiteDatabase.CONFLICT_IGNORE);
+                    }
+                }
+                ContentValues marker = new ContentValues(); marker.put("k", META_V2_MIGRATED); marker.put("v", "1");
+                sql.insertWithOnConflict("meta", null, marker, SQLiteDatabase.CONFLICT_REPLACE);
+                sql.setTransactionSuccessful();
+            } catch (Exception ignored) {
+            } finally {
+                if (c != null) c.close();
+                sql.endTransaction();
+            }
+        });
+    }
+
+    private void migrateHomeIndexAsync(SharedPreferences prefs) {
+        if (prefs == null) return;
+        WRITER.execute(() -> {
+            Cursor marker=null;
+            try { marker=getReadableDatabase().rawQuery("SELECT v FROM meta WHERE k=?",new String[]{META_HOME_INDEXED}); if(marker.moveToFirst()&&"1".equals(marker.getString(0)))return; }
+            catch(Exception ignored) {} finally { if(marker!=null)marker.close(); }
+            if(!isLibraryIndexReady())return;
+            SQLiteDatabase sql=getWritableDatabase(); sql.beginTransaction(); Cursor c=null;
+            try {
+                c=sql.rawQuery("SELECT file_name FROM books",null);
+                while(c.moveToNext()) {
+                    String name=c.getString(0); ContentValues v=new ContentValues();
+                    v.put("annotation_count",ReaderAnnotationStore.count(prefs,name));
+                    sql.update("books",v,"file_name=?",new String[]{name});
+                }
+                ContentValues m=new ContentValues();m.put("k",META_HOME_INDEXED);m.put("v","1");
+                sql.insertWithOnConflict("meta",null,m,SQLiteDatabase.CONFLICT_REPLACE);sql.setTransactionSuccessful();
+            } catch(Exception ignored) {} finally { if(c!=null)c.close();sql.endTransaction(); }
+        });
+    }
+
+    static final class LibraryBookRow {
+        final String fileName, filePath, title, author;
+        final int progress;
+        final long addedAt, lastOpenedAt;
+        LibraryBookRow(Cursor c) {
+            fileName = c.getString(0); filePath = c.getString(1); title = c.getString(2); author = c.getString(3);
+            progress = c.getInt(4); addedAt = c.getLong(5); lastOpenedAt = c.getLong(6);
+        }
+        File asFile() { return new File(filePath); }
+    }
+
+    int countLibraryBooks(LibraryQuerySpec spec) {
+        if (spec == null) spec = new LibraryQuerySpec("", "", "all", "", "added");
+        return (int)Math.min(Integer.MAX_VALUE, scalarLong("SELECT COUNT(*) FROM books WHERE " + spec.whereSql(), spec.args()));
+    }
+
+    List<LibraryBookRow> pageLibraryBooks(LibraryQuerySpec spec, int offset, int limit) {
+        if (spec == null) spec = new LibraryQuerySpec("", "", "all", "", "added");
+        int o = Math.max(0, offset), n = Math.max(1, Math.min(250, limit));
+        List<LibraryBookRow> out = new ArrayList<>(); Cursor c = null;
+        try {
+            String sql = "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE " +
+                    spec.whereSql() + " ORDER BY " + spec.orderSql() + " LIMIT " + n + " OFFSET " + o;
+            c = getReadableDatabase().rawQuery(sql, spec.args());
+            while (c.moveToNext()) out.add(new LibraryBookRow(c));
+        } catch (Exception ignored) {} finally { if (c != null) c.close(); }
+        return out;
+    }
+
+    String indexedTitle(String fileName, String fallback) {
+        String v = scalarString("SELECT title FROM books WHERE file_name=?", new String[]{fileName});
+        return v.isEmpty() ? fallback : v;
+    }
+    String indexedAuthor(String fileName) { return scalarString("SELECT author FROM books WHERE file_name=?", new String[]{fileName}); }
+
+    static final class PendingSyncRow {
+        final String fileName, filePath, format, hash, remoteId, sessionUrl;
+        final long offset;
+        PendingSyncRow(Cursor c) {
+            fileName=c.getString(0); filePath=c.getString(1); format=c.getString(2); hash=c.getString(3);
+            remoteId=c.getString(4); sessionUrl=c.getString(5); offset=c.getLong(6);
+        }
+        File file() { return new File(filePath); }
+    }
+    static final class TombstoneRow {
+        final String hash, fileName, remoteId;
+        TombstoneRow(Cursor c) { hash=c.getString(0); fileName=c.getString(1); remoteId=c.getString(2); }
+    }
+
+    List<PendingSyncRow> pendingBookUploads(int limit) {
+        int n=Math.max(1,Math.min(100,limit)); List<PendingSyncRow> out=new ArrayList<>(); Cursor c=null;
+        try {
+            c=getReadableDatabase().rawQuery("SELECT file_name,file_path,format,content_hash,remote_file_id,upload_session_url,upload_offset FROM books WHERE sync_dirty=1 ORDER BY updated_at ASC LIMIT "+n,null);
+            while(c.moveToNext()) out.add(new PendingSyncRow(c));
+        } catch(Exception ignored) {} finally { if(c!=null)c.close(); }
+        return out;
+    }
+    int pendingBookUploadCount() { return (int)Math.min(Integer.MAX_VALUE, scalarLong("SELECT COUNT(*) FROM books WHERE sync_dirty=1",null)); }
+    List<TombstoneRow> pendingTombstones(int limit) {
+        int n=Math.max(1,Math.min(100,limit)); List<TombstoneRow> out=new ArrayList<>(); Cursor c=null;
+        try { c=getReadableDatabase().rawQuery("SELECT content_hash,file_name,remote_file_id FROM book_tombstones WHERE sync_dirty=1 ORDER BY deleted_at ASC LIMIT "+n,null); while(c.moveToNext())out.add(new TombstoneRow(c)); }
+        catch(Exception ignored) {} finally { if(c!=null)c.close(); } return out;
+    }
+    int pendingTombstoneCount() { return (int)Math.min(Integer.MAX_VALUE, scalarLong("SELECT COUNT(*) FROM book_tombstones WHERE sync_dirty=1",null)); }
+    void saveUploadCheckpoint(String fileName,String session,long offset) {
+        ContentValues v=new ContentValues(); v.put("upload_session_url",session==null?"":session); v.put("upload_offset",Math.max(0L,offset));
+        getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});
+    }
+    void markBookSynced(String fileName,String remoteId,String modifiedTime) {
+        ContentValues v=new ContentValues(); v.put("remote_file_id",remoteId==null?"":remoteId); v.put("remote_modified_time",modifiedTime==null?"":modifiedTime);
+        v.put("sync_dirty",0); v.put("upload_session_url",""); v.put("upload_offset",0L);
+        getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});
+    }
+    void markTombstoneSynced(String hash) { if(hash!=null&&!hash.isEmpty())getWritableDatabase().delete("book_tombstones","content_hash=?",new String[]{hash}); }
+
+    List<LibraryBookRow> recentBooks(int limit, boolean readingOnly) {
+        int n=Math.max(1,Math.min(20,limit));List<LibraryBookRow> out=new ArrayList<>();Cursor c=null;
+        try {String where=readingOnly?"progress>0 AND progress<100":"1=1";c=getReadableDatabase().rawQuery(
+                "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE "+where+" ORDER BY last_opened_at DESC,added_at DESC LIMIT "+n,null);
+            while(c.moveToNext())out.add(new LibraryBookRow(c));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;
+    }
+    int totalAnnotationCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COALESCE(SUM(annotation_count),0) FROM books",null));}
+    void updateAnnotationCount(String fileName,int count){if(fileName==null)return;ContentValues v=new ContentValues();v.put("annotation_count",Math.max(0,count));getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
+    List<LibraryBookRow> annotatedBooks(int limit){int n=Math.max(1,Math.min(500,limit));List<LibraryBookRow> out=new ArrayList<>();Cursor c=null;try{c=getReadableDatabase().rawQuery(
+            "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE annotation_count>0 ORDER BY last_opened_at DESC,updated_at DESC LIMIT "+n,null);while(c.moveToNext())out.add(new LibraryBookRow(c));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
+    static final class AuthorCount{final String author;final int count;AuthorCount(String a,int c){author=a;count=c;}}
+    List<AuthorCount> authors(int limit){int n=Math.max(1,Math.min(1000,limit));List<AuthorCount> out=new ArrayList<>();Cursor c=null;try{c=getReadableDatabase().rawQuery(
+            "SELECT author,COUNT(*) FROM books WHERE author<>'' GROUP BY author ORDER BY author COLLATE NOCASE ASC LIMIT "+n,null);while(c.moveToNext())out.add(new AuthorCount(c.getString(0),c.getInt(1)));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
+    int totalAuthorCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(DISTINCT author) FROM books WHERE author<>''",null));}
+    int totalBookCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(*) FROM books",null));}
+
+    List<String> shelfNames(){List<String> out=new ArrayList<>();Cursor c=null;try{c=getReadableDatabase().rawQuery("SELECT name FROM shelves ORDER BY name COLLATE NOCASE ASC",null);while(c.moveToNext())out.add(c.getString(0));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
+    boolean createShelfRow(String name){if(name==null||name.trim().isEmpty())return false;ContentValues v=new ContentValues();v.put("name",name.trim());v.put("updated_at",System.currentTimeMillis());return getWritableDatabase().insertWithOnConflict("shelves",null,v,SQLiteDatabase.CONFLICT_IGNORE)!=-1;}
+    boolean renameShelfRow(String oldName,String newName){if(oldName==null||newName==null||newName.trim().isEmpty())return false;SQLiteDatabase sql=getWritableDatabase();sql.beginTransaction();try{ContentValues nv=new ContentValues();nv.put("name",newName.trim());nv.put("updated_at",System.currentTimeMillis());if(sql.insertWithOnConflict("shelves",null,nv,SQLiteDatabase.CONFLICT_IGNORE)==-1)return false;sql.execSQL("INSERT OR IGNORE INTO shelf_books(shelf_name,file_name,added_at) SELECT ?,file_name,added_at FROM shelf_books WHERE shelf_name=?",new Object[]{newName.trim(),oldName});sql.delete("shelf_books","shelf_name=?",new String[]{oldName});sql.delete("shelves","name=?",new String[]{oldName});sql.setTransactionSuccessful();return true;}catch(Exception e){return false;}finally{sql.endTransaction();}}
+    boolean deleteShelfRow(String name){if(name==null)return false;SQLiteDatabase sql=getWritableDatabase();sql.beginTransaction();try{sql.delete("shelf_books","shelf_name=?",new String[]{name});int n=sql.delete("shelves","name=?",new String[]{name});sql.setTransactionSuccessful();return n>0;}finally{sql.endTransaction();}}
+    boolean shelfContains(String shelf,String fileName){return shelf!=null&&fileName!=null&&scalarLong("SELECT COUNT(*) FROM shelf_books WHERE shelf_name=? AND file_name=?",new String[]{shelf,fileName})>0;}
+    int shelfBookCount(String shelf){return shelf==null?0:(int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(*) FROM shelf_books WHERE shelf_name=?",new String[]{shelf}));}
+    void setShelfMembershipRow(String shelf,String fileName,boolean included){if(shelf==null||fileName==null)return;createShelfRow(shelf);SQLiteDatabase sql=getWritableDatabase();if(included){ContentValues v=new ContentValues();v.put("shelf_name",shelf);v.put("file_name",fileName);v.put("added_at",System.currentTimeMillis());sql.insertWithOnConflict("shelf_books",null,v,SQLiteDatabase.CONFLICT_IGNORE);}else sql.delete("shelf_books","shelf_name=? AND file_name=?",new String[]{shelf,fileName});}
+    void removeBookFromShelves(String fileName){if(fileName!=null)getWritableDatabase().delete("shelf_books","file_name=?",new String[]{fileName});}
+
+    String contentHash(String fileName){return scalarString("SELECT content_hash FROM books WHERE file_name=?",new String[]{fileName});}
+    String customCoverPath(String fileName){return scalarString("SELECT custom_cover_path FROM books WHERE file_name=?",new String[]{fileName});}
+    String coverScope(String fileName){String s=scalarString("SELECT cover_scope FROM books WHERE file_name=?",new String[]{fileName});return "everywhere".equals(s)?"everywhere":"library_only";}
+    void updateBookMetadata(String fileName,String title,String author){if(fileName==null)return;ContentValues v=new ContentValues();v.put("title",title==null||title.trim().isEmpty()?stripExtension(fileName):title.trim());v.put("author",author==null?"":author.trim());v.put("updated_at",System.currentTimeMillis());getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
+    void updateCustomCover(String fileName,String path,String scope){if(fileName==null)return;ContentValues v=new ContentValues();v.put("custom_cover_path",path==null?"":path);v.put("cover_scope","everywhere".equals(scope)?"everywhere":"library_only");v.put("cover_updated_at",System.currentTimeMillis());v.put("cover_sync_dirty",1);v.put("cover_upload_session_url","");v.put("cover_upload_offset",0L);getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
+    void setCoverScope(String fileName,String scope){if(fileName==null)return;ContentValues v=new ContentValues();v.put("cover_scope","everywhere".equals(scope)?"everywhere":"library_only");v.put("cover_updated_at",System.currentTimeMillis());if(!customCoverPath(fileName).isEmpty())v.put("cover_sync_dirty",1);getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
+    void clearCustomCover(String fileName){updateCustomCover(fileName,"","library_only");}
+    static final class PendingCoverRow{final String fileName,filePath,hash,coverPath,remoteId,session;final long offset;PendingCoverRow(Cursor c){fileName=c.getString(0);filePath=c.getString(1);hash=c.getString(2);coverPath=c.getString(3);remoteId=c.getString(4);session=c.getString(5);offset=c.getLong(6);}}
+    List<PendingCoverRow> pendingCoverUploads(int limit){int n=Math.max(1,Math.min(100,limit));List<PendingCoverRow> out=new ArrayList<>();Cursor c=null;try{c=getReadableDatabase().rawQuery("SELECT file_name,file_path,content_hash,custom_cover_path,remote_cover_file_id,cover_upload_session_url,cover_upload_offset FROM books WHERE cover_sync_dirty=1 ORDER BY cover_updated_at ASC LIMIT "+n,null);while(c.moveToNext())out.add(new PendingCoverRow(c));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
+    int pendingCoverUploadCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(*) FROM books WHERE cover_sync_dirty=1",null));}
+    void saveCoverUploadCheckpoint(String fileName,String session,long offset){ContentValues v=new ContentValues();v.put("cover_upload_session_url",session==null?"":session);v.put("cover_upload_offset",Math.max(0L,offset));getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
+    void markCoverSynced(String fileName,String remoteId){ContentValues v=new ContentValues();v.put("remote_cover_file_id",remoteId==null?"":remoteId);v.put("cover_sync_dirty",0);v.put("cover_upload_session_url","");v.put("cover_upload_offset",0L);getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
+
+    void upsertImportedBook(File file,String hash,String title,String author,long addedAt) {
+        if(file==null||!file.isFile())return;
+        SQLiteDatabase sql=getWritableDatabase();ContentValues v=new ContentValues();String name=file.getName();
+        v.put("file_name",name);v.put("file_path",file.getAbsolutePath());v.put("format",name.toLowerCase(Locale.ROOT).endsWith(".pdf")?"pdf":"epub");
+        v.put("title",title==null||title.trim().isEmpty()?stripExtension(name):title.trim());v.put("author",author==null?"":author.trim());
+        if(hash!=null&&!hash.isEmpty())v.put("content_hash",hash);v.put("file_size",file.length());v.put("modified_at",file.lastModified());v.put("added_at",Math.max(0L,addedAt));
+        v.put("sync_dirty",1);v.put("updated_at",System.currentTimeMillis());
+        sql.insertWithOnConflict("books",null,v,SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     private void updateBookHash(File file, String hash) {
@@ -275,11 +545,24 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     void removeBook(String fileName) {
         if (fileName == null) return;
         WRITER.execute(() -> {
-            SQLiteDatabase db = getWritableDatabase();
-            db.delete("books", "file_name=?", new String[]{fileName});
+            SQLiteDatabase sql = getWritableDatabase();
+            Cursor c = null;
+            try {
+                c=sql.rawQuery("SELECT content_hash,remote_file_id FROM books WHERE file_name=? LIMIT 1",new String[]{fileName});
+                if(c.moveToFirst()) {
+                    String hash=c.getString(0), remote=c.getString(1);
+                    if(hash!=null&&!hash.isEmpty()) {
+                        ContentValues t=new ContentValues(); t.put("content_hash",hash); t.put("file_name",fileName); t.put("remote_file_id",remote==null?"":remote);
+                        t.put("deleted_at",System.currentTimeMillis()); t.put("sync_dirty",1);
+                        sql.insertWithOnConflict("book_tombstones",null,t,SQLiteDatabase.CONFLICT_REPLACE);
+                    }
+                }
+            } catch(Exception ignored) {} finally { if(c!=null)c.close(); }
+            sql.delete("books", "file_name=?", new String[]{fileName});
             // Keep book_day history so Reading Calendar remains historical after a local book is removed.
         });
     }
+
 
 
     RangeSummary summarizeRange(long startMs, long endMs) {
@@ -495,6 +778,10 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         catch (Exception ignored) { return ""; } finally { if (c != null) c.close(); }
     }
 
+    private static String stripExtension(String name) {
+        int dot = name == null ? -1 : name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : (name == null ? "Book" : name);
+    }
     private static boolean isBook(String name) {
         String s = name == null ? "" : name.toLowerCase(Locale.ROOT); return s.endsWith(".epub") || s.endsWith(".pdf");
     }

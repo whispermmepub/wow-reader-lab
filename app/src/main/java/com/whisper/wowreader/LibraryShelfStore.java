@@ -14,8 +14,10 @@ import java.util.List;
 public final class LibraryShelfStore {
     private LibraryShelfStore() {}
     private static final String KEY = "library_shelves_json";
+    private static ReaderStateDb db(){ReaderStateDb d=ReaderStateDb.peek();return d!=null&&d.isLibraryIndexReady()?d:null;}
 
     public static List<String> shelves(SharedPreferences prefs) {
+        ReaderStateDb d=db(); if(d!=null)return d.shelfNames();
         List<String> result = new ArrayList<>();
         if (prefs == null) return result;
         JSONObject root = object(prefs.getString(KEY, "{}"));
@@ -31,6 +33,7 @@ public final class LibraryShelfStore {
     public static boolean createShelf(SharedPreferences prefs, String shelfName) {
         if (prefs == null) return false;
         String name = cleanName(shelfName);
+        ReaderStateDb d=db();if(d!=null)return d.createShelfRow(name);
         if (name.isEmpty()) return false;
         try {
             JSONObject root = object(prefs.getString(KEY, "{}"));
@@ -45,6 +48,7 @@ public final class LibraryShelfStore {
         String oldName = cleanName(oldShelfName);
         String newName = cleanName(newShelfName);
         if (oldName.isEmpty() || newName.isEmpty()) return false;
+        ReaderStateDb d=db();if(d!=null)return d.renameShelfRow(oldName,newName);
         if (oldName.equals(newName)) return true;
         try {
             JSONObject root = object(prefs.getString(KEY, "{}"));
@@ -61,6 +65,7 @@ public final class LibraryShelfStore {
         if (prefs == null) return false;
         String name = cleanName(shelfName);
         if (name.isEmpty()) return false;
+        ReaderStateDb d=db();if(d!=null)return d.deleteShelfRow(name);
         try {
             JSONObject root = object(prefs.getString(KEY, "{}"));
             if (!root.has(name)) return false;
@@ -74,6 +79,7 @@ public final class LibraryShelfStore {
         if (prefs == null || bookName == null) return false;
         String name = cleanName(shelfName);
         if (name.isEmpty()) return false;
+        ReaderStateDb d=db();if(d!=null)return d.shelfContains(name,bookName);
         JSONObject root = object(prefs.getString(KEY, "{}"));
         JSONArray books = root.optJSONArray(name);
         if (books == null) return false;
@@ -85,6 +91,7 @@ public final class LibraryShelfStore {
         if (prefs == null || bookName == null || bookName.trim().isEmpty()) return;
         String name = cleanName(shelfName);
         if (name.isEmpty()) return;
+        ReaderStateDb d=db();if(d!=null){d.setShelfMembershipRow(name,bookName,included);prefs.edit().putLong("sync_updated_ms",System.currentTimeMillis()).apply();return;}
         try {
             JSONObject root = object(prefs.getString(KEY, "{}"));
             JSONArray old = root.optJSONArray(name);
@@ -107,6 +114,7 @@ public final class LibraryShelfStore {
 
     public static int count(SharedPreferences prefs, String shelfName) {
         if (prefs == null) return 0;
+        ReaderStateDb d=db();if(d!=null)return d.shelfBookCount(cleanName(shelfName));
         JSONObject root = object(prefs.getString(KEY, "{}"));
         JSONArray books = root.optJSONArray(cleanName(shelfName));
         return books == null ? 0 : books.length();
@@ -114,6 +122,7 @@ public final class LibraryShelfStore {
 
     public static void removeBookFromAll(SharedPreferences prefs, String bookName) {
         if (prefs == null || bookName == null) return;
+        ReaderStateDb d=db();if(d!=null){d.removeBookFromShelves(bookName);return;}
         try {
             JSONObject root = object(prefs.getString(KEY, "{}"));
             Iterator<String> keys = root.keys();

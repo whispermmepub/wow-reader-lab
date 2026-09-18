@@ -103,6 +103,12 @@ public class BookReaderActivity extends Activity {
 
     private WebView webView;
     private ReaderWebView preloadWebView;
+    private ReaderWebView wholeBookCounterWebView;
+    private final WholeBookPageModel wholeBookPageModel = new WholeBookPageModel();
+    private int wholeBookCounterSpine = 0;
+    private int wholeBookCounterToken = 0;
+    private boolean wholeBookCounterRunning = false;
+    private String wholeBookLayoutFingerprint = "";
     private FrameLayout epubWebContent;
     private View.OnTouchListener readerTouchListener;
     private ScaleGestureDetector epubFontScaleDetector;
@@ -1460,6 +1466,22 @@ public class BookReaderActivity extends Activity {
             webView.bringToFront();
         }
 
+        wholeBookCounterWebView = createPreloadWebView();
+        if (wholeBookCounterWebView != null) {
+            wholeBookCounterWebView.setEnabled(false);
+            wholeBookCounterWebView.setVisibility(View.INVISIBLE);
+            wholeBookCounterWebView.addJavascriptInterface(new WholeBookCounterBridge(), "WoWPageCounter");
+            wholeBookCounterWebView.setWebViewClient(new WebViewClient() {
+                @Override public void onPageFinished(WebView view, String url) {
+                    super.onPageFinished(view, url);
+                    if (view == wholeBookCounterWebView) measureWholeBookCounterChapter();
+                }
+            });
+            content.addView(wholeBookCounterWebView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            webView.bringToFront();
+        }
+
         chapterTransitionOverlay = new ImageView(this);
         // PixelCopy captures the exact WebView viewport. Map that bitmap 1:1 to the
         // same MATCH_PARENT bounds; never crop/zoom the outgoing chapter frame.
@@ -2523,6 +2545,10 @@ public class BookReaderActivity extends Activity {
                     chapterTitles.clear();
                     chapterTitles.addAll(info.chapterTitles);
                     epubProgressModel = progressModel;
+                    wholeBookPageModel.reset(info.spine.size());
+                    wholeBookLayoutFingerprint = "";
+                    wholeBookCounterRunning = false;
+                    wholeBookCounterToken++;
                     tocSpineIndices.clear();
                     tocSpineIndices.addAll(info.tocSpineIndices);
                     tocTitles.clear();
@@ -5230,8 +5256,16 @@ public class BookReaderActivity extends Activity {
                 ? chapterTitles.get(currentSpine)
                 : "Chapter " + (currentSpine + 1);
 
+        String pageLabel = null;
+        if ("page".equals(readingMode)) {
+            wholeBookPageModel.setChapterCount(currentSpine, pageCountInChapter);
+            int wholePage = wholeBookPageModel.wholePageIfKnown(currentSpine, currentPageInChapter);
+            int wholeTotal = wholeBookPageModel.totalPagesIfComplete();
+            if (wholePage > 0) pageLabel = "Page " + wholePage + " / " + (wholeTotal > 0 ? String.valueOf(wholeTotal) : "…");
+            else pageLabel = "Page " + currentPageInChapter + " / …";
+        }
         String base = "page".equals(readingMode)
-                ? "Page " + currentPageInChapter + " / " + pageCountInChapter + " · " + percent + "%"
+                ? pageLabel + " · " + percent + "%"
                 : chapter + " · " + percent + "%";
         updatePositionDisplay(base, currentProgressPermille / 1000.0, overall);
         if (readingSeek != null && !readingSeekDragging)
@@ -5239,9 +5273,99 @@ public class BookReaderActivity extends Activity {
         if (!footnoteNavigationActive && !footnoteReturnPending && !searchNavigationActive) ReadingProgressStore.set(prefs, bookFile.getName(), percent);
     }
 
+    private String wholeBookPageFingerprint() {
+        int w = webView == null ? 0 : webView.getWidth();
+        int h = webView == null ? 0 : webView.getHeight();
+        return w + "x" + h + "|" + fontPercent + "|" + fontWeight + "|" +
+                String.valueOf(fontChoice) + "|" + lineSpacing + "|" + marginPercent + "|" +
+                String.valueOf(textAlignment) + "|" + autoSpacingAdjustment;
+    }
+
+    private void ensureWholeBookPageScan() {
+        if (isPdf || !"page".equals(readingMode) || spine.isEmpty() || wholeBookCounterWebView == null || isFinishing()) return;
+        String fingerprint = wholeBookPageFingerprint();
+        if (!fingerprint.equals(wholeBookLayoutFingerprint) || wholeBookPageModel.chapterCount() != spine.size()) {
+            wholeBookLayoutFingerprint = fingerprint;
+            wholeBookPageModel.reset(spine.size());
+            wholeBookPageModel.setChapterCount(currentSpine, pageCountInChapter);
+            wholeBookCounterToken++;
+            wholeBookCounterSpine = 0;
+            wholeBookCounterRunning = false;
+            try { wholeBookCounterWebView.stopLoading(); } catch (Exception ignored) {}
+        }
+        if (wholeBookPageModel.isComplete() || wholeBookCounterRunning) return;
+        wholeBookCounterRunning = true;
+        loadNextWholeBookCounterChapter(wholeBookCounterToken);
+    }
+
+    private void loadNextWholeBookCounterChapter(int token) {
+        if (token != wholeBookCounterToken || wholeBookCounterWebView == null || isFinishing()) { wholeBookCounterRunning=false; return; }
+        if (wholeBookPageModel.isComplete() || wholeBookCounterSpine >= spine.size()) { wholeBookCounterRunning=false; updateEpubProgress(currentProgressPermille); return; }
+        final int target = wholeBookCounterSpine;
+        // Skip the current chapter when its live rendered count is already known.
+        if (target == currentSpine && pageCountInChapter > 0) {
+            wholeBookPageModel.setChapterCount(target,pageCountInChapter); wholeBookCounterSpine++; loadNextWholeBookCounterChapter(token); return;
+        }
+        try {
+            wholeBookCounterWebView.getSettings().setTextZoom(Math.max(80,Math.min(300,fontPercent)));
+            wholeBookCounterWebView.loadUrl(Uri.fromFile(spine.get(target)).toString());
+        } catch (Exception e) {
+            wholeBookPageModel.setChapterCount(target,1); wholeBookCounterSpine++; loadNextWholeBookCounterChapter(token);
+        }
+    }
+
+    private String wholeBookCounterFamilyCss() {
+        if (fontChoice == null || "publisher".equals(fontChoice)) return "";
+        File file = null;
+        if (fontChoice.startsWith("custom:")) file = ReaderFontStore.fileForChoice(this,fontChoice);
+        if (file != null) {
+            String u=Uri.fromFile(file).toString().replace("'","%27");
+            return "@font-face{font-family:'WoWCountFont';src:url('"+u+"');font-display:block;}body,body *{font-family:'WoWCountFont',sans-serif !important;}";
+        }
+        String asset="";
+        if("pyidaungsu".equals(fontChoice))asset="pyidaungsu.woff2";else if("yoeshin".equals(fontChoice))asset="yoeshin.woff2";else if("burma2".equals(fontChoice))asset="burma2.woff2";else if("burma001".equals(fontChoice))asset="burma001.ttf";else if("pupu".equals(fontChoice))asset="m01_pupu_bold.ttf";else if("ayar".equals(fontChoice))asset="myanmar_ayar_typewriter.ttf";else if("phantee".equals(fontChoice))asset="phantee_hand_written.ttf";
+        if(asset.isEmpty())return "";
+        return "@font-face{font-family:'WoWCountFont';src:url('file:///android_asset/fonts/"+asset+"');font-display:block;}body,body *{font-family:'WoWCountFont',sans-serif !important;}";
+    }
+
+    private void measureWholeBookCounterChapter() {
+        if (!wholeBookCounterRunning || wholeBookCounterWebView == null || wholeBookCounterSpine < 0 || wholeBookCounterSpine >= spine.size()) return;
+        final int token=wholeBookCounterToken, index=wholeBookCounterSpine;
+        int safeMargin=Math.max(1,Math.min(14,marginPercent)); int adaptiveMargin=adaptiveReaderMarginCssPx(safeMargin);
+        double line=lineSpacing/100.0; String family=wholeBookCounterFamilyCss();
+        String align="right".equals(textAlignment)?"right":("left".equals(textAlignment)?"left":"justify");
+        String css="html,body{height:100% !important;width:100% !important;margin:0 !important;padding:0 !important;overflow:hidden !important;}"+
+                "body{font-size:100% !important;font-weight:"+fontWeight+" !important;line-height:"+line+" !important;max-width:none !important;}"+
+                "#wow-count-vp{position:absolute !important;left:0 !important;top:0 !important;width:100vw !important;height:100vh !important;overflow:hidden !important;}"+
+                "#wow-count-flow{position:absolute !important;left:0 !important;top:0 !important;height:100vh !important;margin:0 !important;padding:4.2vh 0 5.2vh 0 !important;box-sizing:border-box !important;overflow:visible !important;column-fill:auto !important;}"+
+                "#wow-count-flow p,#wow-count-flow li,#wow-count-flow blockquote,#wow-count-flow dd,#wow-count-flow dt{text-align:"+align+" !important;box-sizing:border-box !important;max-width:100% !important;}"+
+                "#wow-count-flow img,#wow-count-flow svg,#wow-count-flow video,#wow-count-flow table{max-width:100% !important;height:auto !important;}"+family;
+        String js="(function(){try{"+
+                "var s=document.getElementById('wow-count-style');if(!s){s=document.createElement('style');s.id='wow-count-style';document.head.appendChild(s);}s.innerHTML="+jsQuote(css)+";"+
+                "var vp=document.getElementById('wow-count-vp'),flow=document.getElementById('wow-count-flow');if(!vp){vp=document.createElement('div');vp.id='wow-count-vp';if(!flow){flow=document.createElement('div');flow.id='wow-count-flow';while(document.body.firstChild)flow.appendChild(document.body.firstChild);}vp.appendChild(flow);document.body.appendChild(vp);}"+
+                "var w=Math.max(1,vp.clientWidth||window.innerWidth),m=Math.max(0,Math.min(Math.round(w*"+(safeMargin/100.0)+"),"+adaptiveMargin+")),pw=Math.max(1,w-2*m),gap=Math.max(0,w-pw);flow.style.width=pw+'px';flow.style.minWidth=pw+'px';flow.style.columnWidth=pw+'px';flow.style.columnGap=gap+'px';flow.style.webkitColumnWidth=pw+'px';flow.style.webkitColumnGap=gap+'px';flow.style.transform='translate3d('+m+'px,0,0)';"+
+                "var baseW=pw,wraps=flow.querySelectorAll('div,section,article,main,p,blockquote,dd,dt');for(var x=0;x<wraps.length;x++){var n=wraps[x],t=(n.textContent||'').replace(/\\s+/g,' ').trim();if(t.length<120)continue;var r=n.getBoundingClientRect();if(r.width>0&&r.width<baseW*.90){n.style.setProperty('width','auto','important');n.style.setProperty('max-width','none','important');n.style.setProperty('margin-left','0','important');n.style.setProperty('margin-right','0','important');}}"+
+                "var used={},walker=document.createTreeWalker(flow,NodeFilter.SHOW_TEXT,null,false),node,range=document.createRange(),seen=0;var mark=function(r){if(!r||r.width<.35||r.height<.35)return;var a=Math.max(0,Math.floor((r.left-m+1)/w)),b=Math.max(a,Math.floor((r.right-m-1)/w));for(var k=a;k<=b;k++)used[k]=1;};"+
+                "requestAnimationFrame(function(){requestAnimationFrame(function(){while((node=walker.nextNode())&&seen<24000){var tx=(node.nodeValue||'').replace(/\\s+/g,'');if(!tx)continue;seen++;try{range.selectNodeContents(node);var rr=range.getClientRects();for(var j=0;j<rr.length;j++)mark(rr[j]);}catch(e){}}var media=flow.querySelectorAll('img,svg,video,audio,object,embed,table,math,canvas,hr');for(var i=0;i<media.length;i++)mark(media[i].getBoundingClientRect());var count=Math.max(1,Object.keys(used).length);WoWPageCounter.onCount("+token+","+index+",count);});});return true;}catch(e){WoWPageCounter.onCount("+token+","+index+",1);return false;}})()";
+        try { wholeBookCounterWebView.evaluateJavascript(js,null); }
+        catch(Exception e){ onWholeBookCounterCount(token,index,1); }
+    }
+
+    private final class WholeBookCounterBridge {
+        @JavascriptInterface public void onCount(int token,int index,int count){ runOnUiThread(() -> onWholeBookCounterCount(token,index,count)); }
+    }
+    private void onWholeBookCounterCount(int token,int index,int count){
+        if(token!=wholeBookCounterToken||index!=wholeBookCounterSpine)return;
+        wholeBookPageModel.setChapterCount(index,Math.max(1,count)); wholeBookCounterSpine++;
+        if(wholeBookPageModel.isComplete()) { wholeBookCounterRunning=false; updateEpubProgress(currentProgressPermille); }
+        else if(wholeBookCounterWebView!=null) wholeBookCounterWebView.postDelayed(() -> loadNextWholeBookCounterChapter(token),20L);
+    }
+
     private void updateEpubPageProgress(int page, int count, int p) {
         currentPageInChapter = Math.max(1, page);
         pageCountInChapter = Math.max(1, count);
+        wholeBookPageModel.setChapterCount(currentSpine, pageCountInChapter);
+        ensureWholeBookPageScan();
         int effectiveProgress = p;
         if (!spine.isEmpty() && currentSpine == spine.size() - 1 && currentPageInChapter >= pageCountInChapter)
             effectiveProgress = 1000;
@@ -6593,6 +6717,13 @@ public class BookReaderActivity extends Activity {
             try { preloadWebView.stopLoading(); } catch (Exception ignored) {}
             try { preloadWebView.destroy(); } catch (Exception ignored) {}
             preloadWebView = null;
+        }
+        if (wholeBookCounterWebView != null) {
+            try { wholeBookCounterWebView.removeJavascriptInterface("WoWPageCounter"); } catch (Exception ignored) {}
+            try { wholeBookCounterWebView.removeJavascriptInterface("WoW"); } catch (Exception ignored) {}
+            try { wholeBookCounterWebView.stopLoading(); } catch (Exception ignored) {}
+            try { wholeBookCounterWebView.destroy(); } catch (Exception ignored) {}
+            wholeBookCounterWebView = null;
         }
 
         if (pdfContinuousView != null) {

@@ -10,6 +10,7 @@ on:
       - 'build.gradle'
       - 'settings.gradle'
       - 'gradle.properties'
+      - 'tools/**'
       - '.github/workflows/lab-ci.yml'
   pull_request:
     paths:
@@ -46,5 +47,8 @@ jobs:
           test -s app/src/main/java/com/whisper/wowreader/BookReaderActivity.java
           test -s app/google-services.json
           git diff --check
+      - name: 100k contract tests
+        run: bash tools/run-contract-tests.sh
+
       - name: Compile and lint
         run: gradle :app:assembleDebug :app:lintDebug --stacktrace

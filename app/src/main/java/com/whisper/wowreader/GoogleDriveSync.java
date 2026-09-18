@@ -25,6 +25,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -179,6 +180,158 @@ final class GoogleDriveSync {
     }
 
     static void smartBackup(Activity activity, String token, File libraryDir, File fontsDir,
+                           SharedPreferences prefs, SyncCallback callback) {
+        if (prefs.getBoolean("google_use_legacy_zip_sync", false)) {
+            legacySmartBackup(activity, token, libraryDir, fontsDir, prefs, callback); return;
+        }
+        new Thread(() -> {
+            File stateArchive = null;
+            try {
+                ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+                if (!db.isLibraryIndexReady()) {
+                    prefs.edit().putLong("sync_updated_ms", System.currentTimeMillis()).apply();
+                    activity.runOnUiThread(() -> callback.onSuccess("Preparing library index for sync"));
+                    return;
+                }
+                int uploaded=0, deleted=0;
+                for (ReaderStateDb.PendingSyncRow row : db.pendingBookUploads(SyncBatchPolicy.BOOK_BATCH)) {
+                    File file=row.file();
+                    if(!file.isFile()) continue;
+                    syncOneBook(token, db, prefs, row, file);
+                    uploaded++;
+                }
+                for (ReaderStateDb.TombstoneRow row : db.pendingTombstones(SyncBatchPolicy.DELETE_BATCH)) {
+                    deleteOneBook(token, db, row); deleted++;
+                }
+                int coverSynced=0;
+                for (ReaderStateDb.PendingCoverRow row : db.pendingCoverUploads(SyncBatchPolicy.COVER_BATCH)) { syncOneCover(token,db,prefs,row); coverSynced++; }
+                int remainingBooks=db.pendingBookUploadCount();
+                int remainingDeletes=db.pendingTombstoneCount();
+                int remainingCovers=db.pendingCoverUploadCount();
+                boolean more=SyncBatchPolicy.hasMore(remainingBooks,remainingDeletes,remainingCovers);
+                if (!more) {
+                    stateArchive=buildStateBackup(activity,prefs);
+                    BackupInfo state=findFileInfo(token,STATE_BACKUP_NAME);
+                    if(state==null) createNamedZip(token,STATE_BACKUP_NAME,stateArchive);
+                    else updateNamedFile(token,state.id,"application/zip",stateArchive);
+                } else {
+                    // Force GoogleAutoSync to schedule the next small batch instead of considering the giant bootstrap finished.
+                    prefs.edit().putLong("sync_updated_ms",System.currentTimeMillis()).apply();
+                }
+                prefs.edit().putLong("google_last_backup_ms",System.currentTimeMillis()).apply();
+                final int u=uploaded,d=deleted,c=coverSynced,r=remainingBooks+remainingDeletes+remainingCovers;
+                activity.runOnUiThread(() -> callback.onSuccess(r>0 ?
+                        "Synced "+u+" books · "+c+" covers · "+r+" queued" : "Google Drive incremental sync is up to date"));
+            } catch(Exception e) {
+                String message=friendly(e); activity.runOnUiThread(() -> callback.onError(message));
+            } finally { if(stateArchive!=null)stateArchive.delete(); }
+        },"wow-google-incremental-sync").start();
+    }
+
+    private static void syncOneBook(String token, ReaderStateDb db, SharedPreferences prefs,
+                                    ReaderStateDb.PendingSyncRow row, File file) throws Exception {
+        String hash=row.hash;
+        if(hash==null||hash.isEmpty()) hash=db.ensureHash(file,prefs);
+        if(hash==null||hash.isEmpty()) throw new Exception("Unable to identify "+file.getName());
+        String objectName=DriveObjectNamer.bookName(hash,row.format);
+        BackupInfo remote=null;
+        if(row.remoteId!=null&&!row.remoteId.isEmpty()) { remote=new BackupInfo(); remote.id=row.remoteId; }
+        else remote=findFileInfo(token,objectName);
+        String session=row.sessionUrl;
+        long offset=Math.max(0L,row.offset);
+        if(session==null||session.isEmpty()) {
+            session=startResumable(token,objectName,file,hash,remote==null?"":remote.id);
+            offset=0L; db.saveUploadCheckpoint(row.fileName,session,0L);
+        }
+        BackupInfo done;
+        try { done=uploadResumable(token,file,session,offset,db,row.fileName); }
+        catch(ResumableExpiredException expired) {
+            session=startResumable(token,objectName,file,hash,remote==null?"":remote.id);
+            db.saveUploadCheckpoint(row.fileName,session,0L);
+            done=uploadResumable(token,file,session,0L,db,row.fileName);
+        }
+        String remoteId=done.id;
+        if((remoteId==null||remoteId.isEmpty())&&remote!=null)remoteId=remote.id;
+        db.markBookSynced(row.fileName,remoteId,done.modifiedTime);
+    }
+
+    private static void syncOneCover(String token,ReaderStateDb db,SharedPreferences prefs,ReaderStateDb.PendingCoverRow row)throws Exception{
+        String hash=row.hash;File book=new File(row.filePath);if((hash==null||hash.isEmpty())&&book.isFile())hash=db.ensureHash(book,prefs);if(hash==null||hash.isEmpty())throw new Exception("Unable to identify cover book");
+        if(row.coverPath==null||row.coverPath.isEmpty()){String id=row.remoteId;if((id==null||id.isEmpty())){BackupInfo i=findFileInfo(token,DriveObjectNamer.coverName(hash));if(i!=null)id=i.id;}if(id!=null&&!id.isEmpty())deleteRemoteFile(token,id);db.markCoverSynced(row.fileName,"");return;}
+        File cover=new File(row.coverPath);if(!cover.isFile())throw new Exception("Custom cover file is unavailable");String name=DriveObjectNamer.coverName(hash);BackupInfo remote=null;if(row.remoteId!=null&&!row.remoteId.isEmpty()){remote=new BackupInfo();remote.id=row.remoteId;}else remote=findFileInfo(token,name);
+        String session=row.session;long offset=Math.max(0,row.offset);if(session==null||session.isEmpty()){session=startResumable(token,name,cover,hash,remote==null?"":remote.id);offset=0;db.saveCoverUploadCheckpoint(row.fileName,session,0);}
+        BackupInfo done;try{done=uploadResumableCover(token,cover,session,offset,db,row.fileName);}catch(ResumableExpiredException x){session=startResumable(token,name,cover,hash,remote==null?"":remote.id);db.saveCoverUploadCheckpoint(row.fileName,session,0);done=uploadResumableCover(token,cover,session,0,db,row.fileName);}String id=done.id;if((id==null||id.isEmpty())&&remote!=null)id=remote.id;db.markCoverSynced(row.fileName,id);
+    }
+    private static BackupInfo uploadResumableCover(String token,File file,String session,long start,ReaderStateDb db,String fileName)throws Exception{
+        long total=file.length(),offset=Math.max(0,Math.min(start,total));try(RandomAccessFile raf=new RandomAccessFile(file,"r")){while(offset<total){int len=(int)Math.min((long)SyncBatchPolicy.CHUNK_BYTES,total-offset);long end=offset+len-1;HttpURLConnection c=open(session,"PUT",token);c.setDoOutput(true);c.setRequestProperty("Content-Type","image/jpeg");c.setRequestProperty("Content-Range","bytes "+offset+"-"+end+"/"+total);c.setFixedLengthStreamingMode(len);raf.seek(offset);byte[] b=new byte[64*1024];int remain=len;try(OutputStream out=new BufferedOutputStream(c.getOutputStream())){while(remain>0){int n=raf.read(b,0,Math.min(b.length,remain));if(n<0)throw new Exception("Unexpected end of cover file");out.write(b,0,n);remain-=n;}}int code=c.getResponseCode();if(code==404||code==410){c.disconnect();throw new ResumableExpiredException();}if(code==308){String range=c.getHeaderField("Range");c.disconnect();offset=parseNextOffset(range,end+1);db.saveCoverUploadCheckpoint(fileName,session,offset);continue;}if(code>=200&&code<300){byte[] data;try(InputStream in=c.getInputStream()){data=readAll(in);}finally{c.disconnect();}BackupInfo info=new BackupInfo();if(data.length>0){JSONObject o=new JSONObject(new String(data,StandardCharsets.UTF_8));info.id=o.optString("id","");info.modifiedTime=o.optString("modifiedTime","");}return info;}c.disconnect();throw new Exception("Google Drive cover upload error "+code);}}return new BackupInfo();
+    }
+    private static void deleteRemoteFile(String token,String id)throws Exception{HttpURLConnection c=open("https://www.googleapis.com/drive/v3/files/"+id,"DELETE",token);int code=c.getResponseCode();c.disconnect();if(code!=404&&code!=204&&!(code>=200&&code<300))throw new Exception("Google Drive delete error "+code);}
+    private static String mimeFor(File file){String n=file==null?"":file.getName().toLowerCase(java.util.Locale.ROOT);if(n.endsWith(".pdf"))return "application/pdf";if(n.endsWith(".jpg")||n.endsWith(".jpeg"))return "image/jpeg";if(n.endsWith(".png"))return "image/png";return "application/epub+zip";}
+
+    private static void deleteOneBook(String token, ReaderStateDb db, ReaderStateDb.TombstoneRow row) throws Exception {
+        String id=row.remoteId;
+        if((id==null||id.isEmpty())&&row.hash!=null&&!row.hash.isEmpty()) {
+            String format=row.fileName!=null&&row.fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".pdf")?"pdf":"epub";
+            BackupInfo info=findFileInfo(token,DriveObjectNamer.bookName(row.hash,format)); if(info!=null)id=info.id;
+        }
+        if(id!=null&&!id.isEmpty()) {
+            HttpURLConnection c=open("https://www.googleapis.com/drive/v3/files/"+id,"DELETE",token);
+            int code=c.getResponseCode(); c.disconnect();
+            if(code!=404&&code!=204&&!(code>=200&&code<300)) throw new Exception("Google Drive delete error "+code);
+        }
+        db.markTombstoneSynced(row.hash);
+    }
+
+    private static String startResumable(String token,String name,File file,String hash,String remoteId) throws Exception {
+        boolean updating=remoteId!=null&&!remoteId.isEmpty();
+        String url=updating ? "https://www.googleapis.com/upload/drive/v3/files/"+remoteId+"?uploadType=resumable&fields=id,modifiedTime" :
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,modifiedTime";
+        HttpURLConnection c=open(url,"POST",token);
+        if(updating)c.setRequestProperty("X-HTTP-Method-Override","PATCH");
+        c.setRequestProperty("Content-Type","application/json; charset=UTF-8");
+        c.setRequestProperty("X-Upload-Content-Type", mimeFor(file));
+        c.setRequestProperty("X-Upload-Content-Length",Long.toString(file.length())); c.setDoOutput(true);
+        JSONObject meta=new JSONObject(); meta.put("name",name);
+        if(!updating){JSONArray parents=new JSONArray();parents.put("appDataFolder");meta.put("parents",parents);}
+        // No Drive properties/appProperties here. The SHA-256 identity is encoded in the object name.
+        byte[] body=meta.toString().getBytes(StandardCharsets.UTF_8); c.setFixedLengthStreamingMode(body.length);
+        try(OutputStream out=c.getOutputStream()){out.write(body);}
+        try { ensureSuccess(c); }
+        catch (Exception e) { c.disconnect(); throw new Exception("Google Drive resumable-session error: " + e.getMessage()); }
+        String location=c.getHeaderField("Location"); c.disconnect();
+        if(location==null||location.trim().isEmpty())throw new Exception("Google Drive resumable session unavailable");
+        return location;
+    }
+
+    private static BackupInfo uploadResumable(String token,File file,String session,long start,
+                                               ReaderStateDb db,String fileName) throws Exception {
+        long total=file.length(); long offset=Math.max(0L,Math.min(start,total));
+        try(RandomAccessFile raf=new RandomAccessFile(file,"r")) {
+            while(offset<total) {
+                int len=(int)Math.min((long)SyncBatchPolicy.CHUNK_BYTES,total-offset); long end=offset+len-1;
+                HttpURLConnection c=open(session,"PUT",token); c.setDoOutput(true);
+                c.setRequestProperty("Content-Type",mimeFor(file));
+                c.setRequestProperty("Content-Range","bytes "+offset+"-"+end+"/"+total); c.setFixedLengthStreamingMode(len);
+                raf.seek(offset); byte[] buffer=new byte[64*1024]; int remain=len;
+                try(OutputStream out=new BufferedOutputStream(c.getOutputStream())) {
+                    while(remain>0){int n=raf.read(buffer,0,Math.min(buffer.length,remain));if(n<0)throw new Exception("Unexpected end of book file");out.write(buffer,0,n);remain-=n;}
+                }
+                int code=c.getResponseCode();
+                if(code==404||code==410){c.disconnect();throw new ResumableExpiredException();}
+                if(code==308){String range=c.getHeaderField("Range");c.disconnect();offset=parseNextOffset(range,end+1);db.saveUploadCheckpoint(fileName,session,offset);continue;}
+                if(code>=200&&code<300){byte[] data;try(InputStream in=c.getInputStream()){data=readAll(in);}finally{c.disconnect();}BackupInfo info=new BackupInfo();if(data.length>0){JSONObject o=new JSONObject(new String(data,StandardCharsets.UTF_8));info.id=o.optString("id","");info.modifiedTime=o.optString("modifiedTime","");}return info;}
+                InputStream err=c.getErrorStream();String detail=err==null?"":new String(readAll(err),StandardCharsets.UTF_8);c.disconnect();throw new Exception("Google Drive upload error "+code+(detail.isEmpty()?"":": "+detail));
+            }
+        }
+        BackupInfo info=new BackupInfo();return info;
+    }
+    private static long parseNextOffset(String range,long fallback){
+        if(range!=null){int dash=range.lastIndexOf('-');if(dash>=0)try{return Long.parseLong(range.substring(dash+1).trim())+1L;}catch(Exception ignored){}}
+        return fallback;
+    }
+    private static final class ResumableExpiredException extends Exception {}
+
+    private static void legacySmartBackup(Activity activity, String token, File libraryDir, File fontsDir,
                            SharedPreferences prefs, SyncCallback callback) {
         new Thread(() -> {
             File remoteArchive = null, remoteStateArchive = null, temp = null, stateTemp = null;

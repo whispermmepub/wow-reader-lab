@@ -2,48 +2,61 @@
 
 Official Android source repository for **WoW Reader**.
 
-## Current Android release candidate
+## Current release
 
-- **Version:** `2.19.3`
-- **versionCode:** `63`
+- **Version:** `2.20.0`
+- **versionCode:** `64`
 - **Package:** `com.whisper.wowreader`
 - **Minimum Android:** 6.0 / API 23
 - **Target SDK:** 36
 - **Java:** 17
-- **Current source:** `main`
-- **Play Store release branch:** `release/v63-playstore`
-- **Previous stable production baseline:** `stable/v61` (`2.19.1 / 61`)
+- **Source of truth:** `main`
 
-The v63 source is the current Play Store update candidate. It has passed repository CI build, lint, package/version checks and production-signing verification. Real-device Closed Testing is still the final gate before Production promotion.
+v64 is the 100k-scale library/sync foundation release. It preserves the v63 update/data/signing contract while moving normal library and cloud-sync work away from whole-library operations.
 
-## Start here in a new chat
+## Start here
 
-Read these files before changing anything:
+Read these before changing the project:
 
-- `NEXT_CHAT_HANDOFF.md` — exact current continuation and Play Store update instructions
-- `docs/STORE_PUBLICATION_STATUS.md` — Google Play/App Store publication state
-- `docs/ANDROID_IOS_RELEASE_HANDOFF.md` — cross-platform release contract
-- `docs/V63_STABILITY_SCALABLE_STORAGE_PLAN.md` — v63 stability/scalability design background
-- `SIGNING.md` — public signing identity metadata; no private secrets
+- `NEXT_CHAT_HANDOFF.md` — current release/testing continuation
+- `docs/STORE_PUBLICATION_STATUS.md` — Play publication state
+- `docs/ANDROID_IOS_RELEASE_HANDOFF.md` — release identity contract
+- `docs/superpowers/specs/2026-09-18-v64-100k-sync-design.md` — v64 architecture
+- `SIGNING.md` — public signing metadata only
 
-`whispermmepub/wow-reader-lab` is the source of truth. Do not switch to the older `whispermmepub/wow-reader-app` line unless explicitly requested.
+Do not switch to the older `whispermmepub/wow-reader-app` repository unless explicitly requested.
 
-## What v63 fixes
+## v64 highlights
 
-- More accurate EPUB overall progress using readable-content weighting instead of equal chapter count
-- Avoids TOC/cover/front-matter causing large progress jumps near the beginning
-- SHA-256 content identity for idempotent EPUB/PDF imports from Telegram and other apps
-- Scalable structured reader state in indexed SQLite (`ReaderStateDb`) with non-destructive legacy migration
-- Local-first reader behavior: cloud sync no longer runs inside active reading sessions
-- Reading Calendar/recap data queries optimized for larger libraries
-- Finished-book share cards support more than 12 books by generating multiple pages
-- Share-card image rendering moved off the UI thread
-- API 23-safe SQLite update logic
-- Bounded EPUB progress analysis to reduce memory risk with unusually large chapter files
+- Indexed SQLite library/state foundation designed for **100,000+ books**
+- Paginated/lazy library access instead of loading the whole library into memory
+- Incremental Google Drive book sync: only new/changed books are uploaded
+- Per-book SHA-256 content identity and duplicate-safe restore
+- Paginated cloud restore with integrity verification
+- Resumable upload checkpoints with persistent sync state
+- Tombstone-based delete handling to prevent deleted books being resurrected
+- Custom cover state kept separate from original EPUB/PDF files
+- Optimized custom-cover storage/cache behavior
+- EPUB whole-book page numbering: `Page X / Y`, with layout-aware pagination cache
+- Legacy full ZIP backup retained as restore compatibility fallback
+- Background/local-first sync so reading does not depend on cloud work
 
-The original v63 design document discussed Room as an option. The shipped v63 candidate deliberately uses Android `SQLiteOpenHelper`/SQLite instead, reducing migration/dependency risk while keeping indexed structured storage.
+### Scale rule
 
-## Stable feature set preserved
+Every new library, storage, sync, cover, search, calendar or reader-state decision must be evaluated against **100,000+ books**.
+
+The app must not:
+
+- scan/hash the entire library on normal page turns
+- load 100,000 books/covers into RAM
+- rebuild a whole backup ZIP for one changed book
+- decode every cover at full resolution
+- keep unlimited page/scroll events
+- make active reading wait for Google Drive
+
+One-time migration/restore may be O(N), but it must be bounded, restart-safe and not turn normal use into O(N).
+
+## Stable features preserved
 
 - Offline EPUB/PDF reading
 - Firebase Google sign-in
@@ -57,51 +70,45 @@ The original v63 design document discussed Room as an option. The shipped v63 ca
 - PDF continuous reading/import handling
 - Multi-book import
 - EPUB/PDF Android File Share
+- Custom book metadata and app-side cover overrides
 
-Existing user books, progress, notes, shelves, calendar/history and settings must remain compatible with in-place updates.
+Existing books, progress, notes, shelves, calendar/history, settings and account/sync compatibility must survive in-place updates.
 
-## Production signing and Google identity
+## Storage policy
 
-Do not generate a replacement production key.
+Only source assets required by the app belong in Git. Build outputs, APK/AAB files, local Gradle/IDE state, keystores, passwords and recovery material are ignored and must stay outside the repository.
 
-Production / Play App Signing SHA-1:
+Runtime caches such as generated thumbnails must remain rebuildable and must never be the only copy of user-selected metadata.
+
+Do not add generated release APK/AAB files to the repository.
+
+## Production identity
+
+Keep the original production signing identity unchanged.
+
+Production SHA-1:
 
 `21:17:D3:1E:01:EB:24:EA:E3:FE:4A:26:88:C8:C7:12:CD:76:71:F1`
 
-The Play Console App signing key certificate now matches this original production identity. Firebase/Google configuration for `com.whisper.wowreader` is aligned with it.
+Production SHA-256:
 
-Private keystore/password material must never be committed.
+`29:FC:A2:9F:8D:B1:84:AA:F5:13:35:EF:BE:A8:C5:0D:51:76:9D:77:48:AE:53:56:17:C2:47:9E:39:89:AC:A5`
 
-## Verified v63 release artifacts
+Private keystores/passwords must never be committed.
 
-- `WoW-Reader-v2.19.3-v63-PlayStore-production.aab`
-  - SHA-256: `3587777e5f9586ca112bd92cbee65e74c82b0b29f615167da075f75d584e35ae`
-- `WoW-Reader-v2.19.3-v63-production-signed.apk`
-  - SHA-256: `2ca3a1b4487e98c1ae2e0969cb571457dee032b2daff4ec05656d2ab07a3db25`
+## Release rules
 
-These artifacts were built from app source commit `21894db4f10a5ea588e99b4b07dbaba181ecd70f` and verified with the original production signer. Subsequent repository cleanup/documentation commits do not alter the v63 app source.
+1. Keep package `com.whisper.wowreader`.
+2. Keep the original production/Play signing identity.
+3. Check every Play track before choosing the next versionCode.
+4. Never use a destructive migration to simplify an update.
+5. Build, lint, test and verify APK/AAB before release.
+6. Test v63 → v64 in-place update, fresh install + Drive restore, and the experimental-v64 → v64 update path.
+7. Test Google sign-in/sync and large-library behavior on real devices before Production.
 
-## Play Store update note
+## Community
 
-> Improved reading progress accuracy, fixed duplicate EPUB imports, optimized Reading Calendar and sharing performance, improved stability with Google account sync, and enhanced library performance for large book collections.
-
-## Release rule
-
-1. Keep package `com.whisper.wowreader` unchanged.
-2. Keep the original production signing identity unchanged.
-3. Always check every Play track and use a `versionCode` higher than all existing tracks.
-4. Preserve user data; never introduce destructive migration/reset without explicit approval.
-5. Build/lint/verify APK+AAB before upload.
-6. Test v62/v61 → v63 update, Google sign-in/sync, long reading sessions, duplicate imports and large recaps in Closed Testing.
-7. Promote to Production only after device testing passes.
-
-## Community links
-
-- Telegram books channel: https://t.me/TheBookR
+- Telegram books: https://t.me/TheBookR
 - Discussion group: https://t.me/+rUiqzi2mdhNiNGZl
 - Website: https://saroatsin.com
-- Book reviews: https://whispermmepub.github.io/Review/
-
-## Secrets
-
-Never commit signing passwords, keystores, private certificates/keys, recovery files, Telegram tokens, service-account credentials, Apple private keys or other secrets.
+- Reviews: https://whispermmepub.github.io/Review/

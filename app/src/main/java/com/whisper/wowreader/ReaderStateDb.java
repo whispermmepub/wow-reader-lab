@@ -477,6 +477,26 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     void removeBookFromShelves(String fileName){if(fileName!=null)getWritableDatabase().delete("shelf_books","file_name=?",new String[]{fileName});}
 
     String contentHash(String fileName){return scalarString("SELECT content_hash FROM books WHERE file_name=?",new String[]{fileName});}
+    String fileNameForHash(String hash){return hash==null?"":scalarString("SELECT file_name FROM books WHERE content_hash=? LIMIT 1",new String[]{hash});}
+    void recordRestoredBook(File file,String hash,String remoteId,SharedPreferences prefs){
+        if(file==null||!file.isFile()||hash==null||hash.isEmpty())return;
+        SQLiteDatabase sql=getWritableDatabase();
+        String existing=fileNameForHash(hash);
+        if(existing.isEmpty()){insertOrUpdateBook(sql,file,hash,prefs);existing=file.getName();}
+        ContentValues v=new ContentValues();
+        v.put("file_path",file.getAbsolutePath());v.put("file_size",file.length());v.put("modified_at",file.lastModified());
+        v.put("format",file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")?"pdf":"epub");
+        String knownRemote=scalarString("SELECT remote_file_id FROM books WHERE content_hash=? LIMIT 1",new String[]{hash});
+        v.put("remote_file_id",DriveRestorePlanner.chooseRemoteId(knownRemote,remoteId));v.put("sync_dirty",0);v.put("upload_session_url","");v.put("upload_offset",0L);
+        int n=sql.update("books",v,"content_hash=?",new String[]{hash});
+        if(n==0)sql.update("books",v,"file_name=?",new String[]{existing});
+    }
+    void recordRestoredCover(String hash,String path,String remoteId){
+        if(hash==null||hash.isEmpty())return;
+        ContentValues v=new ContentValues();v.put("custom_cover_path",path==null?"":path);v.put("remote_cover_file_id",remoteId==null?"":remoteId);
+        v.put("cover_sync_dirty",0);v.put("cover_upload_session_url","");v.put("cover_upload_offset",0L);
+        getWritableDatabase().update("books",v,"content_hash=?",new String[]{hash});
+    }
     String customCoverPath(String fileName){return scalarString("SELECT custom_cover_path FROM books WHERE file_name=?",new String[]{fileName});}
     String coverScope(String fileName){String s=scalarString("SELECT cover_scope FROM books WHERE file_name=?",new String[]{fileName});return "everywhere".equals(s)?"everywhere":"library_only";}
     void updateBookMetadata(String fileName,String title,String author){if(fileName==null)return;ContentValues v=new ContentValues();v.put("title",title==null||title.trim().isEmpty()?stripExtension(fileName):title.trim());v.put("author",author==null?"":author.trim());v.put("updated_at",System.currentTimeMillis());getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
@@ -735,6 +755,28 @@ final class ReaderStateDb extends SQLiteOpenHelper {
                 }
             }
             c.close();
+            // v64+ metadata is optional so older v63 snapshots remain restorable.
+            try {
+                Cursor extra=remote.rawQuery("SELECT file_name,title,author,annotation_count,cover_scope,cover_updated_at FROM books",null);
+                while(extra.moveToNext()){
+                    ContentValues v=new ContentValues();
+                    v.put("title",extra.getString(1)==null?"":extra.getString(1));
+                    v.put("author",extra.getString(2)==null?"":extra.getString(2));
+                    v.put("annotation_count",extra.getInt(3));
+                    v.put("cover_scope","everywhere".equals(extra.getString(4))?"everywhere":"library_only");
+                    v.put("cover_updated_at",extra.getLong(5));
+                    local.update("books",v,"file_name=?",new String[]{extra.getString(0)});
+                }
+                extra.close();
+            } catch(Exception ignored) {}
+            try {
+                Cursor sh=remote.rawQuery("SELECT name,updated_at FROM shelves",null);
+                while(sh.moveToNext()){ContentValues v=new ContentValues();v.put("name",sh.getString(0));v.put("updated_at",sh.getLong(1));local.insertWithOnConflict("shelves",null,v,SQLiteDatabase.CONFLICT_REPLACE);}
+                sh.close();
+                sh=remote.rawQuery("SELECT shelf_name,file_name,added_at FROM shelf_books",null);
+                while(sh.moveToNext()){ContentValues v=new ContentValues();v.put("shelf_name",sh.getString(0));v.put("file_name",sh.getString(1));v.put("added_at",sh.getLong(2));local.insertWithOnConflict("shelf_books",null,v,SQLiteDatabase.CONFLICT_REPLACE);}
+                sh.close();
+            } catch(Exception ignored) {}
             c = remote.rawQuery("SELECT day,total_ms,daily_note FROM reading_day", null);
             while(c.moveToNext()){
                 String day=c.getString(0); long ms=c.getLong(1); String note=c.getString(2);

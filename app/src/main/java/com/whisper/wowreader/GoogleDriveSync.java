@@ -210,7 +210,7 @@ final class GoogleDriveSync {
                 int remainingCovers=db.pendingCoverUploadCount();
                 boolean more=SyncBatchPolicy.hasMore(remainingBooks,remainingDeletes,remainingCovers);
                 if (!more) {
-                    stateArchive=buildStateBackup(activity,prefs);
+                    stateArchive=buildStateBackup(activity,prefs,fontsDir);
                     BackupInfo state=findFileInfo(token,STATE_BACKUP_NAME);
                     if(state==null) createNamedZip(token,STATE_BACKUP_NAME,stateArchive);
                     else updateNamedFile(token,state.id,"application/zip",stateArchive);
@@ -387,7 +387,7 @@ final class GoogleDriveSync {
                 }
 
                 // Reading progress/settings/state are small and sync separately, so page progress never rebuilds every EPUB/PDF.
-                stateArchive = buildStateBackup(activity, prefs);
+                stateArchive = buildStateBackup(activity, prefs, fontsDir);
                 BackupInfo latestState = findFileInfo(token, STATE_BACKUP_NAME);
                 if (latestState == null) createNamedZip(token, STATE_BACKUP_NAME, stateArchive);
                 else updateNamedFile(token, latestState.id, "application/zip", stateArchive);
@@ -417,39 +417,62 @@ final class GoogleDriveSync {
         new Thread(() -> {
             File archive = null;
             File temp = null;
+            boolean foundAny = false;
+            int restoredBooks = 0, restoredCovers = 0;
             try {
-                String id = findBackupId(token);
-                if (id == null) throw new Exception("No WoW Reader backup was found in this Google Drive");
-                archive = File.createTempFile("wow-drive-restore-", ".zip", activity.getCacheDir());
-                downloadBackup(token, id, archive);
-                temp = new File(activity.getCacheDir(), "wow_restore_" + System.currentTimeMillis());
-                if (!temp.mkdirs()) throw new Exception("Unable to prepare restore folder");
-                unzipSafely(archive, temp);
-                restoreFiles(new File(temp, "books"), libraryDir);
-                restoreFiles(new File(temp, "fonts"), fontsDir);
-                restorePreferences(new File(temp, "state.json"), prefs);
-                File fullDb = new File(temp, "state/reader.db");
-                if (fullDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(fullDb, prefs);
+                if (!libraryDir.exists() && !libraryDir.mkdirs()) throw new Exception("Unable to prepare library folder");
+                if (!fontsDir.exists() && !fontsDir.mkdirs()) throw new Exception("Unable to prepare fonts folder");
 
+                // Legacy ZIP remains a migration/fallback source, but is no longer required.
+                BackupInfo legacy = findBackupInfo(token);
+                if (legacy != null) {
+                    foundAny = true;
+                    archive = File.createTempFile("wow-drive-restore-", ".zip", activity.getCacheDir());
+                    downloadBackup(token, legacy.id, archive);
+                    temp = new File(activity.getCacheDir(), "wow_restore_" + System.currentTimeMillis());
+                    if (!temp.mkdirs()) throw new Exception("Unable to prepare restore folder");
+                    unzipSafely(archive, temp);
+                    restoreFiles(new File(temp, "books"), libraryDir);
+                    restoreFiles(new File(temp, "fonts"), fontsDir);
+                    restorePreferences(new File(temp, "state.json"), prefs);
+                    File fullDb = new File(temp, "state/reader.db");
+                    if (fullDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(fullDb, prefs);
+                }
+
+                // The state ZIP is authoritative for the current incremental format.
                 BackupInfo stateInfo = findFileInfo(token, STATE_BACKUP_NAME);
                 if (stateInfo != null) {
-                    File stateZip = File.createTempFile("wow-state-restore-", ".zip", activity.getCacheDir());
-                    File stateDir = new File(activity.getCacheDir(), "wow_state_restore_" + System.currentTimeMillis());
-                    try {
-                        downloadFile(token, stateInfo.id, stateZip);
-                        if (!stateDir.mkdirs()) throw new Exception("Unable to prepare state restore folder");
-                        unzipSafely(stateZip, stateDir);
-                        restorePreferences(new File(stateDir, "state.json"), prefs);
-                        File stateDb = new File(stateDir, "state/reader.db");
-                        if (stateDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(stateDb, prefs);
-                    } finally { stateZip.delete(); deleteRecursively(stateDir); }
+                    foundAny = true;
+                    restoreStateArchive(activity, token, stateInfo, libraryDir, fontsDir, prefs);
                 }
+
+                ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+                // One-time restore may be O(N); normal startup/sync remains paged and incremental.
+                restoredBooks = restoreIncrementalBooks(token, activity, db, prefs, libraryDir);
+                restoredCovers = restoreIncrementalCovers(token, activity, db);
+                if (restoredBooks > 0 || restoredCovers > 0) foundAny = true;
+
+                // Rebind legacy-restored files to this device's local path after remote DB merge.
+                File[] local = libraryDir.listFiles();
+                if (local != null) for (File book : local) {
+                    if (book == null || !book.isFile()) continue;
+                    String lower = book.getName().toLowerCase(java.util.Locale.ROOT);
+                    if (!lower.endsWith(".epub") && !lower.endsWith(".pdf")) continue;
+                    String hash = db.contentHash(book.getName());
+                    if (hash != null && !hash.isEmpty()) db.recordRestoredBook(book, hash, "", prefs);
+                }
+
+                if (!foundAny) throw new Exception("No WoW Reader backup was found in this Google Drive");
                 prefs.edit()
                         .putLong("library_files_updated_ms", System.currentTimeMillis())
                         .putLong("google_last_backup_ms", System.currentTimeMillis())
                         .putLong("sync_updated_ms", System.currentTimeMillis())
                         .apply();
-                activity.runOnUiThread(() -> callback.onSuccess("Books, notes and reading data restored"));
+                final int books = restoredBooks, covers = restoredCovers;
+                activity.runOnUiThread(() -> callback.onSuccess(
+                        books > 0 || covers > 0
+                                ? "Restored " + books + " cloud books · " + covers + " custom covers · reading data"
+                                : "Books, notes and reading data restored"));
             } catch (Exception e) {
                 String message = friendly(e);
                 activity.runOnUiThread(() -> callback.onError(message));
@@ -460,13 +483,170 @@ final class GoogleDriveSync {
         }, "wow-google-restore").start();
     }
 
+    private static void restoreStateArchive(Activity activity, String token, BackupInfo stateInfo,
+                                            File libraryDir, File fontsDir, SharedPreferences prefs) throws Exception {
+        File stateZip = File.createTempFile("wow-state-restore-", ".zip", activity.getCacheDir());
+        File stateDir = new File(activity.getCacheDir(), "wow_state_restore_" + System.currentTimeMillis());
+        try {
+            downloadFile(token, stateInfo.id, stateZip);
+            if (!stateDir.mkdirs()) throw new Exception("Unable to prepare state restore folder");
+            unzipSafely(stateZip, stateDir);
+            restorePreferences(new File(stateDir, "state.json"), prefs);
+            restoreFiles(new File(stateDir, "fonts"), fontsDir);
+            File stateDb = new File(stateDir, "state/reader.db");
+            if (stateDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(stateDb, prefs);
+        } finally {
+            stateZip.delete();
+            deleteRecursively(stateDir);
+        }
+    }
+
+    private static int restoreIncrementalBooks(String token, Activity activity, ReaderStateDb db,
+                                               SharedPreferences prefs, File libraryDir) throws Exception {
+        int restored = 0;
+        String pageToken = "";
+        do {
+            JSONObject page = listIncrementalObjects(token, "wow_book_", pageToken);
+            JSONArray files = page.optJSONArray("files");
+            if (files != null) for (int i = 0; i < files.length(); i++) {
+                JSONObject remote = files.optJSONObject(i);
+                if (remote == null) continue;
+                String id = remote.optString("id", "");
+                String remoteName = remote.optString("name", "");
+                DriveRestorePlanner.BookObject object = DriveRestorePlanner.parseBookObject(remoteName);
+                if (id.isEmpty() || object == null) continue;
+
+                String preferred = db.fileNameForHash(object.hash);
+                String localName = DriveRestorePlanner.safeLocalName(preferred, object);
+                File destination = chooseRestoreDestination(libraryDir, localName, object);
+                if (destination.isFile()) {
+                    try {
+                        String existingHash = FileIdentityUtil.sha256(destination);
+                        if (object.hash.equalsIgnoreCase(existingHash)) {
+                            db.recordRestoredBook(destination, object.hash, id, prefs);
+                            continue;
+                        }
+                    } catch (Exception ignored) {}
+                    destination = new File(libraryDir, object.hash + "-cloud." + object.extension);
+                }
+
+                File scratch = File.createTempFile("wow-book-restore-", "." + object.extension, activity.getCacheDir());
+                try {
+                    downloadFile(token, id, scratch);
+                    String actual = FileIdentityUtil.sha256(scratch);
+                    if (!object.hash.equalsIgnoreCase(actual))
+                        throw new Exception("Cloud book integrity check failed: " + remoteName);
+                    installRestoredFile(scratch, destination);
+                    db.recordRestoredBook(destination, object.hash, id, prefs);
+                    restored++;
+                } finally {
+                    scratch.delete();
+                }
+            }
+            pageToken = page.optString("nextPageToken", "");
+        } while (!pageToken.isEmpty());
+        return restored;
+    }
+
+    private static int restoreIncrementalCovers(String token, Activity activity, ReaderStateDb db) throws Exception {
+        int restored = 0;
+        File coverDir = new File(activity.getFilesDir(), "custom_covers");
+        if (!coverDir.exists() && !coverDir.mkdirs()) throw new Exception("Unable to prepare custom cover folder");
+        String pageToken = "";
+        do {
+            JSONObject page = listIncrementalObjects(token, "wow_cover_", pageToken);
+            JSONArray files = page.optJSONArray("files");
+            if (files != null) for (int i = 0; i < files.length(); i++) {
+                JSONObject remote = files.optJSONObject(i);
+                if (remote == null) continue;
+                String id = remote.optString("id", "");
+                String hash = DriveRestorePlanner.parseCoverHash(remote.optString("name", ""));
+                if (id.isEmpty() || hash.isEmpty() || db.fileNameForHash(hash).isEmpty()) continue;
+                File destination = new File(coverDir, "cloud_" + hash.substring(0, 24) + ".jpg");
+                File scratch = File.createTempFile("wow-cover-restore-", ".jpg", activity.getCacheDir());
+                try {
+                    downloadFile(token, id, scratch);
+                    android.graphics.Bitmap preview = CustomCoverStore.decodeSampled(scratch, 120, 180);
+                    if (preview == null) continue;
+                    preview.recycle();
+                    installRestoredFile(scratch, destination);
+                    db.recordRestoredCover(hash, destination.getAbsolutePath(), id);
+                    restored++;
+                } finally {
+                    scratch.delete();
+                }
+            }
+            pageToken = page.optString("nextPageToken", "");
+        } while (!pageToken.isEmpty());
+        return restored;
+    }
+
+    private static JSONObject listIncrementalObjects(String token, String prefix, String pageToken) throws Exception {
+        String q = "trashed=false and name contains '" + prefix.replace("'", "\\'") + "'";
+        String url = "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&pageSize=1000" +
+                "&orderBy=name&fields=nextPageToken,files(id,name,size,modifiedTime)&q=" + URLEncoder.encode(q, "UTF-8");
+        if (pageToken != null && !pageToken.isEmpty()) url += "&pageToken=" + URLEncoder.encode(pageToken, "UTF-8");
+        return authorizedJson(url, token);
+    }
+
+    private static File chooseRestoreDestination(File libraryDir, String localName, DriveRestorePlanner.BookObject object) {
+        File candidate = new File(libraryDir, localName);
+        try {
+            String root = libraryDir.getCanonicalPath() + File.separator;
+            if (!candidate.getCanonicalPath().startsWith(root))
+                return new File(libraryDir, object.hash + "." + object.extension);
+        } catch (Exception ignored) {
+            return new File(libraryDir, object.hash + "." + object.extension);
+        }
+        return candidate;
+    }
+
+    private static void installRestoredFile(File source, File destination) throws Exception {
+        File parent = destination.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) throw new Exception("Unable to prepare restore destination");
+        File part = new File(destination.getAbsolutePath() + ".restore");
+        if (part.exists() && !part.delete()) throw new Exception("Unable to replace restore temp file");
+        try (InputStream in = new BufferedInputStream(new FileInputStream(source));
+             FileOutputStream fos = new FileOutputStream(part);
+             OutputStream out = new BufferedOutputStream(fos)) {
+            byte[] buffer = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buffer)) > 0) out.write(buffer, 0, n);
+            out.flush();
+            fos.getFD().sync();
+        }
+        if (destination.exists() && !destination.delete()) {
+            part.delete();
+            throw new Exception("Unable to replace restored file");
+        }
+        if (!part.renameTo(destination)) {
+            part.delete();
+            throw new Exception("Unable to finalize restored file");
+        }
+    }
+
     static void hasBackup(Activity activity, String token, BackupCheckCallback callback) {
         new Thread(() -> {
             boolean found = false;
-            try { found = findBackupId(token) != null; } catch (Exception ignored) {}
+            try {
+                found = findBackupId(token) != null || findFileInfo(token, STATE_BACKUP_NAME) != null || hasIncrementalBook(token);
+            } catch (Exception ignored) {}
             final boolean value = found;
             activity.runOnUiThread(() -> callback.onResult(value));
         }, "wow-google-backup-check").start();
+    }
+
+    private static boolean hasIncrementalBook(String token) throws Exception {
+        String q = "trashed=false and name contains 'wow_book_'";
+        String url = "https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&pageSize=10&fields=files(name)&q=" +
+                URLEncoder.encode(q, "UTF-8");
+        JSONArray files = authorizedJson(url, token).optJSONArray("files");
+        if (files == null) return false;
+        for (int i=0;i<files.length();i++) {
+            JSONObject item=files.optJSONObject(i);
+            if(item!=null && DriveRestorePlanner.parseBookObject(item.optString("name",""))!=null) return true;
+        }
+        return false;
     }
 
     private static File buildBackup(Activity activity, File libraryDir, File fontsDir,
@@ -487,7 +667,7 @@ final class GoogleDriveSync {
         return out;
     }
 
-    private static File buildStateBackup(Activity activity, SharedPreferences prefs) throws Exception {
+    private static File buildStateBackup(Activity activity, SharedPreferences prefs, File fontsDir) throws Exception {
         File out = File.createTempFile("wow-reader-state-", ".zip", activity.getCacheDir());
         try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(out)))) {
             byte[] state = exportPreferences(prefs).toString().getBytes(StandardCharsets.UTF_8);
@@ -496,6 +676,7 @@ final class GoogleDriveSync {
             ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, new File(activity.getFilesDir(), "library"));
             File dbFile = db.databaseFile(activity);
             if (dbFile != null && dbFile.isFile()) addFile(zip, dbFile, "state/reader.db");
+            addDirectory(zip, fontsDir, "fonts/");
         }
         return out;
     }

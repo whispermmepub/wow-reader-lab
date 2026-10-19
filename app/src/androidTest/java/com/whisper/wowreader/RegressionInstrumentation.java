@@ -25,11 +25,23 @@ import java.util.zip.ZipOutputStream;
 public class RegressionInstrumentation extends Instrumentation {
     private Activity reader;
     private final StringBuilder report = new StringBuilder();
+    private boolean syncDeletionOnly;
     interface Query { Object get() throws Exception; }
-    @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
+    @Override public void onCreate(Bundle args) {
+        super.onCreate(args);
+        syncDeletionOnly=args!=null&&"true".equals(args.getString("syncDeletionOnly"));
+        start();
+    }
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
+            SyncDeletionInstrumentation.run(getTargetContext());
+            report.append("sync-deletion-sqlite: PASS\n");
+            if(syncDeletionOnly) {
+                result.putString("stream","\nSYNC_DELETION_PASS\n"+report);
+                finish(Activity.RESULT_OK,result);
+                return;
+            }
             testCalendarAndShelves();
             File book = fixture();
             for (String mode : new String[]{"page", "scroll"}) {
@@ -75,7 +87,10 @@ public class RegressionInstrumentation extends Instrumentation {
     private void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
     private void ready(String file) throws Exception {
         await(() -> !((Boolean)field("chapterLoading")) && !((Boolean)field("footnoteReturnPending")) &&
+                field("chapterReadyGeneration").equals(field("chapterLoadGeneration")) && !field("chapterFailedGeneration").equals(field("chapterLoadGeneration")) &&
                 ((WebView)field("webView")).getUrl() != null && ((WebView)field("webView")).getUrl().contains(file), "ready " + file);
+        String actual=js("(function(){var st=window.__wowPageEngine;return !!st&&(st.mode==='page'?(st.count>0&&st.pageMap&&st.pageMap.length>0&&!st.locked):st.scrollReady===true);})()");
+        check("true".equals(actual),"real engine readiness, not watchdog unlock");
         SystemClock.sleep(250);
     }
     private View find(View v, String text) {

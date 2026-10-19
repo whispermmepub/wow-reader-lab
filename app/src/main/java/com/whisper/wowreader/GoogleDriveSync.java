@@ -5,6 +5,7 @@ import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.SharedPreferences;
+import android.accounts.Account;
 
 import com.google.android.gms.auth.api.identity.AuthorizationClient;
 import com.google.android.gms.auth.api.identity.AuthorizationRequest;
@@ -43,6 +44,11 @@ final class GoogleDriveSync {
     static final int REQUEST_AUTHORIZE = 4104;
     private static final String BACKUP_NAME = "wow_reader_backup_v1.zip";
     private static final String STATE_BACKUP_NAME = "wow_reader_state_v2.zip";
+    // State is metadata, but may legitimately contain a very large library. Bound both
+    // compressed and expanded input so a corrupt Drive object cannot exhaust the process.
+    private static final long MAX_STATE_ZIP_BYTES = 128L * 1024L * 1024L;
+    private static final long MAX_STATE_UNCOMPRESSED_BYTES = 512L * 1024L * 1024L;
+    private static final long MAX_STATE_JSON_BYTES = 96L * 1024L * 1024L;
     private static final List<Scope> SCOPES = Arrays.asList(
             new Scope(Scopes.DRIVE_APPFOLDER)
     );
@@ -81,6 +87,13 @@ final class GoogleDriveSync {
     void authorize(boolean chooseAccount, AuthCallback callback) {
         AuthorizationRequest.Builder builder = AuthorizationRequest.builder()
                 .setRequestedScopes(SCOPES);
+        // A normal reconnect must stay on the account the user connected. The explicit
+        // chooser path intentionally omits setAccount so Google can present account choice.
+        if (!chooseAccount) {
+            String email = activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE)
+                    .getString("google_account_email", "").trim();
+            if (!email.isEmpty()) builder.setAccount(new Account(email, "com.google"));
+        }
         AuthorizationRequest request = builder.build();
         authorizationClient.authorize(request)
                 .addOnSuccessListener(result -> handleAuthorizationResult(result, callback))
@@ -88,9 +101,12 @@ final class GoogleDriveSync {
     }
 
     void authorizeSilently(AuthCallback callback) {
-        AuthorizationRequest request = AuthorizationRequest.builder()
-                .setRequestedScopes(SCOPES)
-                .build();
+        AuthorizationRequest.Builder builder = AuthorizationRequest.builder()
+                .setRequestedScopes(SCOPES);
+        String email = activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE)
+                .getString("google_account_email", "").trim();
+        if (!email.isEmpty()) builder.setAccount(new Account(email, "com.google"));
+        AuthorizationRequest request = builder.build();
         authorizationClient.authorize(request)
                 .addOnSuccessListener(result -> {
                     if (result != null && result.hasResolution()) {
@@ -148,6 +164,11 @@ final class GoogleDriveSync {
         }
         Profile profile = new Profile();
         profile.accessToken = token;
+        SharedPreferences p = activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE);
+        profile.email = p.getString("google_account_email", "");
+        profile.name = p.getString("google_account_name", "Google account");
+        profile.uid = p.getString("google_account_uid", "");
+        profile.picture = p.getString("google_account_picture", "");
         callback.onReady(profile);
     }
 
@@ -187,34 +208,70 @@ final class GoogleDriveSync {
         new Thread(() -> {
             File stateArchive = null;
             try {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                GoogleAutoSync.requireHomeVisible();
                 ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
                 if (!db.isLibraryIndexReady()) {
                     prefs.edit().putLong("sync_updated_ms", System.currentTimeMillis()).apply();
                     activity.runOnUiThread(() -> callback.onSuccess("Preparing library index for sync"));
                     return;
                 }
-                int uploaded=0, deleted=0;
-                for (ReaderStateDb.PendingSyncRow row : db.pendingBookUploads(SyncBatchPolicy.BOOK_BATCH)) {
-                    File file=row.file();
-                    if(!file.isFile()) continue;
-                    syncOneBook(token, db, prefs, row, file);
-                    uploaded++;
+                // Always reconcile the bounded state archive before publishing local state. This is
+                // deliberately not a whole-library listing/download: book bytes remain incremental.
+                BackupInfo remoteState = findFileInfo(token, STATE_BACKUP_NAME);
+                String seenState = prefs.getString("google_last_seen_state_modified", "");
+                if (remoteState != null && !remoteState.modifiedTime.equals(seenState)) {
+                    File pulled = File.createTempFile("wow-state-pull-", ".zip", activity.getCacheDir());
+                    File unpacked = new File(activity.getCacheDir(), "wow_state_pull_" + System.currentTimeMillis());
+                    try {
+                        downloadFileBounded(token, remoteState.id, pulled, MAX_STATE_ZIP_BYTES);
+                        if (!unpacked.mkdirs()) throw new Exception("Unable to prepare state merge folder");
+                        unzipSafelyBounded(pulled, unpacked, MAX_STATE_UNCOMPRESSED_BYTES);
+                        CloudMergePolicy.mergePreferences(readPreferenceValues(new File(unpacked, "state.json")), prefs);
+                        File remoteDb = new File(unpacked, "state/reader.db");
+                        if (remoteDb.isFile()) db.mergeSnapshot(remoteDb, prefs, true);
+                        prefs.edit().putString("google_last_seen_state_modified", remoteState.modifiedTime).apply();
+                    } finally { pulled.delete(); deleteRecursively(unpacked); }
                 }
+                db.checkpoint();
+                boolean publishState = remoteState == null
+                        || prefs.getLong("sync_updated_ms", 0L) > prefs.getLong("google_last_synced_change_ms",
+                                prefs.getLong("google_last_backup_ms", 0L))
+                        || SyncBatchPolicy.hasMore(db.pendingBookUploadCount(), db.pendingTombstoneCount(), db.pendingCoverUploadCount());
+                int uploaded=0, deleted=0;
+                // Publish durable delete intent before processing any stale upload in this batch.
                 for (ReaderStateDb.TombstoneRow row : db.pendingTombstones(SyncBatchPolicy.DELETE_BATCH)) {
+                    GoogleAutoSync.requireHomeVisible();
                     deleteOneBook(token, db, row); deleted++;
                 }
+                for (ReaderStateDb.PendingSyncRow row : db.pendingBookUploads(SyncBatchPolicy.BOOK_BATCH)) {
+                    GoogleAutoSync.requireHomeVisible();
+                    File file=row.file();
+                    if(!file.isFile()) continue;
+                    if(syncOneBook(token, db, prefs, row, file)) uploaded++;
+                }
                 int coverSynced=0;
-                for (ReaderStateDb.PendingCoverRow row : db.pendingCoverUploads(SyncBatchPolicy.COVER_BATCH)) { syncOneCover(token,db,prefs,row); coverSynced++; }
+                for (ReaderStateDb.PendingCoverRow row : db.pendingCoverUploads(SyncBatchPolicy.COVER_BATCH)) { if(syncOneCover(token,db,prefs,row)) coverSynced++; }
                 int remainingBooks=db.pendingBookUploadCount();
                 int remainingDeletes=db.pendingTombstoneCount();
                 int remainingCovers=db.pendingCoverUploadCount();
                 boolean more=SyncBatchPolicy.hasMore(remainingBooks,remainingDeletes,remainingCovers);
-                if (!more) {
+                if (!more && publishState) {
+                    // Do not publish a snapshot based on a stale read: another device may
+                    // have changed the state archive while book batches were uploading.
+                    BackupInfo beforePublish = findFileInfo(token, STATE_BACKUP_NAME);
+                    if (remoteState == null ? beforePublish != null
+                            : beforePublish == null || !remoteState.id.equals(beforePublish.id)
+                            || !remoteState.modifiedTime.equals(beforePublish.modifiedTime)) {
+                        throw new Exception("Google state changed during sync; retrying safely");
+                    }
                     stateArchive=buildStateBackup(activity,prefs,fontsDir);
-                    BackupInfo state=findFileInfo(token,STATE_BACKUP_NAME);
+                    BackupInfo state=beforePublish;
                     if(state==null) createNamedZip(token,STATE_BACKUP_NAME,stateArchive);
                     else updateNamedFile(token,state.id,"application/zip",stateArchive);
-                } else {
+                    BackupInfo published = findFileInfo(token, STATE_BACKUP_NAME);
+                    if (published != null) prefs.edit().putString("google_last_seen_state_modified", published.modifiedTime).apply();
+                } else if (more) {
                     // Force GoogleAutoSync to schedule the next small batch instead of considering the giant bootstrap finished.
                     prefs.edit().putLong("sync_updated_ms",System.currentTimeMillis()).apply();
                 }
@@ -228,11 +285,21 @@ final class GoogleDriveSync {
         },"wow-google-incremental-sync").start();
     }
 
-    private static void syncOneBook(String token, ReaderStateDb db, SharedPreferences prefs,
+    private static boolean syncOneBook(String token, ReaderStateDb db, SharedPreferences prefs,
                                     ReaderStateDb.PendingSyncRow row, File file) throws Exception {
         String hash=row.hash;
         if(hash==null||hash.isEmpty()) hash=db.ensureHash(file,prefs);
         if(hash==null||hash.isEmpty()) throw new Exception("Unable to identify "+file.getName());
+        final String identity=hash;
+        final BackupInfo[] result=new BackupInfo[1];
+        boolean uploaded=DriveDeletionGuard.uploadIfLive(identity,deletionRemote(token),deletionLocal(db),() ->
+                result[0]=uploadOneBook(token,db,row,file,identity));
+        if(uploaded)db.markBookSynced(row.fileName,result[0].id,result[0].modifiedTime);
+        return uploaded;
+    }
+
+    private static BackupInfo uploadOneBook(String token,ReaderStateDb db,ReaderStateDb.PendingSyncRow row,
+                                      File file,String hash) throws Exception {
         String objectName=DriveObjectNamer.bookName(hash,row.format);
         BackupInfo remote=null;
         if(row.remoteId!=null&&!row.remoteId.isEmpty()) { remote=new BackupInfo(); remote.id=row.remoteId; }
@@ -252,34 +319,86 @@ final class GoogleDriveSync {
         }
         String remoteId=done.id;
         if((remoteId==null||remoteId.isEmpty())&&remote!=null)remoteId=remote.id;
-        db.markBookSynced(row.fileName,remoteId,done.modifiedTime);
+        if (remoteId == null || remoteId.isEmpty()) {
+            BackupInfo confirmed = findFileInfo(token, objectName);
+            if (confirmed == null) throw new Exception("Google Drive upload confirmation is pending");
+            remoteId = confirmed.id;
+        }
+        done.id=remoteId;
+        return done;
     }
 
-    private static void syncOneCover(String token,ReaderStateDb db,SharedPreferences prefs,ReaderStateDb.PendingCoverRow row)throws Exception{
+    private static boolean syncOneCover(String token,ReaderStateDb db,SharedPreferences prefs,ReaderStateDb.PendingCoverRow row)throws Exception{
         String hash=row.hash;File book=new File(row.filePath);if((hash==null||hash.isEmpty())&&book.isFile())hash=db.ensureHash(book,prefs);if(hash==null||hash.isEmpty())throw new Exception("Unable to identify cover book");
-        if(row.coverPath==null||row.coverPath.isEmpty()){String id=row.remoteId;if((id==null||id.isEmpty())){BackupInfo i=findFileInfo(token,DriveObjectNamer.coverName(hash));if(i!=null)id=i.id;}if(id!=null&&!id.isEmpty())deleteRemoteFile(token,id);db.markCoverSynced(row.fileName,"");return;}
+        final String identity=hash;
+        final BackupInfo[] result=new BackupInfo[1];
+        boolean uploaded=DriveDeletionGuard.uploadIfLive(identity,deletionRemote(token),deletionLocal(db),() ->
+                result[0]=uploadOneCover(token,db,row,identity));
+        if(uploaded)db.markCoverSynced(row.fileName,result[0].id);
+        return uploaded;
+    }
+
+    private static BackupInfo uploadOneCover(String token,ReaderStateDb db,ReaderStateDb.PendingCoverRow row,String hash)throws Exception{
+        if(row.coverPath==null||row.coverPath.isEmpty()){String id=row.remoteId;if((id==null||id.isEmpty())){BackupInfo i=findFileInfo(token,DriveObjectNamer.coverName(hash));if(i!=null)id=i.id;}if(id!=null&&!id.isEmpty())deleteRemoteFile(token,id);return new BackupInfo();}
         File cover=new File(row.coverPath);if(!cover.isFile())throw new Exception("Custom cover file is unavailable");String name=DriveObjectNamer.coverName(hash);BackupInfo remote=null;if(row.remoteId!=null&&!row.remoteId.isEmpty()){remote=new BackupInfo();remote.id=row.remoteId;}else remote=findFileInfo(token,name);
         String session=row.session;long offset=Math.max(0,row.offset);if(session==null||session.isEmpty()){session=startResumable(token,name,cover,hash,remote==null?"":remote.id);offset=0;db.saveCoverUploadCheckpoint(row.fileName,session,0);}
-        BackupInfo done;try{done=uploadResumableCover(token,cover,session,offset,db,row.fileName);}catch(ResumableExpiredException x){session=startResumable(token,name,cover,hash,remote==null?"":remote.id);db.saveCoverUploadCheckpoint(row.fileName,session,0);done=uploadResumableCover(token,cover,session,0,db,row.fileName);}String id=done.id;if((id==null||id.isEmpty())&&remote!=null)id=remote.id;db.markCoverSynced(row.fileName,id);
+        BackupInfo done;try{done=uploadResumableCover(token,cover,session,offset,db,row.fileName);}catch(ResumableExpiredException x){session=startResumable(token,name,cover,hash,remote==null?"":remote.id);db.saveCoverUploadCheckpoint(row.fileName,session,0);done=uploadResumableCover(token,cover,session,0,db,row.fileName);}String id=done.id;if((id==null||id.isEmpty())&&remote!=null)id=remote.id;if(id==null||id.isEmpty()){BackupInfo confirmed=findFileInfo(token,name);if(confirmed==null)throw new Exception("Google Drive cover confirmation is pending");id=confirmed.id;}done.id=id;return done;
     }
-    private static BackupInfo uploadResumableCover(String token,File file,String session,long start,ReaderStateDb db,String fileName)throws Exception{
-        long total=file.length(),offset=Math.max(0,Math.min(start,total));try(RandomAccessFile raf=new RandomAccessFile(file,"r")){while(offset<total){int len=(int)Math.min((long)SyncBatchPolicy.CHUNK_BYTES,total-offset);long end=offset+len-1;HttpURLConnection c=open(session,"PUT",token);c.setDoOutput(true);c.setRequestProperty("Content-Type","image/jpeg");c.setRequestProperty("Content-Range","bytes "+offset+"-"+end+"/"+total);c.setFixedLengthStreamingMode(len);raf.seek(offset);byte[] b=new byte[64*1024];int remain=len;try(OutputStream out=new BufferedOutputStream(c.getOutputStream())){while(remain>0){int n=raf.read(b,0,Math.min(b.length,remain));if(n<0)throw new Exception("Unexpected end of cover file");out.write(b,0,n);remain-=n;}}int code=c.getResponseCode();if(code==404||code==410){c.disconnect();throw new ResumableExpiredException();}if(code==308){String range=c.getHeaderField("Range");c.disconnect();offset=parseNextOffset(range,end+1);db.saveCoverUploadCheckpoint(fileName,session,offset);continue;}if(code>=200&&code<300){byte[] data;try(InputStream in=c.getInputStream()){data=readAll(in);}finally{c.disconnect();}BackupInfo info=new BackupInfo();if(data.length>0){JSONObject o=new JSONObject(new String(data,StandardCharsets.UTF_8));info.id=o.optString("id","");info.modifiedTime=o.optString("modifiedTime","");}return info;}c.disconnect();throw new Exception("Google Drive cover upload error "+code);}}return new BackupInfo();
+    private static BackupInfo uploadResumableCover(String token, File file, String session, long start,
+                                                  ReaderStateDb db, String fileName) throws Exception {
+        return uploadResumable(token, file, session, start, db, fileName, true);
     }
     private static void deleteRemoteFile(String token,String id)throws Exception{HttpURLConnection c=open("https://www.googleapis.com/drive/v3/files/"+id,"DELETE",token);int code=c.getResponseCode();c.disconnect();if(code!=404&&code!=204&&!(code>=200&&code<300))throw new Exception("Google Drive delete error "+code);}
     private static String mimeFor(File file){String n=file==null?"":file.getName().toLowerCase(java.util.Locale.ROOT);if(n.endsWith(".pdf"))return "application/pdf";if(n.endsWith(".jpg")||n.endsWith(".jpeg"))return "image/jpeg";if(n.endsWith(".png"))return "image/png";return "application/epub+zip";}
 
     private static void deleteOneBook(String token, ReaderStateDb db, ReaderStateDb.TombstoneRow row) throws Exception {
-        String id=row.remoteId;
-        if((id==null||id.isEmpty())&&row.hash!=null&&!row.hash.isEmpty()) {
-            String format=row.fileName!=null&&row.fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".pdf")?"pdf":"epub";
-            BackupInfo info=findFileInfo(token,DriveObjectNamer.bookName(row.hash,format)); if(info!=null)id=info.id;
+        DriveDeletionGuard.publishDeletion(row.hash,deletionRemote(token),() -> {
+            // Also clean up a known older object ID, but never discard the tombstone itself.
+            if(row.remoteId!=null&&!row.remoteId.isEmpty())deleteRemoteFile(token,row.remoteId);
+            db.markTombstoneSynced(row.hash);
+        });
+    }
+
+    private static DriveDeletionGuard.Local deletionLocal(ReaderStateDb db) {
+        return new DriveDeletionGuard.Local() {
+            public boolean hasTombstone(String hash) {return db.hasBookTombstone(hash);}
+            public void rememberDeletion(String hash) {db.rememberRemoteDeletion(hash);}
+        };
+    }
+
+    private static DriveDeletionGuard.Remote deletionRemote(String token) {
+        return new DriveDeletionGuard.Remote() {
+            public boolean hasMarker(String hash)throws Exception {
+                return findFileInfo(token,DriveDeletionGuard.markerName(hash))!=null;
+            }
+            public void publishMarker(String hash)throws Exception {
+                String name=DriveDeletionGuard.markerName(hash);
+                if(findFileInfo(token,name)!=null)return;
+                // Metadata-only immutable marker; duplicate creates are harmless (existence is authority).
+                HttpURLConnection c=open("https://www.googleapis.com/drive/v3/files?fields=id","POST",token);
+                c.setRequestProperty("Content-Type","application/json; charset=UTF-8");c.setDoOutput(true);
+                JSONObject meta=new JSONObject();meta.put("name",name);meta.put("mimeType","application/octet-stream");
+                meta.put("parents",new JSONArray().put("appDataFolder"));
+                byte[] body=meta.toString().getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(body.length);
+                try {try(OutputStream out=c.getOutputStream()){out.write(body);}ensureSuccess(c);}
+                finally {c.disconnect();}
+            }
+            public void deleteAssets(String hash)throws Exception {deleteBookAssets(token,hash);}
+        };
+    }
+
+    private static void deleteBookAssets(String token,String hash)throws Exception {
+        DriveDeletionGuard.markerName(hash);
+        String q="trashed=false and (name='"+DriveObjectNamer.bookName(hash,"epub")+"' or name='"+
+                DriveObjectNamer.bookName(hash,"pdf")+"' or name='"+DriveObjectNamer.coverName(hash)+"')";
+        String url="https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&pageSize=100&fields=files(id)&q="+URLEncoder.encode(q,"UTF-8");
+        // Re-read page one after deleting it: page tokens are unstable when objects are removed.
+        for(int page=0;page<100;page++) {
+            JSONArray files=authorizedJson(url,token).optJSONArray("files");
+            if(files==null||files.length()==0)return;
+            for(int i=0;i<files.length();i++)deleteRemoteFile(token,files.getJSONObject(i).getString("id"));
         }
-        if(id!=null&&!id.isEmpty()) {
-            HttpURLConnection c=open("https://www.googleapis.com/drive/v3/files/"+id,"DELETE",token);
-            int code=c.getResponseCode(); c.disconnect();
-            if(code!=404&&code!=204&&!(code>=200&&code<300)) throw new Exception("Google Drive delete error "+code);
-        }
-        db.markTombstoneSynced(row.hash);
+        throw new Exception("Cloud deletion cleanup is still pending; retry sync");
     }
 
     private static String startResumable(String token,String name,File file,String hash,String remoteId) throws Exception {
@@ -303,31 +422,107 @@ final class GoogleDriveSync {
         return location;
     }
 
-    private static BackupInfo uploadResumable(String token,File file,String session,long start,
-                                               ReaderStateDb db,String fileName) throws Exception {
-        long total=file.length(); long offset=Math.max(0L,Math.min(start,total));
-        try(RandomAccessFile raf=new RandomAccessFile(file,"r")) {
-            while(offset<total) {
-                int len=(int)Math.min((long)SyncBatchPolicy.CHUNK_BYTES,total-offset); long end=offset+len-1;
-                HttpURLConnection c=open(session,"PUT",token); c.setDoOutput(true);
-                c.setRequestProperty("Content-Type",mimeFor(file));
-                c.setRequestProperty("Content-Range","bytes "+offset+"-"+end+"/"+total); c.setFixedLengthStreamingMode(len);
-                raf.seek(offset); byte[] buffer=new byte[64*1024]; int remain=len;
-                try(OutputStream out=new BufferedOutputStream(c.getOutputStream())) {
-                    while(remain>0){int n=raf.read(buffer,0,Math.min(buffer.length,remain));if(n<0)throw new Exception("Unexpected end of book file");out.write(buffer,0,n);remain-=n;}
-                }
-                int code=c.getResponseCode();
-                if(code==404||code==410){c.disconnect();throw new ResumableExpiredException();}
-                if(code==308){String range=c.getHeaderField("Range");c.disconnect();offset=parseNextOffset(range,end+1);db.saveUploadCheckpoint(fileName,session,offset);continue;}
-                if(code>=200&&code<300){byte[] data;try(InputStream in=c.getInputStream()){data=readAll(in);}finally{c.disconnect();}BackupInfo info=new BackupInfo();if(data.length>0){JSONObject o=new JSONObject(new String(data,StandardCharsets.UTF_8));info.id=o.optString("id","");info.modifiedTime=o.optString("modifiedTime","");}return info;}
-                InputStream err=c.getErrorStream();String detail=err==null?"":new String(readAll(err),StandardCharsets.UTF_8);c.disconnect();throw new Exception("Google Drive upload error "+code+(detail.isEmpty()?"":": "+detail));
+    private static final class UploadProbe {
+        long offset;
+        BackupInfo completed;
+    }
+
+    private static BackupInfo readUploadInfo(HttpURLConnection connection) throws Exception {
+        byte[] data = readAllLimited(connection.getInputStream(), 512L * 1024L);
+        BackupInfo info = new BackupInfo();
+        if (data.length > 0) {
+            JSONObject value = new JSONObject(new String(data, StandardCharsets.UTF_8));
+            info.id = value.optString("id", "");
+            info.modifiedTime = value.optString("modifiedTime", "");
+        }
+        return info;
+    }
+
+    private static UploadProbe inspectUpload(String token, String session, long total) throws Exception {
+        GoogleAutoSync.requireHomeVisible();
+        HttpURLConnection connection = open(session, "PUT", token);
+        try {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Range", "bytes */" + total);
+            connection.setFixedLengthStreamingMode(0);
+            try (OutputStream ignored = connection.getOutputStream()) { }
+            int code = connection.getResponseCode();
+            if (code == 400 || code == 404 || code == 410) throw new ResumableExpiredException();
+            UploadProbe probe = new UploadProbe();
+            if (code == 308) {
+                probe.offset = ResumableUploadPolicy.acknowledgedOffset(connection.getHeaderField("Range"), total);
+                return probe;
+            }
+            if (code >= 200 && code < 300) {
+                probe.offset = total;
+                probe.completed = readUploadInfo(connection);
+                return probe;
+            }
+            throw new Exception("Google Drive upload status error " + code);
+        } finally { connection.disconnect(); }
+    }
+
+    private static void saveUploadOffset(ReaderStateDb db, String name, String session, long offset, boolean cover) {
+        if (cover) db.saveCoverUploadCheckpoint(name, session, offset);
+        else db.saveUploadCheckpoint(name, session, offset);
+    }
+
+    private static BackupInfo uploadResumable(String token, File file, String session, long start,
+                                               ReaderStateDb db, String fileName) throws Exception {
+        return uploadResumable(token, file, session, start, db, fileName, false);
+    }
+
+    private static BackupInfo uploadResumable(String token, File file, String session, long start,
+                                               ReaderStateDb db, String fileName, boolean cover) throws Exception {
+        long total = file.length();
+        // The saved local offset is only a hint. The server may have accepted a chunk
+        // whose response was lost, or accepted fewer bytes than the client sent.
+        UploadProbe probe = inspectUpload(token, session, total);
+        if (probe.completed != null) return probe.completed;
+        long offset = probe.offset;
+        saveUploadOffset(db, fileName, session, offset, cover);
+        int stalled = 0;
+        try (RandomAccessFile source = new RandomAccessFile(file, "r")) {
+            while (offset < total) {
+                GoogleAutoSync.requireHomeVisible();
+                int length = (int) Math.min((long) SyncBatchPolicy.CHUNK_BYTES, total - offset);
+                long end = offset + length - 1L;
+                HttpURLConnection connection = open(session, "PUT", token);
+                try {
+                    connection.setDoOutput(true);
+                    connection.setRequestProperty("Content-Type", mimeFor(file));
+                    connection.setRequestProperty("Content-Range", "bytes " + offset + "-" + end + "/" + total);
+                    connection.setFixedLengthStreamingMode(length);
+                    source.seek(offset);
+                    byte[] buffer = new byte[64 * 1024];
+                    int remaining = length;
+                    try (OutputStream out = new BufferedOutputStream(connection.getOutputStream())) {
+                        while (remaining > 0) {
+                            int count = source.read(buffer, 0, Math.min(buffer.length, remaining));
+                            if (count < 0) throw new Exception("Unexpected end of upload file");
+                            out.write(buffer, 0, count);
+                            remaining -= count;
+                        }
+                    }
+                    int code = connection.getResponseCode();
+                    if (code == 400 || code == 404 || code == 410) throw new ResumableExpiredException();
+                    if (code == 308) {
+                        long acknowledged = ResumableUploadPolicy.acknowledgedOffset(connection.getHeaderField("Range"), total);
+                        stalled = ResumableUploadPolicy.stalledAcknowledgements(offset, acknowledged, stalled);
+                        offset = acknowledged;
+                        saveUploadOffset(db, fileName, session, offset, cover);
+                        if (stalled >= ResumableUploadPolicy.MAX_STALLED_ACKS)
+                            throw new Exception("Google Drive upload made no progress; queued for retry");
+                        continue;
+                    }
+                    if (code >= 200 && code < 300) return readUploadInfo(connection);
+                    throw new Exception("Google Drive upload error " + code);
+                } finally { connection.disconnect(); }
             }
         }
-        BackupInfo info=new BackupInfo();return info;
-    }
-    private static long parseNextOffset(String range,long fallback){
-        if(range!=null){int dash=range.lastIndexOf('-');if(dash>=0)try{return Long.parseLong(range.substring(dash+1).trim())+1L;}catch(Exception ignored){}}
-        return fallback;
+        UploadProbe completed = inspectUpload(token, session, total);
+        if (completed.completed != null) return completed.completed;
+        throw new Exception("Google Drive upload confirmation is pending; queued for retry");
     }
     private static final class ResumableExpiredException extends Exception {}
 
@@ -337,6 +532,11 @@ final class GoogleDriveSync {
             File remoteArchive = null, remoteStateArchive = null, temp = null, stateTemp = null;
             File mergedArchive = null, stateArchive = null;
             try {
+                ReaderStateDb db=ReaderStateDb.initialize(activity,prefs,libraryDir);
+                for(ReaderStateDb.TombstoneRow row:db.pendingTombstones(SyncBatchPolicy.DELETE_BATCH))deleteOneBook(token,db,row);
+                if(db.pendingTombstoneCount()>0)throw new Exception("Cloud deletions are queued; sync again before legacy backup");
+                // Legacy mode is already O(N); apply markers before merging old ZIP content.
+                restoreDeletionMarkers(token,db);
                 BackupInfo remote = findFileInfo(token, BACKUP_NAME);
                 BackupInfo remoteState = findFileInfo(token, STATE_BACKUP_NAME);
                 String seenRemote = prefs.getString("google_last_seen_remote_modified", "");
@@ -350,7 +550,6 @@ final class GoogleDriveSync {
                     temp = new File(activity.getCacheDir(), "wow_smart_merge_" + System.currentTimeMillis());
                     if (!temp.mkdirs()) throw new Exception("Unable to prepare cloud merge folder");
                     unzipSafely(remoteArchive, temp);
-                    mergeMissingFiles(new File(temp, "books"), libraryDir);
                     mergeMissingFiles(new File(temp, "fonts"), fontsDir);
                     CloudMergePolicy.mergePreferences(readPreferenceValues(new File(temp, "state.json")), prefs);
                     File remoteDb = new File(temp, "state/reader.db");
@@ -360,15 +559,16 @@ final class GoogleDriveSync {
 
                 if (remoteStateChanged) {
                     remoteStateArchive = File.createTempFile("wow-state-sync-", ".zip", activity.getCacheDir());
-                    downloadFile(token, remoteState.id, remoteStateArchive);
+                    downloadFileBounded(token, remoteState.id, remoteStateArchive, MAX_STATE_ZIP_BYTES);
                     stateTemp = new File(activity.getCacheDir(), "wow_state_merge_" + System.currentTimeMillis());
                     if (!stateTemp.mkdirs()) throw new Exception("Unable to prepare state merge folder");
-                    unzipSafely(remoteStateArchive, stateTemp);
+                    unzipSafelyBounded(remoteStateArchive, stateTemp, MAX_STATE_UNCOMPRESSED_BYTES);
                     CloudMergePolicy.mergePreferences(readPreferenceValues(new File(stateTemp, "state.json")), prefs);
                     File remoteDb = new File(stateTemp, "state/reader.db");
                     if (remoteDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(remoteDb, prefs);
                 }
 
+                if(temp!=null)restoreLegacyBooks(token,db,prefs,new File(temp,"books"),libraryDir,true);
                 long filesRevision = prefs.getLong("library_files_updated_ms", 0L);
                 long lastFilesBackupRevision = prefs.getLong("google_last_files_backup_revision_ms", 0L);
                 boolean needFull = remote == null || remoteFilesChanged || filesRevision > lastFilesBackupRevision;
@@ -423,6 +623,8 @@ final class GoogleDriveSync {
                 if (!libraryDir.exists() && !libraryDir.mkdirs()) throw new Exception("Unable to prepare library folder");
                 if (!fontsDir.exists() && !fontsDir.mkdirs()) throw new Exception("Unable to prepare fonts folder");
 
+                ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+                restoreDeletionMarkers(token,db);
                 // Legacy ZIP remains a migration/fallback source, but is no longer required.
                 BackupInfo legacy = findBackupInfo(token);
                 if (legacy != null) {
@@ -432,7 +634,6 @@ final class GoogleDriveSync {
                     temp = new File(activity.getCacheDir(), "wow_restore_" + System.currentTimeMillis());
                     if (!temp.mkdirs()) throw new Exception("Unable to prepare restore folder");
                     unzipSafely(archive, temp);
-                    restoreFiles(new File(temp, "books"), libraryDir);
                     restoreFiles(new File(temp, "fonts"), fontsDir);
                     restorePreferences(new File(temp, "state.json"), prefs);
                     File fullDb = new File(temp, "state/reader.db");
@@ -446,7 +647,8 @@ final class GoogleDriveSync {
                     restoreStateArchive(activity, token, stateInfo, libraryDir, fontsDir, prefs);
                 }
 
-                ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+                // Merge both snapshots' delete intent before installing any legacy book bytes.
+                if(temp!=null)restoreLegacyBooks(token,db,prefs,new File(temp,"books"),libraryDir,false);
                 // One-time restore may be O(N); normal startup/sync remains paged and incremental.
                 restoredBooks = restoreIncrementalBooks(token, activity, db, prefs, libraryDir);
                 restoredCovers = restoreIncrementalCovers(token, activity, db);
@@ -488,9 +690,9 @@ final class GoogleDriveSync {
         File stateZip = File.createTempFile("wow-state-restore-", ".zip", activity.getCacheDir());
         File stateDir = new File(activity.getCacheDir(), "wow_state_restore_" + System.currentTimeMillis());
         try {
-            downloadFile(token, stateInfo.id, stateZip);
+            downloadFileBounded(token, stateInfo.id, stateZip, MAX_STATE_ZIP_BYTES);
             if (!stateDir.mkdirs()) throw new Exception("Unable to prepare state restore folder");
-            unzipSafely(stateZip, stateDir);
+            unzipSafelyBounded(stateZip, stateDir, MAX_STATE_UNCOMPRESSED_BYTES);
             restorePreferences(new File(stateDir, "state.json"), prefs);
             restoreFiles(new File(stateDir, "fonts"), fontsDir);
             File stateDb = new File(stateDir, "state/reader.db");
@@ -498,6 +700,37 @@ final class GoogleDriveSync {
         } finally {
             stateZip.delete();
             deleteRecursively(stateDir);
+        }
+    }
+
+    private static void restoreDeletionMarkers(String token,ReaderStateDb db)throws Exception {
+        String pageToken="";
+        do {
+            JSONObject page=listIncrementalObjects(token,DriveDeletionGuard.PREFIX,pageToken);
+            JSONArray files=page.optJSONArray("files");
+            if(files!=null)for(int i=0;i<files.length();i++) {
+                JSONObject file=files.optJSONObject(i);if(file==null)continue;
+                String hash=DriveDeletionGuard.parseMarker(file.optString("name",""));
+                if(!hash.isEmpty())db.rememberRemoteDeletion(hash);
+            }
+            pageToken=page.optString("nextPageToken","");
+        } while(!pageToken.isEmpty());
+    }
+
+    private static void restoreLegacyBooks(String token,ReaderStateDb db,SharedPreferences prefs,
+                                           File source,File destination,boolean missingOnly)throws Exception {
+        File[] files=source.listFiles();if(files==null)return;
+        for(File book:files) {
+            if(!book.isFile())continue;
+            String name=book.getName().toLowerCase(java.util.Locale.ROOT);
+            if(!name.endsWith(".epub")&&!name.endsWith(".pdf"))continue;
+            File target=new File(destination,book.getName());
+            if(missingOnly&&target.isFile())continue;
+            String hash=FileIdentityUtil.sha256(book);
+            DriveDeletionGuard.restoreIfLive(hash,deletionRemote(token),deletionLocal(db),() -> {
+                installRestoredFile(book,target);
+                db.recordRestoredBook(target,hash,"",prefs);
+            });
         }
     }
 
@@ -515,6 +748,9 @@ final class GoogleDriveSync {
                 String remoteName = remote.optString("name", "");
                 DriveRestorePlanner.BookObject object = DriveRestorePlanner.parseBookObject(remoteName);
                 if (id.isEmpty() || object == null) continue;
+                if(DriveDeletionGuard.isDeleted(object.hash,deletionRemote(token),deletionLocal(db))) {
+                    db.rememberRemoteDeletion(object.hash);continue;
+                }
 
                 String preferred = db.fileNameForHash(object.hash);
                 String localName = DriveRestorePlanner.safeLocalName(preferred, object);
@@ -536,9 +772,11 @@ final class GoogleDriveSync {
                     String actual = FileIdentityUtil.sha256(scratch);
                     if (!object.hash.equalsIgnoreCase(actual))
                         throw new Exception("Cloud book integrity check failed: " + remoteName);
-                    installRestoredFile(scratch, destination);
-                    db.recordRestoredBook(destination, object.hash, id, prefs);
-                    restored++;
+                    final File target=destination;
+                    if(DriveDeletionGuard.restoreIfLive(object.hash,deletionRemote(token),deletionLocal(db),() -> {
+                        installRestoredFile(scratch,target);
+                        db.recordRestoredBook(target,object.hash,id,prefs);
+                    }))restored++;
                 } finally {
                     scratch.delete();
                 }
@@ -562,6 +800,9 @@ final class GoogleDriveSync {
                 String id = remote.optString("id", "");
                 String hash = DriveRestorePlanner.parseCoverHash(remote.optString("name", ""));
                 if (id.isEmpty() || hash.isEmpty() || db.fileNameForHash(hash).isEmpty()) continue;
+                if(DriveDeletionGuard.isDeleted(hash,deletionRemote(token),deletionLocal(db))) {
+                    db.rememberRemoteDeletion(hash);continue;
+                }
                 File destination = new File(coverDir, "cloud_" + hash.substring(0, 24) + ".jpg");
                 File scratch = File.createTempFile("wow-cover-restore-", ".jpg", activity.getCacheDir());
                 try {
@@ -569,9 +810,10 @@ final class GoogleDriveSync {
                     android.graphics.Bitmap preview = CustomCoverStore.decodeSampled(scratch, 120, 180);
                     if (preview == null) continue;
                     preview.recycle();
-                    installRestoredFile(scratch, destination);
-                    db.recordRestoredCover(hash, destination.getAbsolutePath(), id);
-                    restored++;
+                    if(DriveDeletionGuard.restoreIfLive(hash,deletionRemote(token),deletionLocal(db),() -> {
+                        installRestoredFile(scratch,destination);
+                        db.recordRestoredCover(hash,destination.getAbsolutePath(),id);
+                    }))restored++;
                 } finally {
                     scratch.delete();
                 }
@@ -653,29 +895,40 @@ final class GoogleDriveSync {
                                     SharedPreferences prefs) throws Exception {
         File out = File.createTempFile("wow-reader-backup-", ".zip", activity.getCacheDir());
         try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(out)))) {
-            addDirectory(zip, libraryDir, "books/");
+            ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+            // Full ZIP is a compatibility path only. Do not put locally known deleted content back in it.
+            File[] books=libraryDir.listFiles();
+            if(books!=null)for(File book:books) {
+                if(!book.isFile())continue;
+                String name=book.getName().toLowerCase(java.util.Locale.ROOT);
+                if(!name.endsWith(".epub")&&!name.endsWith(".pdf"))continue;
+                String hash=db.ensureHash(book,prefs);
+                if(!db.hasBookTombstone(hash))addFile(zip,book,"books/"+book.getName());
+            }
             addDirectory(zip, fontsDir, "fonts/");
             byte[] state = exportPreferences(prefs).toString().getBytes(StandardCharsets.UTF_8);
             ZipEntry entry = new ZipEntry("state.json");
             zip.putNextEntry(entry);
             zip.write(state);
             zip.closeEntry();
-            ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
-            File dbFile = db.databaseFile(activity);
-            if (dbFile != null && dbFile.isFile()) addFile(zip, dbFile, "state/reader.db");
+            File dbFile = db.createSnapshot(activity);
+            try { addFile(zip, dbFile, "state/reader.db"); }
+            finally { dbFile.delete(); }
         }
         return out;
     }
 
     private static File buildStateBackup(Activity activity, SharedPreferences prefs, File fontsDir) throws Exception {
+        GoogleAutoSync.requireHomeVisible();
         File out = File.createTempFile("wow-reader-state-", ".zip", activity.getCacheDir());
         try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(out)))) {
             byte[] state = exportPreferences(prefs).toString().getBytes(StandardCharsets.UTF_8);
             ZipEntry entry = new ZipEntry("state.json");
             zip.putNextEntry(entry); zip.write(state); zip.closeEntry();
             ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, new File(activity.getFilesDir(), "library"));
-            File dbFile = db.databaseFile(activity);
-            if (dbFile != null && dbFile.isFile()) addFile(zip, dbFile, "state/reader.db");
+            File dbFile = db.createSnapshot(activity);
+            try { addFile(zip, dbFile, "state/reader.db"); }
+            finally { dbFile.delete(); }
             addDirectory(zip, fontsDir, "fonts/");
         }
         return out;
@@ -688,7 +941,7 @@ final class GoogleDriveSync {
         JSONObject values = new JSONObject();
         for (Map.Entry<String, ?> entry : prefs.getAll().entrySet()) {
             String key = entry.getKey();
-            if (key == null || key.startsWith("google_account_") || key.startsWith("google_sync_")) continue;
+            if (key == null || key.startsWith("google_") || CloudMergePolicy.isDeviceLocal(key)) continue;
             Object value = entry.getValue();
             JSONObject item = new JSONObject();
             if (value instanceof String) { item.put("t", "s"); item.put("v", value); }
@@ -710,7 +963,7 @@ final class GoogleDriveSync {
 
     private static void restorePreferences(File stateFile, SharedPreferences prefs) throws Exception {
         if (stateFile == null || !stateFile.isFile()) return;
-        String json = new String(readAll(new FileInputStream(stateFile)), StandardCharsets.UTF_8);
+        String json = new String(readAllLimited(new FileInputStream(stateFile), MAX_STATE_JSON_BYTES), StandardCharsets.UTF_8);
         JSONObject values = new JSONObject(json).optJSONObject("prefs");
         if (values == null) return;
         SharedPreferences.Editor edit = prefs.edit();
@@ -764,7 +1017,7 @@ final class GoogleDriveSync {
 
     private static JSONObject readPreferenceValues(File stateFile) throws Exception {
         if (stateFile == null || !stateFile.isFile()) return new JSONObject();
-        String json = new String(readAll(new FileInputStream(stateFile)), StandardCharsets.UTF_8);
+        String json = new String(readAllLimited(new FileInputStream(stateFile), MAX_STATE_JSON_BYTES), StandardCharsets.UTF_8);
         JSONObject values = new JSONObject(json).optJSONObject("prefs");
         return values == null ? new JSONObject() : values;
     }
@@ -881,10 +1134,58 @@ final class GoogleDriveSync {
         ensureSuccess(c); c.disconnect();
     }
 
+    private static void downloadFileBounded(String token, String id, File destination, long maxBytes) throws Exception {
+        HttpURLConnection c = open("https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", "GET", token);
+        ensureSuccess(c);
+        // getContentLengthLong() is API 24; keep Android 6/API 23 supported.
+        long length = -1L;
+        try { String value = c.getHeaderField("Content-Length"); if (value != null) length = Long.parseLong(value); }
+        catch (NumberFormatException ignored) {}
+        if (length > maxBytes) { c.disconnect(); throw new Exception("Google state archive is too large"); }
+        try (InputStream in = new BufferedInputStream(c.getInputStream()); OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) {
+            copyBounded(in, out, maxBytes);
+        } finally { c.disconnect(); }
+    }
+
     private static void downloadFile(String token, String id, File destination) throws Exception {
         HttpURLConnection c = open("https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", "GET", token); ensureSuccess(c);
         try (InputStream in = new BufferedInputStream(c.getInputStream()); OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) { copy(in, out); }
         c.disconnect();
+    }
+
+    private static void copyBounded(InputStream in, OutputStream out, long maxBytes) throws Exception {
+        byte[] buffer = new byte[64 * 1024]; long total = 0L; int n;
+        while ((n = in.read(buffer)) > 0) {
+            GoogleAutoSync.requireHomeVisible();
+            total += n;
+            if (total > maxBytes) throw new Exception("Google state archive is too large");
+            out.write(buffer, 0, n);
+        }
+    }
+
+    private static byte[] readAllLimited(InputStream in, long maxBytes) throws Exception {
+        try (InputStream source = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[32 * 1024]; long total = 0L; int n;
+            while ((n = source.read(buffer)) > 0) { total += n; if (total > maxBytes) throw new Exception("Google state metadata is too large"); out.write(buffer, 0, n); }
+            return out.toByteArray();
+        }
+    }
+
+    private static void unzipSafelyBounded(File zipFile, File destination, long maxBytes) throws Exception {
+        String root = destination.getCanonicalPath() + File.separator; long total = 0L;
+        try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(new FileInputStream(zipFile)))) {
+            ZipEntry entry; byte[] buffer = new byte[64 * 1024];
+            while ((entry = zip.getNextEntry()) != null) {
+                File out = new File(destination, entry.getName());
+                if (!out.getCanonicalPath().startsWith(root)) throw new Exception("Unsafe backup archive");
+                if (entry.isDirectory()) { out.mkdirs(); zip.closeEntry(); continue; }
+                File parent = out.getParentFile(); if (parent != null) parent.mkdirs();
+                try (OutputStream os = new BufferedOutputStream(new FileOutputStream(out))) {
+                    int n; while ((n = zip.read(buffer)) > 0) { total += n; if (total > maxBytes) throw new Exception("Google state archive expands too far"); os.write(buffer, 0, n); }
+                }
+                zip.closeEntry();
+            }
+        }
     }
 
     private static JSONObject authorizedJson(String url, String token) throws Exception {

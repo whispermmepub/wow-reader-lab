@@ -21,8 +21,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 /** Extracts a lightweight word/line text layer without replacing PdfRenderer. */
 final class PdfTextRepository {
@@ -114,9 +116,12 @@ final class PdfTextRepository {
     private PDDocument document;
     private volatile boolean closed = false;
 
-    private final LinkedHashMap<Integer, PageText> cache = new LinkedHashMap<Integer, PageText>(24, .75f, true) {
-        @Override protected boolean removeEldestEntry(Map.Entry<Integer, PageText> eldest) { return size() > 24; }
+    private final LinkedHashMap<Integer, PageText> cache = new LinkedHashMap<Integer, PageText>(PdfRenderPolicy.TEXT_CACHE_ENTRIES, .75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<Integer, PageText> eldest) {
+            return size() > PdfRenderPolicy.TEXT_CACHE_ENTRIES;
+        }
     };
+    private final Map<Integer, List<Callback>> inFlight = new HashMap<>();
 
     PdfTextRepository(Context context, File file) {
         appContext = context.getApplicationContext();
@@ -132,15 +137,34 @@ final class PdfTextRepository {
         if (closed || callback == null || page < 0) return;
         PageText hit = cached(page);
         if (hit != null) { main.post(() -> callback.onPage(hit)); return; }
-        worker.execute(() -> {
+        synchronized (inFlight) {
+            List<Callback> callbacks = inFlight.get(page);
+            if (callbacks != null) {
+                callbacks.add(callback);
+                return;
+            }
+            callbacks = new ArrayList<>();
+            callbacks.add(callback);
+            inFlight.put(page, callbacks);
+        }
+        try { worker.execute(() -> {
             PageText result = null;
             try {
                 result = extract(page);
                 if (result != null) synchronized (cache) { cache.put(page, result); }
             } catch (Throwable ignored) {}
             final PageText ready = result;
-            if (!closed) main.post(() -> callback.onPage(ready));
-        });
+            final List<Callback> callbacks;
+            synchronized (inFlight) { callbacks = inFlight.remove(page); }
+            if (!closed && callbacks != null) {
+                main.post(() -> {
+                    if (closed) return;
+                    for (Callback pending : callbacks) pending.onPage(ready);
+                });
+            }
+        }); } catch (RejectedExecutionException ignored) {
+            synchronized (inFlight) { inFlight.remove(page); }
+        }
     }
 
     private PageText extract(int pageZero) throws Exception {
@@ -236,6 +260,7 @@ final class PdfTextRepository {
             document = null;
         }
         synchronized (cache) { cache.clear(); }
+        synchronized (inFlight) { inFlight.clear(); }
     }
 
     static PointF clampPoint(float nx, float ny) { return new PointF(clamp01(nx), clamp01(ny)); }

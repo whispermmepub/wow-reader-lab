@@ -99,7 +99,8 @@ final class EpubUtil {
         File containerFile = new File(root, "META-INF/container.xml");
         Document container = parseXml(containerFile);
         String opfPath = rootfilePath(container);
-        File opf = new File(root, opfPath);
+        File opf = safeExtractedFile(root, opfPath);
+        if (opf == null || !opf.isFile()) throw new Exception("Invalid EPUB package");
         Document opfDoc = parseXml(opf);
         File opfDir = opf.getParentFile();
 
@@ -107,44 +108,66 @@ final class EpubUtil {
         info.title = clean(firstText(opfDoc, "title"));
         if (isGenericTitle(info.title)) info.title = null;
         info.author = clean(firstText(opfDoc, "creator"));
-
         LinkedHashMap<String, ManifestItem> items = readManifest(opfDoc);
-        Map<String, Integer> spineIndex = new HashMap<>();
+        List<File> candidates = new ArrayList<>();
         NodeList refs = elements(opfDoc, "itemref");
         for (int i = 0; i < refs.getLength(); i++) {
             Element ref = (Element) refs.item(i);
             if ("no".equalsIgnoreCase(ref.getAttribute("linear"))) continue;
             ManifestItem item = items.get(ref.getAttribute("idref"));
-            if (item == null || item.href == null || item.href.isEmpty()) continue;
-            if (hasWord(item.properties, "nav")) continue;
-            File chapter = resolveFile(opfDir, item.href);
-            if (!chapter.isFile() || !hasReadableContent(chapter)) continue;
-            int index = info.spine.size();
-            info.spine.add(chapter);
-            info.chapterTitles.add(guessChapterTitle(chapter, index + 1));
-            spineIndex.put(canonical(chapter), index);
+            if (item == null || item.href == null || item.href.isEmpty() || hasWord(item.properties, "nav")) continue;
+            File chapter = safeExtractedFile(root, canonicalRelative(root, resolveFile(opfDir, item.href)));
+            if (chapter != null && chapter.isFile()) candidates.add(chapter);
         }
 
-        ManifestItem navItem = null;
-        ManifestItem ncxItem = null;
+        List<File> cacheDependencies = new ArrayList<>();
+        cacheDependencies.add(containerFile); cacheDependencies.add(opf);
+        for (ManifestItem dep : items.values()) {
+            if (hasWord(dep.properties, "nav") || (dep.mediaType != null && dep.mediaType.toLowerCase(Locale.ROOT).contains("ncx"))) {
+                File f = safeExtractedFile(root, canonicalRelative(root, resolveFile(opfDir, dep.href)));
+                if (f != null && f.isFile()) cacheDependencies.add(f);
+            }
+        }
+        EpubOpeningPolicy.Cached cached = EpubOpeningPolicy.read(root, opfPath, opf, candidates, cacheDependencies);
+        if (cached != null) {
+            info.title = cached.title; info.author = cached.author;
+            for (int i = 0; i < cached.paths.size(); i++) {
+                File chapter = safeExtractedFile(root, cached.paths.get(i));
+                if (chapter != null && chapter.isFile()) { info.spine.add(chapter); info.chapterTitles.add(i < cached.titles.size() && cached.titles.get(i) != null ? cached.titles.get(i) : EpubOpeningPolicy.title(chapter, info.spine.size())); }
+            }
+            info.tocSpineIndices.addAll(cached.tocIndices); info.tocTitles.addAll(cached.tocTitles); info.tocFragments.addAll(cached.tocFragments);
+            return info;
+        }
+
+        for (File chapter : candidates) {
+            if (!EpubOpeningPolicy.hasReadableContent(chapter)) continue;
+            info.spine.add(chapter);
+            info.chapterTitles.add(EpubOpeningPolicy.title(chapter, info.spine.size()));
+        }
+        Map<String, Integer> spineIndex = new HashMap<>();
+        for (int i = 0; i < info.spine.size(); i++) spineIndex.put(canonical(info.spine.get(i)), i);
+
+        ManifestItem navItem = null, ncxItem = null;
         for (ManifestItem item : items.values()) {
             if (hasWord(item.properties, "nav")) navItem = item;
             if (item.mediaType != null && item.mediaType.toLowerCase(Locale.ROOT).contains("ncx")) ncxItem = item;
         }
         Element spineElement = firstElement(opfDoc, "spine");
-        if (spineElement != null) {
-            String tocId = spineElement.getAttribute("toc");
-            if (!tocId.isEmpty() && items.containsKey(tocId)) ncxItem = items.get(tocId);
-        }
+        if (spineElement != null) { String tocId = spineElement.getAttribute("toc"); if (!tocId.isEmpty() && items.containsKey(tocId)) ncxItem = items.get(tocId); }
         boolean tocFound = false;
         if (navItem != null) tocFound = applyNavTitles(resolveFile(opfDir, navItem.href), spineIndex, info.chapterTitles);
         if (!tocFound && ncxItem != null) applyNcxTitles(resolveFile(opfDir, ncxItem.href), spineIndex, info.chapterTitles);
-
         boolean exactToc = false;
         if (navItem != null) exactToc = collectNavEntries(resolveFile(opfDir, navItem.href), spineIndex, info);
         if (!exactToc && ncxItem != null) exactToc = collectNcxEntries(resolveFile(opfDir, ncxItem.href), spineIndex, info);
         if (!exactToc) collectStrictHeadingFallback(info);
 
+        EpubOpeningPolicy.Cached toCache = new EpubOpeningPolicy.Cached();
+        toCache.opfPath = opfPath; toCache.title = info.title; toCache.author = info.author;
+        for (File candidate : candidates) toCache.candidatePaths.add(canonicalRelative(root, candidate));
+        for (File chapter : info.spine) { toCache.paths.add(canonicalRelative(root, chapter)); }
+        toCache.titles.addAll(info.chapterTitles); toCache.tocIndices.addAll(info.tocSpineIndices); toCache.tocTitles.addAll(info.tocTitles); toCache.tocFragments.addAll(info.tocFragments);
+        EpubOpeningPolicy.write(root, opfPath, opf, toCache, cacheDependencies);
         return info;
     }
 
@@ -257,46 +280,7 @@ final class EpubUtil {
         return applied;
     }
 
-    private static String guessChapterTitle(File chapter, int number) {
-        try {
-            Document doc = parseXml(chapter);
-
-            String title = clean(firstText(doc, "title"));
-            if (isMeaningfulChapterTitle(title)) return title;
-
-            for (String tag : new String[]{"h1", "h2", "h3", "h4"}) {
-                NodeList nodes = elements(doc, tag);
-                for (int i = 0; i < nodes.getLength(); i++) {
-                    String h = clean(nodes.item(i).getTextContent());
-                    if (isMeaningfulChapterTitle(h) && h.length() <= 160) return h;
-                }
-            }
-
-            // Some EPUBs put a chapter heading in an ordinary element whose
-            // class/id contains title/chapter/heading rather than using h1-h4.
-            NodeList all = doc.getElementsByTagName("*");
-            for (int i = 0; i < all.getLength(); i++) {
-                if (!(all.item(i) instanceof Element)) continue;
-                Element e = (Element) all.item(i);
-                String hint = (e.getAttribute("class") + " " + e.getAttribute("id")).toLowerCase(Locale.ROOT);
-                if (!(hint.contains("title") || hint.contains("chapter") || hint.contains("heading"))) continue;
-                String value = clean(e.getTextContent());
-                if (isMeaningfulChapterTitle(value) && value.length() <= 160) return value;
-            }
-
-            // Last body-text fallback: only use short text, never a full
-            // paragraph. This removes generic labels while keeping the TOC readable.
-            NodeList paragraphs = elements(doc, "p");
-            for (int i = 0; i < paragraphs.getLength(); i++) {
-                String p = clean(paragraphs.item(i).getTextContent());
-                if (isMeaningfulChapterTitle(p) && p.length() >= 2 && p.length() <= 84) return p;
-            }
-        } catch (Exception ignored) {}
-
-        String fileTitle = titleFromFilename(chapter == null ? null : chapter.getName());
-        if (fileTitle != null) return fileTitle;
-        return "Chapter " + number;
-    }
+    private static String guessChapterTitle(File chapter, int number) { return EpubOpeningPolicy.title(chapter, number); }
 
     private static boolean isMeaningfulChapterTitle(String value) {
         if (value == null) return false;
@@ -409,46 +393,9 @@ final class EpubUtil {
         }
     }
 
-    private static String strictChapterHeading(File chapter) {
-        try {
-            Document doc = parseXml(chapter);
-            for (String tag : new String[]{"h1", "h2", "h3", "h4"}) {
-                NodeList nodes = elements(doc, tag);
-                for (int i = 0; i < nodes.getLength(); i++) {
-                    String value = clean(nodes.item(i).getTextContent());
-                    if (isMeaningfulChapterTitle(value) && value.length() <= 180) return value;
-                }
-            }
-            NodeList all = doc.getElementsByTagName("*");
-            for (int i = 0; i < all.getLength(); i++) {
-                if (!(all.item(i) instanceof Element)) continue;
-                Element e = (Element) all.item(i);
-                String hint = (e.getAttribute("class") + " " + e.getAttribute("id")).toLowerCase(Locale.ROOT);
-                if (!(hint.contains("chapter") || hint.contains("heading") || hint.contains("chapter-title"))) continue;
-                String value = clean(e.getTextContent());
-                if (isMeaningfulChapterTitle(value) && value.length() <= 180) return value;
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
+    private static String strictChapterHeading(File chapter) { return EpubOpeningPolicy.heading(chapter); }
 
-    private static boolean hasReadableContent(File chapter) {
-        try {
-            Document doc = parseXml(chapter);
-            Element body = firstElement(doc, "body");
-            if (body != null) {
-                String text = clean(body.getTextContent());
-                if (text != null && !text.replaceAll("[\\p{Punct}\\s]+", "").isEmpty()) return true;
-            }
-            for (String tag : new String[]{"img", "image", "svg", "math", "table", "video", "audio", "object", "embed", "canvas"}) {
-                if (elements(doc, tag).getLength() > 0) return true;
-            }
-            return false;
-        } catch (Exception ignored) {
-            // Broken-but-renderable HTML should be kept rather than silently lost.
-            return true;
-        }
-    }
+    private static boolean hasReadableContent(File chapter) { return EpubOpeningPolicy.hasReadableContent(chapter); }
 
     private static boolean isAuxiliaryTocLabel(String value) {
         if (value == null) return true;
@@ -467,6 +414,14 @@ final class EpubUtil {
         String fragment = href.substring(hash + 1);
         try { fragment = URLDecoder.decode(fragment, StandardCharsets.UTF_8.name()); } catch (Exception ignored) {}
         return fragment.trim();
+    }
+
+    private static File safeExtractedFile(File root, String relative) {
+        if (relative == null || relative.startsWith("/") || relative.contains("\\") || relative.matches(".*(^|/)\\.\\.(?:/|$).*")) return null;
+        try { File r=root.getCanonicalFile(), f=new File(r, relative).getCanonicalFile(); return f.getPath().startsWith(r.getPath()+File.separator) ? f : null; } catch (Exception e) { return null; }
+    }
+    private static String canonicalRelative(File root, File file) {
+        try { String r=root.getCanonicalPath(), f=file.getCanonicalPath(); return f.startsWith(r+File.separator) ? f.substring(r.length()+1).replace(File.separatorChar,'/') : null; } catch (Exception e) { return null; }
     }
 
     private static File resolveFile(File base, String href) { return new File(base, decodedPath(href)); }

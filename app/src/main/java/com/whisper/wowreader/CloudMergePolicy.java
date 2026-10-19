@@ -25,10 +25,35 @@ final class CloudMergePolicy {
         Map<String, ?> local = prefs.getAll();
         SharedPreferences.Editor edit = prefs.edit();
         boolean changed = false;
+        Set<String> locationKeys = new HashSet<>();
+        // Chapter and offset are one location, not independent scalar preferences.
+        // A newer timestamp may legitimately move backwards when a reader revisits a page.
+        Iterator<String> locationCandidates = remoteValues.keys();
+        while (locationCandidates.hasNext()) {
+            String stampKey = locationCandidates.next();
+            if (!stampKey.startsWith("epub_location_") || !stampKey.endsWith("_updated_ms")) continue;
+            String group = stampKey.substring(0, stampKey.length() - "updated_ms".length());
+            for (String field : new String[]{"chapter", "permille", "anchor", "updated_ms"}) locationKeys.add(group + field);
+            JSONObject stamp = remoteValues.optJSONObject(stampKey);
+            JSONObject chapter = remoteValues.optJSONObject(group + "chapter");
+            JSONObject progress = remoteValues.optJSONObject(group + "permille");
+            if (stamp == null || chapter == null || progress == null || !"l".equals(stamp.optString("t"))
+                    || !"i".equals(chapter.optString("t")) || !"i".equals(progress.optString("t"))) continue;
+            long remoteWhen = stamp.optLong("v", 0L);
+            Object localWhen = local.get(stampKey);
+            long localTime = localWhen instanceof Number ? ((Number) localWhen).longValue() : 0L;
+            int remoteChapter = chapter.optInt("v", -1), remoteProgress = progress.optInt("v", -1);
+            if (remoteWhen <= localTime || remoteWhen <= 0L || remoteChapter < 0 || remoteProgress < 0 || remoteProgress > 1000) continue;
+            edit.putInt(group + "chapter", remoteChapter).putInt(group + "permille", remoteProgress)
+                    .putString(group + "anchor", ReaderLocationPolicy.anchor(remoteChapter, remoteProgress))
+                    .putLong(stampKey, remoteWhen);
+            changed = true;
+        }
         Iterator<String> keys = remoteValues.keys();
         while (keys.hasNext()) {
             String key = keys.next();
-            if (key == null || key.startsWith("google_") || "sync_updated_ms".equals(key)) continue;
+            if (key == null || key.startsWith("google_") || "sync_updated_ms".equals(key)
+                    || locationKeys.contains(key) || isDeviceLocal(key)) continue;
             JSONObject item = remoteValues.optJSONObject(key);
             if (item == null) continue;
             String type = item.optString("t", "");
@@ -81,6 +106,12 @@ final class CloudMergePolicy {
         }
         if (changed) edit.apply();
         return changed;
+    }
+
+    static boolean isDeviceLocal(String key) {
+        return "reading_reminder_scheduled_due_ms".equals(key)
+                || "reading_reminder_last_delivered_day".equals(key)
+                || "reading_reminder_last_error".equals(key);
     }
 
     private static boolean putRemoteValue(SharedPreferences.Editor edit, String key,

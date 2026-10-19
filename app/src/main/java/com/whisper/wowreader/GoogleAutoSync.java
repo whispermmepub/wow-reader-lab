@@ -19,6 +19,7 @@ final class GoogleAutoSync {
     private static final long NORMAL_DELAY_MS = 90_000L;
     private static final long RETRY_DELAY_MS = 120_000L;
     private static final long MIN_ATTEMPT_INTERVAL_MS = 30_000L;
+    private static final long REMOTE_PULL_INTERVAL_MS = 5 * 60_000L;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static WeakReference<Activity> activityRef = new WeakReference<>(null);
@@ -26,8 +27,15 @@ final class GoogleAutoSync {
     private static long pendingAtMs = 0L;
     private static boolean busy = false;
     private static long lastAttemptMs = 0L;
+    private static volatile boolean homeVisible;
 
     private GoogleAutoSync() {}
+
+    static void setHomeVisible(boolean visible) { homeVisible = visible; }
+
+    static void requireHomeVisible() throws Exception {
+        if (!homeVisible) throw new Exception("Sync paused while the reader is active. Return to Home to continue.");
+    }
 
     static void schedule(Activity activity) {
         scheduleWithDelay(activity, NORMAL_DELAY_MS);
@@ -62,7 +70,7 @@ final class GoogleAutoSync {
     }
 
     private static void scheduleWithDelay(Activity activity, long delayMs) {
-        if (!needsSync(activity)) return;
+        if (!canSync(activity)) return;
         long now = System.currentTimeMillis();
         long due = now + Math.max(1_500L, delayMs);
         synchronized (GoogleAutoSync.class) {
@@ -83,19 +91,34 @@ final class GoogleAutoSync {
         }
     }
 
-    private static boolean needsSync(Activity activity) {
+    private static boolean canSync(Activity activity) {
         if (activity == null || activity.isFinishing() || !(activity instanceof MainActivity)) return false;
         SharedPreferences prefs = activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE);
-        if (!prefs.getBoolean("google_sync_connected", false) ||
-                !prefs.getBoolean("google_sync_enabled", true)) return false;
+        return prefs.getBoolean("google_sync_connected", false) && prefs.getBoolean("google_sync_enabled", true);
+    }
+
+    private static boolean needsSync(Activity activity) {
+        if (!canSync(activity)) return false;
+        SharedPreferences prefs = activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE);
         long changed = prefs.getLong("sync_updated_ms", 0L);
         long synced = prefs.getLong("google_last_synced_change_ms",
                 prefs.getLong("google_last_backup_ms", 0L));
-        return changed > synced;
+        long lastPull = prefs.getLong("google_last_state_pull_check_ms", 0L);
+        // A clean device still needs periodic foreground reconciliation; without this,
+        // another device's progress never arrives until a local edit occurs.
+        long now = System.currentTimeMillis();
+        return changed > synced || now < lastPull || now - lastPull >= REMOTE_PULL_INTERVAL_MS;
     }
 
     private static void runSync(Activity activity) {
-        if (!needsSync(activity)) return;
+        if (!canSync(activity)) return;
+        if (!needsSync(activity)) {
+            long checked = activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE)
+                    .getLong("google_last_state_pull_check_ms", 0L);
+            scheduleWithDelay(activity, Math.max(1_500L, Math.min(REMOTE_PULL_INTERVAL_MS,
+                    REMOTE_PULL_INTERVAL_MS - (System.currentTimeMillis() - checked))));
+            return;
+        }
         // Never start a whole-library cloud operation while Reader/another screen is covering Home.
         if (!activity.hasWindowFocus()) {
             scheduleWithDelay(activity, NORMAL_DELAY_MS);
@@ -118,6 +141,7 @@ final class GoogleAutoSync {
         }
 
         final long requestedChangeMs = prefs.getLong("sync_updated_ms", 0L);
+        prefs.edit().putLong("google_last_state_pull_check_ms", System.currentTimeMillis()).apply();
         final GoogleDriveSync drive = new GoogleDriveSync(activity);
         drive.authorizeSilently(new GoogleDriveSync.AuthCallback() {
             @Override public void onReady(GoogleDriveSync.Profile profile) {
@@ -128,20 +152,33 @@ final class GoogleAutoSync {
                 GoogleDriveSync.smartBackup(activity, profile.accessToken, library, fonts, prefs,
                         new GoogleDriveSync.SyncCallback() {
                             @Override public void onSuccess(String message) {
-                                prefs.edit().putLong("google_last_synced_change_ms", requestedChangeMs).apply();
+                                prefs.edit().putLong("google_last_synced_change_ms", requestedChangeMs).remove("google_sync_last_error").apply();
                                 finish(activity, prefs, requestedChangeMs, true);
                             }
 
                             @Override public void onError(String message) {
+                                prefs.edit().putString("google_sync_last_error", sanitize(message)).apply();
                                 finish(activity, prefs, requestedChangeMs, false);
                             }
                         });
             }
 
             @Override public void onError(String message) {
+                prefs.edit().putString("google_sync_last_error", sanitize(message)).apply();
                 finish(activity, prefs, requestedChangeMs, false);
             }
         });
+    }
+
+    static String lastError(Activity activity) {
+        if (activity == null) return "";
+        return activity.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE).getString("google_sync_last_error", "");
+    }
+
+    private static String sanitize(String message) {
+        if (message == null) return "Google Drive sync failed";
+        String value = message.replaceAll("[\\r\\n]+", " ").trim();
+        return value.length() > 500 ? value.substring(0, 500) : value;
     }
 
     private static void finish(Activity activity, SharedPreferences prefs,
@@ -152,6 +189,7 @@ final class GoogleAutoSync {
         long latest = prefs.getLong("sync_updated_ms", 0L);
         if (success) {
             if (latest > requestedChangeMs) scheduleSoon(activity);
+            else scheduleWithDelay(activity, REMOTE_PULL_INTERVAL_MS);
         } else {
             scheduleWithDelay(activity, RETRY_DELAY_MS);
         }

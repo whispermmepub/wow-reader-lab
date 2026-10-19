@@ -148,12 +148,20 @@ public class MainActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); handleIncomingIntent(intent); }
     @Override protected void onResume() {
         super.onResume();
+        GoogleAutoSync.setHomeVisible(true);
+        // Refresh scheduler state only from persisted preferences; it never opts users in.
+        ReadingReminderScheduler.refresh(this);
         if (readerUiRefreshPending) {
             readerUiRefreshPending = false;
             if (homeMode) buildUi();
             else if (libraryRecycler != null) refreshLibrary();
         } else if (libraryRecycler != null) refreshLibrary();
         maybeAutoGoogleSync();
+    }
+
+    @Override protected void onPause() {
+        GoogleAutoSync.setHomeVisible(false);
+        super.onPause();
     }
 
     @Override public void onBackPressed() {
@@ -415,7 +423,7 @@ public class MainActivity extends Activity {
 
         String[][] data = {
                 {"telegram", "Telegram", "New books", "https://t.me/TheBookR"},
-                {"discussion", "Discussion", "Reader community", "https://t.me/+rUiqzi2mdhNiNGZl"},
+                {"discussion", "Discussion", "Reader community", "https://t.me/+oKgpGSA_lKc4YTU1"},
                 {"website", "Book Website", "saroatsin.com", "https://saroatsin.com"},
                 {"review", "Book Reviews", "Coming Soon feed", "wow://coming-soon"}
         };
@@ -1014,6 +1022,8 @@ public class MainActivity extends Activity {
         return outer;
     }
 
+    private volatile int continueReadingGeneration;
+
     private void addContinueReadingSection(LinearLayout root) {
         LinearLayout heading = new LinearLayout(this);
         heading.setOrientation(LinearLayout.HORIZONTAL);
@@ -1035,13 +1045,6 @@ public class MainActivity extends Activity {
         heading.addView(all, new LinearLayout.LayoutParams(dp(84), dp(38)));
         root.addView(heading);
 
-        java.util.List<File> preferred = new java.util.ArrayList<>();
-        if (stateDb != null && stateDb.isLibraryIndexReady()) {
-            java.util.List<ReaderStateDb.LibraryBookRow> rows = stateDb.recentBooks(8, true);
-            if (rows.isEmpty()) rows = stateDb.recentBooks(8, false);
-            for (ReaderStateDb.LibraryBookRow row : rows) preferred.add(row.asFile());
-        }
-
         HorizontalScrollView scroller = new HorizontalScrollView(this);
         scroller.setHorizontalScrollBarEnabled(false);
         scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -1050,7 +1053,49 @@ public class MainActivity extends Activity {
         strip.setPadding(0, 0, dp(12), dp(2));
         scroller.addView(strip, new HorizontalScrollView.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(scroller, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(208)));
+        TextView loading = new TextView(this);
+        loading.setText("Loading recent books…");
+        loading.setTextColor(themeSecondaryText());
+        strip.addView(loading);
+        final int generation = ++continueReadingGeneration;
+        libraryQueryExecutor.execute(() -> {
+            java.util.List<File> preferred = new java.util.ArrayList<>();
+            try {
+                if (stateDb != null && stateDb.isLibraryIndexReady()) {
+                    int offset = 0;
+                    while (preferred.size() < HomeContinuePolicy.MAX_HOME_BOOKS) {
+                        if (generation != continueReadingGeneration || Thread.currentThread().isInterrupted()) return;
+                        java.util.List<ReaderStateDb.LibraryBookRow> rows = stateDb.recentBooksPage(20, offset, false);
+                        if (rows.isEmpty()) break;
+                        offset += rows.size();
+                        java.util.List<HomeContinuePolicy.Candidate> candidates = new java.util.ArrayList<>();
+                        for (ReaderStateDb.LibraryBookRow row : rows) {
+                            candidates.add(new HomeContinuePolicy.Candidate(row.fileName,
+                                    row.filePath, row.progress, row.asFile().isFile()));
+                        }
+                        for (HomeContinuePolicy.Candidate candidate : HomeContinuePolicy.select(candidates,
+                                HomeContinuePolicy.MAX_HOME_BOOKS - preferred.size())) {
+                            preferred.add(new File(candidate.filePath));
+                        }
+                    }
+                }
+                runOnUiThread(() -> {
+                    if (generation != continueReadingGeneration || isFinishing() || isDestroyed()
+                            || !scroller.isAttachedToWindow()) return;
+                    renderContinueReadingBooks(strip, preferred);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (generation == continueReadingGeneration && !isFinishing() && !isDestroyed()
+                            && scroller.isAttachedToWindow()) loading.setText("Unable to load recent books. Refresh to retry.");
+                });
+            }
+        });
+    }
 
+    private void renderContinueReadingBooks(LinearLayout strip, java.util.List<File> preferred) {
+        strip.removeAllViews();
         if (preferred.isEmpty()) {
             TextView empty = new TextView(this);
             empty.setText("Add an EPUB or PDF to start your library");
@@ -1062,7 +1107,7 @@ public class MainActivity extends Activity {
             empty.setOnClickListener(v -> chooseBook());
             strip.addView(empty, new LinearLayout.LayoutParams(dp(280), dp(100)));
         } else {
-            int max = Math.min(preferred.size(), 8);
+            int max = Math.min(preferred.size(), HomeContinuePolicy.MAX_HOME_BOOKS);
             int screen = getResources().getDisplayMetrics().widthPixels;
             int featuredWidth = Math.max(dp(258), Math.min(dp(326), screen - dp(92)));
             for (int i = 0; i < max; i++) {
@@ -1073,7 +1118,6 @@ public class MainActivity extends Activity {
                 strip.addView(card, lp);
             }
         }
-        root.addView(scroller, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(208)));
     }
 
     private View buildContinueBookCard(File file, boolean featured) {
@@ -3206,15 +3250,15 @@ public class MainActivity extends Activity {
             showAccountActionDialog(
                     "Account & backup",
                     "Sign in with Google, then allow private Drive app-data access to sync books, notes, highlights and reading progress.",
-                    new String[]{"Sign in with Google","Manual folder backup","Manual folder restore"},
-                    w->{if(w==0)connectGoogleAccount(true);else openManualCloudPicker(w==1);}
+                    new String[]{"Sign in with Google","Manual folder backup","Manual folder restore","Reading reminders"},
+                    w->{if(w==0)connectGoogleAccount(true);else if(w==1||w==2)openManualCloudPicker(w==1);else ReadingReminderSettings.show(this);}
             );
             return;
         }
         String name=prefs.getString("google_account_name","Google account");
         String email=prefs.getString("google_account_email","");
         if(!connected){
-            String[] items={"Enable Google Drive sync","Switch Google account","Sign out","Manual folder backup","Manual folder restore"};
+            String[] items={"Enable Google Drive sync","Switch Google account","Sign out","Manual folder backup","Manual folder restore","Reading reminders"};
             showAccountActionDialog(
                     name,
                     (email.isEmpty()?"":email+"\n")+"Profile sign-in is complete. Allow private Drive app-data access to turn on cloud sync.",
@@ -3223,16 +3267,23 @@ public class MainActivity extends Activity {
                         if(w==0)authorizeGoogleDrive(googleProfile);
                         else if(w==1)switchGoogleAccount();
                         else if(w==2)disconnectGoogleAccount();
-                        else openManualCloudPicker(w==3);
+                        else if(w==3||w==4)openManualCloudPicker(w==3);
+                        else ReadingReminderSettings.show(this);
                     }
             );
             return;
         }
         boolean auto=prefs.getBoolean("google_sync_enabled",true);
-        String[] items={"Sync now","Restore from Google Drive","Auto sync: "+(auto?"On":"Off"),"Switch Google account","Disconnect Google account","Manual folder backup","Manual folder restore"};
+        long lastSync=prefs.getLong("google_last_backup_ms",0L);
+        String syncState="\nLast sync: "+(lastSync>0L
+                ?java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT,java.text.DateFormat.SHORT).format(new java.util.Date(lastSync)):"not yet");
+        String syncError=GoogleAutoSync.lastError(this);
+        if(!syncError.isEmpty())syncState+="\nLast issue: "+syncError;
+        String[] items={"Sync now","Restore from Google Drive","Auto sync: "+(auto?"On":"Off"),"Switch Google account","Disconnect Google account","Manual folder backup","Manual folder restore","Reading reminders"};
         showAccountActionDialog(
                 name,
-                (email.isEmpty()?"":email+"\n")+"WoW Reader data is stored privately in this account's Google Drive app data.",
+                (email.isEmpty()?"":email+"\n")+"WoW Reader data is stored privately in this account's Google Drive app data."+syncState
+                        +"\nOn a new phone, use Restore from Google Drive to download book files.",
                 items,
                 w->{
                     if(w==0)performGoogleBackup(true);
@@ -3240,7 +3291,8 @@ public class MainActivity extends Activity {
                     else if(w==2){boolean enabled=!auto;prefs.edit().putBoolean("google_sync_enabled",enabled).apply();if(enabled)maybeAutoGoogleSync();else GoogleAutoSync.cancelPending();Toast.makeText(this,"Auto sync "+(enabled?"on":"off"),Toast.LENGTH_SHORT).show();}
                     else if(w==3)switchGoogleAccount();
                     else if(w==4)disconnectGoogleAccount();
-                    else openManualCloudPicker(w==5);
+                    else if(w==5||w==6)openManualCloudPicker(w==5);
+                    else ReadingReminderSettings.show(this);
                 }
         );
     }
@@ -3628,6 +3680,10 @@ public class MainActivity extends Activity {
     }
 
     private void showCloudMenu(){new AlertDialog.Builder(this).setTitle("Backup & restore").setItems(new String[]{"Backup library","Restore books"},(dialog,which)->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);startActivityForResult(i,which==0?REQ_BACKUP:REQ_RESTORE);}).show();}
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults){
+        if (ReadingReminderSettings.onPermissionResult(this, requestCode, permissions, grantResults)) return;
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    }
     @SuppressLint("WrongConstant")
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
         super.onActivityResult(requestCode,resultCode,data);

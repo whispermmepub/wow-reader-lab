@@ -2,10 +2,10 @@
 
 Official Android source repository for **WoW Reader**.
 
-## Current release
+## Owner-accepted update (not uploaded to Play)
 
-- **Version:** `2.20.0`
-- **versionCode:** `64`
+- **Version:** `2.21.4`
+- **versionCode:** `70` (must be checked against all Play tracks before upload)
 - **Package:** `com.whisper.wowreader`
 - **Minimum Android:** 6.0 / API 23
 - **Target SDK:** 36
@@ -13,6 +13,8 @@ Official Android source repository for **WoW Reader**.
 - **Source of truth:** `main`
 
 v64 is the 100k-scale library/sync foundation release. It preserves the v63 update/data/signing contract while moving normal library and cloud-sync work away from whole-library operations.
+
+v64 / 2.20.0 is the last owner-confirmed published release. The owner accepted v70 / 2.21.4 and authorized publishing its source to this repository. v70 includes the v65 deletion safeguards, reader typography and pagination fixes, chapter-transition improvements, and larger adaptive seek previews. Its production-signed AAB passed signature/certificate and bundletool validation, and its source build reproduced the accepted APK byte-for-byte. The owner handles Play Console upload; this source publication does not upload or publish the app there. See `NEXT_CHAT_HANDOFF.md` for verification and remaining device QA, and `docs/V65_DELETION_FIX.md` for deletion behavior.
 
 ## Start here
 
@@ -109,6 +111,6 @@ Private keystores/passwords must never be committed.
 ## Community
 
 - Telegram books: https://t.me/TheBookR
-- Discussion group: https://t.me/+rUiqzi2mdhNiNGZl
+- Discussion group: https://t.me/+oKgpGSA_lKc4YTU1
 - Website: https://saroatsin.com
 - Reviews: https://whispermmepub.github.io/Review/

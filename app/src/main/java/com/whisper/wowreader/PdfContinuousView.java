@@ -22,8 +22,9 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.File;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Vertical, continuous PDF reader that renders only RecyclerView-visible pages.
@@ -41,7 +42,7 @@ final class PdfContinuousView extends RecyclerView {
 
     private final LinearLayoutManager layout;
     private final PageAdapter adapter;
-    private final ExecutorService rendererExecutor = Executors.newSingleThreadExecutor();
+    private ThreadPoolExecutor rendererExecutor = newRendererExecutor();
     private final Object rendererLock = new Object();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final GestureDetector tapDetector;
@@ -111,6 +112,7 @@ final class PdfContinuousView extends RecyclerView {
     void open(File file, int startPage) throws Exception {
         stopAutoScroll();
         generation++;
+        if (rendererExecutor.isShutdown()) rendererExecutor = newRendererExecutor();
         lastReportedPage = -1;
         synchronized (rendererLock) {
             closeRendererLocked();
@@ -193,6 +195,12 @@ final class PdfContinuousView extends RecyclerView {
         rendererExecutor.shutdownNow();
         synchronized (rendererLock) { closeRendererLocked(); }
         pageCount = 0;
+    }
+
+    private ThreadPoolExecutor newRendererExecutor() {
+        return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(PdfRenderPolicy.RENDER_QUEUE_CAPACITY),
+                new ThreadPoolExecutor.DiscardOldestPolicy());
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
@@ -284,19 +292,20 @@ final class PdfContinuousView extends RecyclerView {
     private int targetPageWidth() {
         int width = getWidth() > 0 ? getWidth() - getPaddingLeft() - getPaddingRight()
                 : getResources().getDisplayMetrics().widthPixels - dp(12);
-        return Math.max(320, Math.min(1200, width));
+        return PdfRenderPolicy.pageWidth(width, getResources().getDisplayMetrics().widthPixels - dp(12));
     }
 
     private int estimatedHeight() {
-        return Math.max(dp(420), Math.round(targetPageWidth() * 1.4142f));
+        return Math.max(dp(420), PdfRenderPolicy.pageHeight(targetPageWidth(), 1f, 1.4142f));
     }
 
     private void renderAsync(PageHolder holder, int position) {
         final int requestGeneration = generation;
         final int requestPage = position;
         final int width = targetPageWidth();
-        rendererExecutor.execute(() -> {
-            if (requestGeneration != generation || Thread.currentThread().isInterrupted()) return;
+        final int requestId = ++holder.renderRequestId;
+        try { rendererExecutor.execute(() -> {
+            if (requestGeneration != generation || requestId != holder.renderRequestId || Thread.currentThread().isInterrupted()) return;
             Bitmap bitmap = null;
             int height = estimatedHeight();
             try {
@@ -305,7 +314,8 @@ final class PdfContinuousView extends RecyclerView {
                     PdfRenderer.Page page = renderer.openPage(requestPage);
                     try {
                         float scale = width / (float) Math.max(1, page.getWidth());
-                        height = Math.max(1, Math.round(page.getHeight() * scale));
+                        height = PdfRenderPolicy.pageHeight(width, page.getWidth(), page.getHeight());
+                        scale = width / (float) Math.max(1, page.getWidth());
                         bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
                         bitmap.eraseColor(Color.WHITE);
                         Matrix matrix = new Matrix();
@@ -323,14 +333,17 @@ final class PdfContinuousView extends RecyclerView {
             final int readyHeight = height;
             main.post(() -> {
                 if (ready == null) return;
-                if (requestGeneration != generation || holder.boundPage != requestPage || holder.itemView.getParent() == null) {
+                if (requestGeneration != generation || requestId != holder.renderRequestId
+                        || holder.boundPage != requestPage || holder.itemView.getParent() == null) {
                     if (!ready.isRecycled()) ready.recycle();
                     return;
                 }
                 holder.replaceBitmap(ready);
                 setPageHeight(holder, readyHeight);
             });
-        });
+        }); } catch (RuntimeException ignored) {
+            // A bounded queue may reject work while the view is closing; a later bind retries it.
+        }
     }
 
     private void setPageHeight(PageHolder holder, int height) {
@@ -397,6 +410,7 @@ final class PdfContinuousView extends RecyclerView {
         }
 
         @Override public void onBindViewHolder(PageHolder holder, int position) {
+            holder.renderRequestId++;
             holder.clearBitmap();
             int page = holder.getBindingAdapterPosition();
             if (page == RecyclerView.NO_POSITION) return;
@@ -408,6 +422,7 @@ final class PdfContinuousView extends RecyclerView {
         }
 
         @Override public void onViewRecycled(PageHolder holder) {
+            holder.renderRequestId++;
             holder.boundPage = -1;
             holder.pageText = null;
             holder.overlay.clearSelected();
@@ -431,6 +446,7 @@ final class PdfContinuousView extends RecyclerView {
         final PdfHighlightOverlayView overlay;
         int boundPage = -1;
         Bitmap bitmap;
+        int renderRequestId;
         PdfTextRepository.PageText pageText;
 
         PageHolder(View itemView, ImageView image, PdfHighlightOverlayView overlay) {

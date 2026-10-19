@@ -4,6 +4,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.database.Cursor;
+import android.database.DatabaseErrorHandler;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 
@@ -35,6 +36,7 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     private static final String META_LEGACY_MIGRATED = "legacy_migrated_v1";
     private static final String META_V2_MIGRATED = "library_metadata_migrated_v2";
     private static final String META_HOME_INDEXED = "home_indexed_v4";
+    private static final String META_V72_RECONCILED = "library_reconciled_v72";
     private static volatile ReaderStateDb INSTANCE;
     private static final ExecutorService WRITER = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "wow-reader-state-db");
@@ -42,14 +44,26 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         return t;
     });
     private static final Object MIGRATION_LOCK = new Object();
+    private static final Object SNAPSHOT_LOCK = new Object();
 
-    private ReaderStateDb(Context context) { super(context.getApplicationContext(), DB_NAME, null, DB_VERSION); }
+    // The platform's default corruption handler deletes files. Preserve recovery data instead.
+    private static final DatabaseErrorHandler PRESERVE_DATABASE = ignored -> { };
+
+    private ReaderStateDb(Context context) {
+        super(context.getApplicationContext(), DB_NAME, null, DB_VERSION, PRESERVE_DATABASE);
+    }
 
     static ReaderStateDb initialize(Context context, SharedPreferences prefs, File libraryDir) {
         ReaderStateDb db = get(context);
         if (!db.isLegacyMigrated()) db.migrateLegacyAsync(prefs, libraryDir);
         db.migrateV2Async(prefs);
         db.migrateHomeIndexAsync(prefs);
+        WRITER.execute(() -> {
+            if (!db.metaIs(META_V72_RECONCILED)) {
+                db.reconcileLocalLibrary(libraryDir, prefs);
+                db.putMeta(META_V72_RECONCILED, "1");
+            }
+        });
         return db;
     }
 
@@ -103,6 +117,27 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE IF NOT EXISTS book_day (day TEXT NOT NULL, file_name TEXT NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0, book_note TEXT NOT NULL DEFAULT '', PRIMARY KEY(day,file_name))");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_book_day_file ON book_day(file_name)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_book_day_day ON book_day(day)");
+    }
+
+    @Override public void onOpen(SQLiteDatabase db) {
+        super.onOpen(db);
+        // Repair only at open time: a table dropped after open must still surface as a real DB failure.
+        String[] required = {"meta", "books", "book_tombstones", "shelves", "shelf_books", "reading_day", "book_day"};
+        boolean missingBooks = !tableExists(db, "books");
+        boolean missingStats = !tableExists(db, "reading_day") || !tableExists(db, "book_day");
+        boolean missing = false;
+        for (String table : required) missing |= !tableExists(db, table);
+        if (!missing) return;
+        db.beginTransaction();
+        try {
+            onCreate(db); // CREATE IF NOT EXISTS; never deletes or alters an existing table.
+            if (missingBooks) {
+                db.delete("meta", "k IN (?, ?, ?)", new String[]{META_LEGACY_MIGRATED, META_V2_MIGRATED, META_HOME_INDEXED});
+            } else if (missingStats) {
+                db.delete("meta", "k=?", new String[]{META_LEGACY_MIGRATED});
+            }
+            db.setTransactionSuccessful();
+        } finally { db.endTransaction(); }
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
@@ -166,6 +201,10 @@ final class ReaderStateDb extends SQLiteOpenHelper {
                         File[] files = libraryDir.listFiles();
                         if (files != null) for (File file : files) {
                             if (file == null || !file.isFile() || !isBook(file.getName())) continue;
+                            // A repair retry must not replace a surviving book's newer DB progress.
+                            try (Cursor existing = db.rawQuery("SELECT 1 FROM books WHERE file_name=?", new String[]{file.getName()})) {
+                                if (existing.moveToFirst()) continue;
+                            }
                             insertOrUpdateBook(db, file, null, prefs);
                         }
                     }
@@ -193,8 +232,9 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         for (String day : allDays) {
             ContentValues d = new ContentValues();
             d.put("day", day);
-            d.put("total_ms", Math.max(0L, days.optLong(day, 0L)));
-            d.put("daily_note", dailyNotes.optString(day, ""));
+            d.put("total_ms", Math.max(dayTime(day), Math.max(0L, days.optLong(day, 0L))));
+            String existingDayNote = dailyNote(day);
+            d.put("daily_note", existingDayNote.isEmpty() ? dailyNotes.optString(day, "") : existingDayNote);
             db.insertWithOnConflict("reading_day", null, d, SQLiteDatabase.CONFLICT_REPLACE);
             JSONObject dbks = dayBooks.optJSONObject(day);
             JSONObject notes = bookNotes.optJSONObject(day);
@@ -203,8 +243,9 @@ final class ReaderStateDb extends SQLiteOpenHelper {
             for (String fileName : names) {
                 ContentValues b = new ContentValues();
                 b.put("day", day); b.put("file_name", fileName);
-                b.put("duration_ms", dbks == null ? 0L : Math.max(0L, dbks.optLong(fileName, 0L)));
-                b.put("book_note", notes == null ? "" : notes.optString(fileName, ""));
+                b.put("duration_ms", Math.max(bookTimeForDay(day, fileName), dbks == null ? 0L : Math.max(0L, dbks.optLong(fileName, 0L))));
+                String existingBookNote = bookDayNote(day, fileName);
+                b.put("book_note", existingBookNote.isEmpty() ? (notes == null ? "" : notes.optString(fileName, "")) : existingBookNote);
                 db.insertWithOnConflict("book_day", null, b, SQLiteDatabase.CONFLICT_REPLACE);
             }
         }
@@ -385,12 +426,12 @@ final class ReaderStateDb extends SQLiteOpenHelper {
             fileName = c.getString(0); filePath = c.getString(1); title = c.getString(2); author = c.getString(3);
             progress = c.getInt(4); addedAt = c.getLong(5); lastOpenedAt = c.getLong(6);
         }
-        File asFile() { return new File(filePath); }
+        File asFile() { return new File(filePath == null ? "" : filePath); }
     }
 
     int countLibraryBooks(LibraryQuerySpec spec) {
         if (spec == null) spec = new LibraryQuerySpec("", "", "all", "", "added");
-        return (int)Math.min(Integer.MAX_VALUE, scalarLong("SELECT COUNT(*) FROM books WHERE " + spec.whereSql(), spec.args()));
+        return (int)Math.min(Integer.MAX_VALUE, scalarLong("SELECT COUNT(*) FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND " + spec.whereSql(), spec.args()));
     }
 
     List<LibraryBookRow> pageLibraryBooks(LibraryQuerySpec spec, int offset, int limit) {
@@ -398,7 +439,7 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         int o = Math.max(0, offset), n = Math.max(1, Math.min(250, limit));
         List<LibraryBookRow> out = new ArrayList<>(); Cursor c = null;
         try {
-            String sql = "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE " +
+            String sql = "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND " +
                     spec.whereSql() + " ORDER BY " + spec.orderSql() + " LIMIT " + n + " OFFSET " + o;
             c = getReadableDatabase().rawQuery(sql, spec.args());
             while (c.moveToNext()) out.add(new LibraryBookRow(c));
@@ -428,12 +469,12 @@ final class ReaderStateDb extends SQLiteOpenHelper {
 
     List<PendingSyncRow> pendingBookUploads(int limit) {
         int n=Math.max(1,Math.min(100,limit)); List<PendingSyncRow> out=new ArrayList<>();
-        try(Cursor c=getReadableDatabase().rawQuery("SELECT file_name,file_path,format,content_hash,remote_file_id,upload_session_url,upload_offset FROM books WHERE sync_dirty=1 ORDER BY updated_at ASC LIMIT "+n,null)) {
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT file_name,file_path,format,content_hash,remote_file_id,upload_session_url,upload_offset FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND sync_dirty=1 ORDER BY updated_at ASC LIMIT "+n,null)) {
             while(c.moveToNext()) out.add(new PendingSyncRow(c));
         }
         return out;
     }
-    int pendingBookUploadCount() { return syncCount("SELECT COUNT(*) FROM books WHERE sync_dirty=1"); }
+    int pendingBookUploadCount() { return syncCount("SELECT COUNT(*) FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND sync_dirty=1"); }
     List<TombstoneRow> pendingTombstones(int limit) {
         int n=Math.max(1,Math.min(100,limit)); List<TombstoneRow> out=new ArrayList<>();
         try(Cursor c=getReadableDatabase().rawQuery("SELECT content_hash,file_name,remote_file_id FROM book_tombstones WHERE sync_dirty=1 ORDER BY deleted_at ASC LIMIT "+n,null)) {
@@ -490,52 +531,118 @@ final class ReaderStateDb extends SQLiteOpenHelper {
 
     List<LibraryBookRow> recentBooks(int limit, boolean readingOnly) {
         int n=Math.max(1,Math.min(20,limit));List<LibraryBookRow> out=new ArrayList<>();Cursor c=null;
-        try {String where=readingOnly?"progress>0 AND progress<100":"1=1";c=getReadableDatabase().rawQuery(
+        try {String where="file_path IS NOT NULL AND TRIM(file_path)<>'' AND "+(readingOnly?"progress>0 AND progress<100":"1=1");c=getReadableDatabase().rawQuery(
                 "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE "+where+" ORDER BY last_opened_at DESC,added_at DESC LIMIT "+n,null);
             while(c.moveToNext())out.add(new LibraryBookRow(c));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;
     }
     /** Returns one bounded home/recent page; eligibility is filtered before paging in SQLite. */
     List<LibraryBookRow> recentBooksPage(int limit, int offset, boolean readingOnly) {
         int n=Math.max(1,Math.min(20,limit));int o=Math.max(0,offset);List<LibraryBookRow> out=new ArrayList<>();Cursor c=null;
-        try {String where=readingOnly?"progress>0 AND progress<100":"progress>=0 AND progress<100";c=getReadableDatabase().rawQuery(
+        try {String where="file_path IS NOT NULL AND TRIM(file_path)<>'' AND "+(readingOnly?"progress>0 AND progress<100":"progress>=0 AND progress<100");c=getReadableDatabase().rawQuery(
                 "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE "+where+" ORDER BY last_opened_at DESC,added_at DESC LIMIT "+n+" OFFSET "+o,null);
             while(c.moveToNext())out.add(new LibraryBookRow(c));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;
     }
-    int totalAnnotationCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COALESCE(SUM(annotation_count),0) FROM books",null));}
+    int totalAnnotationCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COALESCE(SUM(annotation_count),0) FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>''",null));}
     void updateAnnotationCount(String fileName,int count){if(fileName==null)return;ContentValues v=new ContentValues();v.put("annotation_count",Math.max(0,count));getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
     List<LibraryBookRow> annotatedBooks(int limit){int n=Math.max(1,Math.min(500,limit));List<LibraryBookRow> out=new ArrayList<>();Cursor c=null;try{c=getReadableDatabase().rawQuery(
-            "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE annotation_count>0 ORDER BY last_opened_at DESC,updated_at DESC LIMIT "+n,null);while(c.moveToNext())out.add(new LibraryBookRow(c));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
+            "SELECT file_name,file_path,title,author,progress,added_at,last_opened_at FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND annotation_count>0 ORDER BY last_opened_at DESC,updated_at DESC LIMIT "+n,null);while(c.moveToNext())out.add(new LibraryBookRow(c));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
     static final class AuthorCount{final String author;final int count;AuthorCount(String a,int c){author=a;count=c;}}
     List<AuthorCount> authors(int limit){int n=Math.max(1,Math.min(1000,limit));List<AuthorCount> out=new ArrayList<>();Cursor c=null;try{c=getReadableDatabase().rawQuery(
-            "SELECT author,COUNT(*) FROM books WHERE author<>'' GROUP BY author ORDER BY author COLLATE NOCASE ASC LIMIT "+n,null);while(c.moveToNext())out.add(new AuthorCount(c.getString(0),c.getInt(1)));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
-    int totalAuthorCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(DISTINCT author) FROM books WHERE author<>''",null));}
-    int totalBookCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(*) FROM books",null));}
+            "SELECT author,COUNT(*) FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND author<>'' GROUP BY author ORDER BY author COLLATE NOCASE ASC LIMIT "+n,null);while(c.moveToNext())out.add(new AuthorCount(c.getString(0),c.getInt(1)));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
+    int totalAuthorCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(DISTINCT author) FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND author<>''",null));}
+    int totalBookCount(){return (int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(*) FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>''",null));}
 
     List<String> shelfNames(){List<String> out=new ArrayList<>();Cursor c=null;try{c=getReadableDatabase().rawQuery("SELECT name FROM shelves ORDER BY name COLLATE NOCASE ASC",null);while(c.moveToNext())out.add(c.getString(0));}catch(Exception ignored){}finally{if(c!=null)c.close();}return out;}
     boolean createShelfRow(String name){if(name==null||name.trim().isEmpty())return false;ContentValues v=new ContentValues();v.put("name",name.trim());v.put("updated_at",System.currentTimeMillis());return getWritableDatabase().insertWithOnConflict("shelves",null,v,SQLiteDatabase.CONFLICT_IGNORE)!=-1;}
     boolean renameShelfRow(String oldName,String newName){if(oldName==null||newName==null||newName.trim().isEmpty())return false;SQLiteDatabase sql=getWritableDatabase();sql.beginTransaction();try{ContentValues nv=new ContentValues();nv.put("name",newName.trim());nv.put("updated_at",System.currentTimeMillis());if(sql.insertWithOnConflict("shelves",null,nv,SQLiteDatabase.CONFLICT_IGNORE)==-1)return false;sql.execSQL("INSERT OR IGNORE INTO shelf_books(shelf_name,file_name,added_at) SELECT ?,file_name,added_at FROM shelf_books WHERE shelf_name=?",new Object[]{newName.trim(),oldName});sql.delete("shelf_books","shelf_name=?",new String[]{oldName});sql.delete("shelves","name=?",new String[]{oldName});sql.setTransactionSuccessful();return true;}catch(Exception e){return false;}finally{sql.endTransaction();}}
     boolean deleteShelfRow(String name){if(name==null)return false;SQLiteDatabase sql=getWritableDatabase();sql.beginTransaction();try{sql.delete("shelf_books","shelf_name=?",new String[]{name});int n=sql.delete("shelves","name=?",new String[]{name});sql.setTransactionSuccessful();return n>0;}finally{sql.endTransaction();}}
-    boolean shelfContains(String shelf,String fileName){return shelf!=null&&fileName!=null&&scalarLong("SELECT COUNT(*) FROM shelf_books WHERE shelf_name=? AND file_name=?",new String[]{shelf,fileName})>0;}
-    int shelfBookCount(String shelf){return shelf==null?0:(int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(*) FROM shelf_books WHERE shelf_name=?",new String[]{shelf}));}
+    boolean shelfContains(String shelf,String fileName){return shelf!=null&&fileName!=null&&scalarLong("SELECT COUNT(*) FROM shelf_books sb JOIN books b ON b.file_name=sb.file_name AND b.file_path IS NOT NULL AND TRIM(b.file_path)<>'' WHERE sb.shelf_name=? AND sb.file_name=?",new String[]{shelf,fileName})>0;}
+    int shelfBookCount(String shelf){return shelf==null?0:(int)Math.min(Integer.MAX_VALUE,scalarLong("SELECT COUNT(*) FROM shelf_books sb JOIN books b ON b.file_name=sb.file_name AND b.file_path IS NOT NULL AND TRIM(b.file_path)<>'' WHERE sb.shelf_name=?",new String[]{shelf}));}
     void setShelfMembershipRow(String shelf,String fileName,boolean included){if(shelf==null||fileName==null)return;createShelfRow(shelf);SQLiteDatabase sql=getWritableDatabase();if(included){ContentValues v=new ContentValues();v.put("shelf_name",shelf);v.put("file_name",fileName);v.put("added_at",System.currentTimeMillis());sql.insertWithOnConflict("shelf_books",null,v,SQLiteDatabase.CONFLICT_IGNORE);}else sql.delete("shelf_books","shelf_name=? AND file_name=?",new String[]{shelf,fileName});}
     void removeBookFromShelves(String fileName){if(fileName!=null)getWritableDatabase().delete("shelf_books","file_name=?",new String[]{fileName});}
 
     String contentHash(String fileName){return scalarString("SELECT content_hash FROM books WHERE file_name=?",new String[]{fileName});}
     String fileNameForHash(String hash){return hash==null?"":scalarString("SELECT file_name FROM books WHERE content_hash=? LIMIT 1",new String[]{hash});}
-    void recordRestoredBook(File file,String hash,String remoteId,SharedPreferences prefs){
-        if(file==null||!file.isFile()||hash==null||hash.isEmpty())return;
-        if(hasBookTombstone(hash))return;
-        SQLiteDatabase sql=getWritableDatabase();
-        String existing=fileNameForHash(hash);
-        if(existing.isEmpty()){insertOrUpdateBook(sql,file,hash,prefs);existing=file.getName();}
-        ContentValues v=new ContentValues();
-        v.put("file_path",file.getAbsolutePath());v.put("file_size",file.length());v.put("modified_at",file.lastModified());
-        v.put("format",file.getName().toLowerCase(Locale.ROOT).endsWith(".pdf")?"pdf":"epub");
-        String knownRemote=scalarString("SELECT remote_file_id FROM books WHERE content_hash=? LIMIT 1",new String[]{hash});
-        v.put("remote_file_id",DriveRestorePlanner.chooseRemoteId(knownRemote,remoteId));v.put("sync_dirty",0);v.put("upload_session_url","");v.put("upload_offset",0L);
-        int n=sql.update("books",v,"content_hash=?",new String[]{hash});
-        if(n==0)sql.update("books",v,"file_name=?",new String[]{existing});
+    void recordRestoredBook(File file, String hash, String remoteId, SharedPreferences prefs) {
+        if (file == null || !file.isFile() || hash == null || hash.isEmpty()) return;
+        if (hasBookTombstone(hash)) return;
+        SQLiteDatabase sql = getWritableDatabase();
+        SharedPreferences.Editor aliases = null;
+        sql.beginTransaction();
+        try {
+            String existing = fileNameForHash(hash), actual = file.getName();
+            if (existing.isEmpty()) {
+                // Never replace a different indexed identity just because names happen to match.
+                String other = contentHash(actual);
+                if (!other.isEmpty() && !hash.equals(other)) throw new IllegalStateException("Conflicting restored book identity");
+                insertOrUpdateBook(sql, file, hash, prefs);
+                existing = actual;
+            }
+            if (!existing.equals(actual)) {
+                if (scalarLong("SELECT COUNT(*) FROM books WHERE file_name=?", new String[]{actual}) != 0)
+                    throw new IllegalStateException("Conflicting restored book name; original data is preserved");
+                ContentValues name = new ContentValues(); name.put("file_name", actual);
+                if (sql.update("books", name, "file_name=?", new String[]{existing}) != 1)
+                    throw new IllegalStateException("Restored book identity is missing");
+                sql.execSQL("INSERT OR IGNORE INTO shelf_books(shelf_name,file_name,added_at) SELECT shelf_name,?,added_at FROM shelf_books WHERE file_name=?", new Object[]{actual, existing});
+                sql.delete("shelf_books", "file_name=?", new String[]{existing});
+                try (Cursor history = sql.rawQuery("SELECT day,duration_ms,book_note FROM book_day WHERE file_name=?", new String[]{existing})) {
+                    while (history.moveToNext()) {
+                        String day = history.getString(0), currentNote = bookDayNote(day, actual);
+                        ContentValues row = new ContentValues(); row.put("day", day); row.put("file_name", actual);
+                        row.put("duration_ms", Math.max(bookTimeForDay(day, actual), history.getLong(1)));
+                        row.put("book_note", currentNote.isEmpty() ? history.getString(2) : currentNote);
+                        mergeRow(sql, "book_day", row);
+                    }
+                }
+                sql.delete("book_day", "file_name=?", new String[]{existing});
+                aliases = stagedPrefAliases(prefs, existing, actual);
+                existing = actual;
+            }
+            ContentValues v = new ContentValues();
+            v.put("file_path", file.getCanonicalPath()); v.put("file_size", file.length()); v.put("modified_at", file.lastModified());
+            v.put("format", actual.toLowerCase(Locale.ROOT).endsWith(".pdf") ? "pdf" : "epub");
+            String knownRemote = scalarString("SELECT remote_file_id FROM books WHERE file_name=?", new String[]{existing});
+            v.put("remote_file_id", DriveRestorePlanner.chooseRemoteId(knownRemote, remoteId));
+            v.put("sync_dirty", 0); v.put("upload_session_url", ""); v.put("upload_offset", 0L);
+            if (sql.update("books", v, "file_name=?", new String[]{existing}) != 1)
+                throw new IllegalStateException("Restored book row missing");
+            sql.setTransactionSuccessful();
+        } catch (Exception e) {
+            throw new IllegalStateException("Unable to bind restored book", e);
+        } finally { sql.endTransaction(); }
+        if (aliases != null) aliases.apply();
     }
+
+    private static SharedPreferences.Editor stagedPrefAliases(SharedPreferences prefs, String oldName, String newName) throws Exception {
+        if (prefs == null || oldName.equals(newName)) return null;
+        SharedPreferences.Editor edit = prefs.edit();
+        java.util.Map<String, ?> values = prefs.getAll();
+        String[] prefixes = {"percent_", "finished_at_", "epub_chapter_", "epub_scroll_", "pdf_page_", "library_title_", "library_author_",
+                "library_metadata_custom_", "library_owned_", "added_at_", "last_opened_", "content_hash_", "content_hash_sig_", "book_notes_"};
+        for (String prefix : prefixes) {
+            String from = prefix + oldName, to = prefix + newName;
+            if (!values.containsKey(from) || values.containsKey(to)) continue;
+            Object value = values.get(from);
+            if (value instanceof String) edit.putString(to, (String) value);
+            else if (value instanceof Integer) edit.putInt(to, (Integer) value);
+            else if (value instanceof Long) edit.putLong(to, (Long) value);
+            else if (value instanceof Boolean) edit.putBoolean(to, (Boolean) value);
+        }
+        String from = "annotations_" + Integer.toHexString(oldName.hashCode());
+        String to = "annotations_" + Integer.toHexString(newName.hashCode());
+        if (!from.equals(to) && values.containsKey(from)) {
+            org.json.JSONArray combined = new org.json.JSONArray(prefs.getString(to, "[]"));
+            org.json.JSONArray source = new org.json.JSONArray(prefs.getString(from, "[]"));
+            Set<String> ids = new HashSet<>();
+            for (int i = 0; i < combined.length(); i++) { JSONObject item = combined.optJSONObject(i); if (item != null) ids.add(item.optString("id", "")); }
+            for (int i = 0; i < source.length(); i++) { JSONObject item = source.optJSONObject(i); if (item != null && ids.add(item.optString("id", ""))) combined.put(item); }
+            edit.putString(to, combined.toString());
+        }
+        // Original keys are intentionally retained as a recovery source.
+        return edit;
+    }
+
     void recordRestoredCover(String hash,String path,String remoteId){
         if(hash==null||hash.isEmpty())return;
         if(hasBookTombstone(hash))return;
@@ -550,8 +657,8 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     void setCoverScope(String fileName,String scope){if(fileName==null)return;ContentValues v=new ContentValues();v.put("cover_scope","everywhere".equals(scope)?"everywhere":"library_only");v.put("cover_updated_at",System.currentTimeMillis());if(!customCoverPath(fileName).isEmpty())v.put("cover_sync_dirty",1);getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
     void clearCustomCover(String fileName){updateCustomCover(fileName,"","library_only");}
     static final class PendingCoverRow{final String fileName,filePath,hash,coverPath,remoteId,session;final long offset;PendingCoverRow(Cursor c){fileName=c.getString(0);filePath=c.getString(1);hash=c.getString(2);coverPath=c.getString(3);remoteId=c.getString(4);session=c.getString(5);offset=c.getLong(6);}}
-    List<PendingCoverRow> pendingCoverUploads(int limit){int n=Math.max(1,Math.min(100,limit));List<PendingCoverRow> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT file_name,file_path,content_hash,custom_cover_path,remote_cover_file_id,cover_upload_session_url,cover_upload_offset FROM books WHERE cover_sync_dirty=1 ORDER BY cover_updated_at ASC LIMIT "+n,null)){while(c.moveToNext())out.add(new PendingCoverRow(c));}return out;}
-    int pendingCoverUploadCount(){return syncCount("SELECT COUNT(*) FROM books WHERE cover_sync_dirty=1");}
+    List<PendingCoverRow> pendingCoverUploads(int limit){int n=Math.max(1,Math.min(100,limit));List<PendingCoverRow> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT file_name,file_path,content_hash,custom_cover_path,remote_cover_file_id,cover_upload_session_url,cover_upload_offset FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND cover_sync_dirty=1 ORDER BY cover_updated_at ASC LIMIT "+n,null)){while(c.moveToNext())out.add(new PendingCoverRow(c));}return out;}
+    int pendingCoverUploadCount(){return syncCount("SELECT COUNT(*) FROM books WHERE file_path IS NOT NULL AND TRIM(file_path)<>'' AND cover_sync_dirty=1");}
     void saveCoverUploadCheckpoint(String fileName,String session,long offset){ContentValues v=new ContentValues();v.put("cover_upload_session_url",session==null?"":session);v.put("cover_upload_offset",Math.max(0L,offset));getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
     void markCoverSynced(String fileName,String remoteId){ContentValues v=new ContentValues();v.put("remote_cover_file_id",remoteId==null?"":remoteId);v.put("cover_sync_dirty",0);v.put("cover_upload_session_url","");v.put("cover_upload_offset",0L);getWritableDatabase().update("books",v,"file_name=?",new String[]{fileName});}
 
@@ -608,29 +715,25 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         });
     }
 
-    void removeBook(String fileName) {
-        if (fileName == null) return;
-        WRITER.execute(() -> {
-            SQLiteDatabase sql = getWritableDatabase();
-            sql.beginTransaction();
-            try {
-                try(Cursor c=sql.rawQuery("SELECT content_hash,remote_file_id FROM books WHERE file_name=? LIMIT 1",new String[]{fileName})) {
-                    if(c.moveToFirst()) {
-                        String hash=c.getString(0), remote=c.getString(1);
-                        if(hash!=null&&!hash.isEmpty()) {
-                            ContentValues t=new ContentValues(); t.put("content_hash",hash); t.put("file_name",fileName); t.put("remote_file_id",remote==null?"":remote);
-                            t.put("deleted_at",System.currentTimeMillis()); t.put("sync_dirty",1);
-                            if(sql.insertWithOnConflict("book_tombstones",null,t,SQLiteDatabase.CONFLICT_REPLACE)==-1)
-                                throw new IllegalStateException("Unable to retain book deletion");
-                        }
-                    }
-                }
-                sql.delete("books", "file_name=?", new String[]{fileName});
-                // Keep book_day history so Reading Calendar remains historical after a local book is removed.
-                sql.setTransactionSuccessful();
-            } finally {sql.endTransaction();}
-        });
+    boolean removeBookNow(String fileName) {
+        if (fileName == null || fileName.isEmpty()) return false;
+        SQLiteDatabase sql = getWritableDatabase(); sql.beginTransaction();
+        try {
+            String hash = "", remote = "";
+            try (Cursor c = sql.rawQuery("SELECT content_hash,remote_file_id FROM books WHERE file_name=? LIMIT 1", new String[]{fileName})) {
+                if (!c.moveToFirst()) { sql.setTransactionSuccessful(); return false; }
+                hash = c.getString(0) == null ? "" : c.getString(0); remote = c.getString(1) == null ? "" : c.getString(1);
+            }
+            if (!hash.isEmpty()) {
+            ContentValues t = new ContentValues(); t.put("content_hash", hash); t.put("file_name", fileName); t.put("remote_file_id", remote); t.put("deleted_at", System.currentTimeMillis()); t.put("sync_dirty", 1);
+            if (sql.insertWithOnConflict("book_tombstones", null, t, SQLiteDatabase.CONFLICT_REPLACE) == -1 || !hasBookTombstone(hash)) throw new IllegalStateException("Unable to retain book deletion");
+            }
+            sql.delete("shelf_books", "file_name=?", new String[]{fileName});
+            sql.delete("books", "file_name=?", new String[]{fileName});
+            sql.setTransactionSuccessful(); return true;
+        } finally { sql.endTransaction(); }
     }
+    void removeBook(String fileName) { if (fileName != null) WRITER.execute(() -> removeBookNow(fileName)); }
 
 
 
@@ -779,6 +882,50 @@ final class ReaderStateDb extends SQLiteOpenHelper {
         return best;
     }
 
+    static final class InvalidSnapshotException extends IllegalStateException {
+        InvalidSnapshotException(String message) { super(message); }
+        InvalidSnapshotException(String message, Throwable cause) { super(message, cause); }
+    }
+
+    /** Read-only, cheap preflight used before any local database or preference mutation. */
+    static void validateSnapshot(File snapshot) {
+        if (snapshot == null || !snapshot.isFile() || snapshot.length() == 0L)
+            throw new InvalidSnapshotException("Reader snapshot is missing or empty");
+        SQLiteDatabase db = null;
+        try {
+            db = openSnapshotReadOnly(snapshot);
+            try (Cursor check = db.rawQuery("PRAGMA quick_check", null)) {
+                if (!check.moveToFirst() || !"ok".equalsIgnoreCase(check.getString(0)))
+                    throw new InvalidSnapshotException("Reader snapshot failed SQLite integrity check");
+            }
+            // Keep this list identical to the core merge query below. This rejects a remote
+            // database that happens to be valid SQLite but cannot represent reader state.
+            try (Cursor core = db.rawQuery("SELECT file_name,content_hash,format,file_size,modified_at,added_at,last_opened_at,progress,finished_at,epub_spine,epub_offset,pdf_page,updated_at FROM books", null)) {
+                // Executing the query is the schema check; no rows need to be read.
+            }
+            String[][] optionalTables = {
+                    {"book_tombstones", "content_hash", "file_name", "remote_file_id", "deleted_at"},
+                    {"shelves", "name", "updated_at"},
+                    {"shelf_books", "shelf_name", "file_name", "added_at"},
+                    {"reading_day", "day", "total_ms", "daily_note"},
+                    {"book_day", "day", "file_name", "duration_ms", "book_note"}
+            };
+            for (String[] table : optionalTables) {
+                if (tableExists(db, table[0]) && !hasColumns(db, table[0], java.util.Arrays.copyOfRange(table, 1, table.length)))
+                    throw new InvalidSnapshotException("Reader snapshot contains incomplete " + table[0] + " metadata");
+            }
+        } catch (InvalidSnapshotException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new InvalidSnapshotException("Reader snapshot is corrupt or missing required books columns", e);
+        } finally { if (db != null) db.close(); }
+    }
+
+    private static SQLiteDatabase openSnapshotReadOnly(File snapshot) {
+        return SQLiteDatabase.openDatabase(snapshot.getAbsolutePath(), null,
+                SQLiteDatabase.OPEN_READONLY, PRESERVE_DATABASE);
+    }
+
     void mergeSnapshot(File snapshot, SharedPreferences prefs) {
         mergeSnapshot(snapshot, prefs, false);
     }
@@ -789,12 +936,13 @@ final class ReaderStateDb extends SQLiteOpenHelper {
      * pulls should use existingBooksOnly=true.
      */
     void mergeSnapshot(File snapshot, SharedPreferences prefs, boolean existingBooksOnly) {
-        if (snapshot == null || !snapshot.isFile()) return;
+        validateSnapshot(snapshot);
         SQLiteDatabase remote = null;
         SQLiteDatabase local = getWritableDatabase();
+        SharedPreferences.Editor stagedPrefs = prefs == null ? null : prefs.edit();
         local.beginTransaction();
         try {
-            remote = SQLiteDatabase.openDatabase(snapshot.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+            remote = openSnapshotReadOnly(snapshot);
             // Import delete intent first. A tombstone suppresses cloud resurrection, but never
             // deletes this device's bytes or reading history.
             try (Cursor exists = remote.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name='book_tombstones'", null)) {
@@ -824,19 +972,32 @@ final class ReaderStateDb extends SQLiteOpenHelper {
             }
 
             Set<String> acceptedBooks = new HashSet<>();
+            java.util.Map<String,String> restoredNames = new java.util.HashMap<>();
             try (Cursor c = remote.rawQuery("SELECT file_name,content_hash,format,file_size,modified_at,added_at,last_opened_at,progress,finished_at,epub_spine,epub_offset,pdf_page,updated_at FROM books", null)) {
                 while (c.moveToNext()) {
                     String name = c.getString(0);
                     String hash = c.isNull(1) ? "" : c.getString(1);
                     long remoteUpdated = c.getLong(12);
                     if (!hash.isEmpty() && hasBookTombstone(hash)) continue;
+                    if (!hash.isEmpty()) {
+                        String sameBook = fileNameForHash(hash);
+                        if (!sameBook.isEmpty() && !sameBook.equals(name)) {
+                            restoredNames.put(name, sameBook);
+                            name = sameBook;
+                        }
+                    }
                     boolean found;
                     long localUpdated = 0L;
                     boolean localDirty = false;
                     String localPath = "";
-                    try (Cursor lc = local.rawQuery("SELECT updated_at,sync_dirty,file_path FROM books WHERE file_name=?", new String[]{name})) {
+                    try (Cursor lc = local.rawQuery("SELECT updated_at,sync_dirty,file_path,content_hash FROM books WHERE file_name=?", new String[]{name})) {
                         found = lc.moveToFirst();
-                        if (found) { localUpdated = lc.getLong(0); localDirty = lc.getInt(1) != 0; localPath = lc.getString(2) == null ? "" : lc.getString(2); }
+                        if (found) {
+                            localUpdated = lc.getLong(0); localDirty = lc.getInt(1) != 0; localPath = lc.getString(2) == null ? "" : lc.getString(2);
+                            String localHash = lc.isNull(3) ? "" : lc.getString(3);
+                            // A filename collision is not permission to reassign an installed book.
+                            if (!localPath.isEmpty() && !localHash.isEmpty() && !hash.isEmpty() && !hash.equals(localHash)) continue;
+                        }
                     }
                     if (found && (localDirty || remoteUpdated < localUpdated)) continue;
                     if (!found && existingBooksOnly) continue;
@@ -855,8 +1016,8 @@ final class ReaderStateDb extends SQLiteOpenHelper {
                             : (int) local.insertWithOnConflict("books", null, v, SQLiteDatabase.CONFLICT_REPLACE);
                     if (changed < 1) throw new IllegalStateException("Unable to merge book metadata");
                     acceptedBooks.add(name);
-                    if (prefs != null) {
-                        SharedPreferences.Editor e = prefs.edit().putInt("percent_" + name, c.getInt(7))
+                    if (stagedPrefs != null) {
+                        SharedPreferences.Editor e = stagedPrefs.putInt("percent_" + name, c.getInt(7))
                                 .putInt("epub_chapter_" + name, c.getInt(9)).putInt("epub_scroll_" + name, c.getInt(10)).putInt("pdf_page_" + name, c.getInt(11));
                         if (c.getLong(8) > 0) e.putLong("finished_at_" + name, c.getLong(8));
                         if (c.getLong(6) > 0) e.putLong("last_opened_" + name, c.getLong(6));
@@ -874,15 +1035,17 @@ final class ReaderStateDb extends SQLiteOpenHelper {
                                 }
                             }
                         }
-                        e.apply();
                     }
                 }
             }
             // v64+ metadata is optional so older snapshots remain restorable. Only accepted
             // rows are touched, and local dirty state wins (cover dirty is independent).
+            if (hasColumns(remote, "books", new String[]{"title", "author", "annotation_count",
+                    "cover_scope", "cover_updated_at", "remote_cover_file_id"})) {
             try (Cursor extra = remote.rawQuery("SELECT file_name,title,author,annotation_count,cover_scope,cover_updated_at,remote_cover_file_id FROM books", null)) {
                 while (extra.moveToNext()) {
-                    String name = extra.getString(0);
+                    String remoteName = extra.getString(0);
+                    String name = restoredNames.containsKey(remoteName) ? restoredNames.get(remoteName) : remoteName;
                     if (!acceptedBooks.contains(name)) continue;
                     long remoteCoverAt = extra.getLong(5);
                     try (Cursor lc = local.rawQuery("SELECT sync_dirty,cover_sync_dirty,cover_updated_at FROM books WHERE file_name=?", new String[]{name})) {
@@ -901,23 +1064,30 @@ final class ReaderStateDb extends SQLiteOpenHelper {
                         local.update("books", v, "file_name=?", new String[]{name});
                     }
                 }
-            } catch (android.database.SQLException legacy) {
-                // Old snapshots may lack v64 columns; their core rows were already merged.
             }
+            }
+            if (tableExists(remote, "shelves")) {
             try (Cursor sh = remote.rawQuery("SELECT name,updated_at FROM shelves", null)) {
-                while (sh.moveToNext()) { ContentValues v = new ContentValues(); v.put("name", sh.getString(0)); v.put("updated_at", sh.getLong(1)); local.insertWithOnConflict("shelves", null, v, SQLiteDatabase.CONFLICT_REPLACE); }
+                while (sh.moveToNext()) { ContentValues v = new ContentValues(); v.put("name", sh.getString(0)); v.put("updated_at", sh.getLong(1)); mergeRow(local, "shelves", v); }
             }
+            }
+            if (tableExists(remote, "shelf_books")) {
             try (Cursor sh = remote.rawQuery("SELECT shelf_name,file_name,added_at FROM shelf_books", null)) {
-                while (sh.moveToNext()) { ContentValues v = new ContentValues(); v.put("shelf_name", sh.getString(0)); v.put("file_name", sh.getString(1)); v.put("added_at", sh.getLong(2)); local.insertWithOnConflict("shelf_books", null, v, SQLiteDatabase.CONFLICT_REPLACE); }
+                while (sh.moveToNext()) { ContentValues v = new ContentValues(); v.put("shelf_name", sh.getString(0)); v.put("file_name", restoredNames.containsKey(sh.getString(1)) ? restoredNames.get(sh.getString(1)) : sh.getString(1)); v.put("added_at", sh.getLong(2)); mergeRow(local, "shelf_books", v); }
             }
+            }
+            if (tableExists(remote, "reading_day")) {
             try (Cursor c = remote.rawQuery("SELECT day,total_ms,daily_note FROM reading_day", null)) {
-                while (c.moveToNext()) { String day=c.getString(0); long ms=c.getLong(1); String note=c.getString(2); ContentValues v=new ContentValues(); v.put("day",day); v.put("total_ms",Math.max(scalarLong("SELECT total_ms FROM reading_day WHERE day=?",new String[]{day}),ms)); v.put("daily_note",(note!=null&&!note.isEmpty())?note:scalarString("SELECT daily_note FROM reading_day WHERE day=?",new String[]{day})); local.insertWithOnConflict("reading_day",null,v,SQLiteDatabase.CONFLICT_REPLACE); }
+                while (c.moveToNext()) { String day=c.getString(0); long ms=c.getLong(1); String note=c.getString(2); ContentValues v=new ContentValues(); v.put("day",day); v.put("total_ms",Math.max(scalarLong("SELECT total_ms FROM reading_day WHERE day=?",new String[]{day}),ms)); v.put("daily_note",(note!=null&&!note.isEmpty())?note:scalarString("SELECT daily_note FROM reading_day WHERE day=?",new String[]{day})); mergeRow(local, "reading_day", v); }
             }
+            }
+            if (tableExists(remote, "book_day")) {
             try (Cursor c = remote.rawQuery("SELECT day,file_name,duration_ms,book_note FROM book_day", null)) {
-                while (c.moveToNext()) { String day=c.getString(0), name=c.getString(1); ContentValues v=new ContentValues(); v.put("day",day); v.put("file_name",name); v.put("duration_ms",Math.max(scalarLong("SELECT duration_ms FROM book_day WHERE day=? AND file_name=?",new String[]{day,name}),c.getLong(2))); v.put("book_note",(c.getString(3)!=null&&!c.getString(3).isEmpty())?c.getString(3):scalarString("SELECT book_note FROM book_day WHERE day=? AND file_name=?",new String[]{day,name})); local.insertWithOnConflict("book_day",null,v,SQLiteDatabase.CONFLICT_REPLACE); }
+                while (c.moveToNext()) { String day=c.getString(0), remoteName=c.getString(1), name=restoredNames.containsKey(remoteName)?restoredNames.get(remoteName):remoteName; ContentValues v=new ContentValues(); v.put("day",day); v.put("file_name",name); v.put("duration_ms",Math.max(scalarLong("SELECT duration_ms FROM book_day WHERE day=? AND file_name=?",new String[]{day,name}),c.getLong(2))); String existingNote=bookDayNote(day,name); v.put("book_note",restoredNames.containsKey(remoteName)&&!existingNote.isEmpty()?existingNote:((c.getString(3)!=null&&!c.getString(3).isEmpty())?c.getString(3):existingNote)); mergeRow(local, "book_day", v); }
+            }
             }
             ContentValues meta = new ContentValues(); meta.put("k", META_LEGACY_MIGRATED); meta.put("v", "1");
-            local.insertWithOnConflict("meta", null, meta, SQLiteDatabase.CONFLICT_REPLACE);
+            mergeRow(local, "meta", meta);
             local.setTransactionSuccessful();
         } catch (RuntimeException e) {
             throw e;
@@ -927,40 +1097,120 @@ final class ReaderStateDb extends SQLiteOpenHelper {
             local.endTransaction();
             if (remote != null) remote.close();
         }
+        // Publish compatibility preferences only after the SQLite transaction committed.
+        if (stagedPrefs != null) stagedPrefs.apply();
     }
 
-    void checkpoint() {
-        try {
-            // A writer task must not enqueue a barrier behind itself.
-            if (!Thread.currentThread().getName().equals("wow-reader-state-db")) WRITER.submit(() -> { }).get();
-            try (Cursor c = getWritableDatabase().rawQuery("PRAGMA wal_checkpoint(FULL)", null)) {
-                if (!c.moveToFirst() || c.getInt(0) != 0) throw new IllegalStateException("Reader database is busy; retry snapshot");
-            }
-        } catch (Exception e) {
-            throw new IllegalStateException("Unable to checkpoint reader state", e);
+    private static void mergeRow(SQLiteDatabase db, String table, ContentValues values) {
+        if (db.insertWithOnConflict(table, null, values, SQLiteDatabase.CONFLICT_REPLACE) < 0)
+            throw new IllegalStateException("Unable to merge " + table + " metadata");
+    }
+
+    boolean repairRestoredMetadata(String fileName, String expectedTitle, String title, String author) {
+        if (fileName == null || expectedTitle == null || title == null) return false;
+        // One statement prevents a late metadata read from replacing a concurrent user rename.
+        SQLiteDatabase sql = getWritableDatabase();
+        try (android.database.sqlite.SQLiteStatement statement = sql.compileStatement(
+                "UPDATE books SET title=?,author=CASE WHEN COALESCE(TRIM(author),'')='' THEN ? ELSE author END " +
+                "WHERE file_name=? AND COALESCE(title,'')=? AND file_path IS NOT NULL AND TRIM(file_path)<>''")) {
+            statement.bindString(1, title); statement.bindString(2, author == null ? "" : author.trim());
+            statement.bindString(3, fileName); statement.bindString(4, expectedTitle);
+            return statement.executeUpdateDelete() == 1;
         }
     }
 
-    File databaseFile(Context context) { checkpoint(); return context.getDatabasePath(DB_NAME); }
+    private boolean metaIs(String key) { return "1".equals(scalarString("SELECT v FROM meta WHERE k=?", new String[]{key})); }
+    private void putMeta(String key, String value) { ContentValues v = new ContentValues(); v.put("k", key); v.put("v", value); mergeRow(getWritableDatabase(), "meta", v); }
 
-    /** Freeze the database bytes briefly; ZIP compression runs after releasing the writer lock. */
-    File createSnapshot(Context context) throws java.io.IOException {
-        checkpoint();
-        File snapshot = File.createTempFile("wow-reader-db-", ".db", context.getCacheDir());
-        SQLiteDatabase sql = getWritableDatabase();
-        boolean complete = false;
-        sql.beginTransaction();
+    void reconcileLocalLibrary(File libraryDir, SharedPreferences prefs) {
+        if (libraryDir == null) return;
         try {
-            try (java.io.InputStream in = new java.io.BufferedInputStream(new java.io.FileInputStream(context.getDatabasePath(DB_NAME)));
-                 java.io.OutputStream out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(snapshot))) {
-                byte[] buffer = new byte[64 * 1024]; int count;
-                while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+            File dir = libraryDir.getCanonicalFile();
+            if (!dir.isDirectory()) return;
+            SQLiteDatabase sql = getWritableDatabase();
+            // Keyset batches avoid materializing a large library, and filesystem checks are
+            // never performed inside a long write transaction or on the UI thread.
+            String after = "";
+            while (true) {
+                List<String[]> rows = new ArrayList<>();
+                try (Cursor c = sql.rawQuery("SELECT file_name,file_path,content_hash FROM books WHERE file_name>? ORDER BY file_name LIMIT 200", new String[]{after})) {
+                    while (c.moveToNext()) rows.add(new String[]{c.getString(0), c.getString(1), c.getString(2)});
+                }
+                if (rows.isEmpty()) break;
+                for (String[] row : rows) {
+                    String name = row[0], oldPath = row[1], hash = row[2] == null ? "" : row[2];
+                    after = name;
+                    File bound = null;
+                    if (oldPath != null && !oldPath.isEmpty()) {
+                        File f = new File(oldPath).getCanonicalFile();
+                        if (dir.equals(f.getParentFile()) && f.isFile() && isBook(f.getName())) bound = f;
+                    }
+                    if (bound == null && new File(name).getName().equals(name)) {
+                        File candidate = new File(dir, name).getCanonicalFile();
+                        if (dir.equals(candidate.getParentFile()) && candidate.isFile() && isBook(name)) {
+                            // A name match alone must not attach cloud metadata to a different book.
+                            if (hash.isEmpty() || (hash.matches("(?i)[0-9a-f]{64}") && hash.equalsIgnoreCase(FileIdentityUtil.sha256(candidate)))) bound = candidate;
+                        }
+                    }
+                    if (bound != null && !name.equals(bound.getName()) && !hash.isEmpty()) {
+                        recordRestoredBook(bound, hash, "", prefs);
+                    } else {
+                        String newPath = bound == null ? "" : bound.getCanonicalPath();
+                        if (!newPath.equals(oldPath == null ? "" : oldPath)) {
+                            ContentValues v = new ContentValues(); v.put("file_path", newPath);
+                            // Guard against a concurrent restore binding the row after it was read.
+                            sql.update("books", v, "file_name=? AND COALESCE(file_path,'')=?", new String[]{name, oldPath == null ? "" : oldPath});
+                        }
+                    }
+                }
             }
-            sql.setTransactionSuccessful();
+        } catch (Exception e) { throw new IllegalStateException("Unable to reconcile local library", e); }
+    }
+
+    private static boolean tableExists(SQLiteDatabase db,String name){try(Cursor c=db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",new String[]{name})){return c.moveToFirst();}}
+    private static boolean hasColumns(SQLiteDatabase db,String table,String[] columns){try(Cursor c=db.rawQuery("PRAGMA table_info("+table+")",null)){Set<String> found=new HashSet<>();while(c.moveToNext())found.add(c.getString(1));for(String col:columns)if(!found.contains(col))return false;return true;}}
+
+    void checkpoint() {
+        try { if(!Thread.currentThread().getName().equals("wow-reader-state-db")) WRITER.submit(() -> {}).get();
+            try(Cursor c=getWritableDatabase().rawQuery("PRAGMA wal_checkpoint(FULL)",null)){if(!c.moveToFirst()||c.getInt(0)!=0)throw new IllegalStateException("Reader database is busy; retry snapshot");}
+        } catch(Exception e){throw new IllegalStateException("Unable to checkpoint reader state",e);}
+    }
+    File databaseFile(Context context){checkpoint();return context.getDatabasePath(DB_NAME);}
+
+    /** Freeze a consistent main database image without copying a live WAL database. */
+    File createSnapshot(Context context) throws java.io.IOException {
+        // Never use the SQLiteOpenHelper monitor while waiting for its queued writer.
+        synchronized (SNAPSHOT_LOCK) { return createSnapshotLocked(context); }
+    }
+
+    private File createSnapshotLocked(Context context) throws java.io.IOException {
+        checkpoint();
+        SQLiteDatabase sql = getWritableDatabase();
+        if (sql.inTransaction()) throw new java.io.IOException("Cannot snapshot an active reader transaction");
+        boolean wal = sql.isWriteAheadLoggingEnabled();
+        File snapshot = File.createTempFile("wow-reader-db-", ".db", context.getCacheDir());
+        boolean complete = false;
+        try {
+            // In rollback-journal mode an exclusive transaction freezes the main database.
+            // Disabling WAL flushes its remaining commits, closing the checkpoint/copy race.
+            // API 23 does not provide SQLite VACUUM INTO or a public SQLite backup API.
+            if (wal) sql.disableWriteAheadLogging();
+            sql.beginTransaction();
+            try {
+                try (java.io.InputStream in = new java.io.BufferedInputStream(new java.io.FileInputStream(context.getDatabasePath(DB_NAME)));
+                     java.io.OutputStream out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(snapshot))) {
+                    byte[] buffer = new byte[64 * 1024]; int count;
+                    while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+                }
+                sql.setTransactionSuccessful();
+            } finally { sql.endTransaction(); }
+            validateSnapshot(snapshot);
             complete = true;
             return snapshot;
+        } catch (RuntimeException e) {
+            throw new java.io.IOException("Unable to freeze reader database", e);
         } finally {
-            sql.endTransaction();
+            if (wal) try { sql.enableWriteAheadLogging(); } catch (Exception ignored) { }
             if (!complete) snapshot.delete();
         }
     }

@@ -2,6 +2,7 @@ package com.whisper.wowreader;
 
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.DatabaseErrorHandler;
 import android.database.sqlite.SQLiteDatabase;
@@ -15,6 +16,8 @@ import org.robolectric.annotation.Config;
 import org.robolectric.annotation.LooperMode;
 import java.io.File;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
@@ -203,6 +206,71 @@ public class ReaderStateDbTest {
             assertEquals(91, count(sql, "SELECT progress FROM books WHERE file_name='snapshot.epub'"));
         } finally { snapshot.delete(); }
     }
+    @Test public void missingBooksSnapshotIsRejectedBeforeLocalOrPreferenceMutation() throws Exception {
+        fixture(sql, "guard.epub", HASH, 31);
+        SharedPreferences prefs = RuntimeEnvironment.getApplication().getSharedPreferences("reader-guard-" + root.getName(), 0);
+        prefs.edit().putInt("percent_guard.epub", 31).putString("sync_seen", "before").commit();
+        File bad = new File(root, "missing-books.db");
+        try (SQLiteDatabase incoming = SQLiteDatabase.openOrCreateDatabase(bad, null)) {
+            incoming.execSQL("CREATE TABLE meta(k TEXT PRIMARY KEY,v TEXT NOT NULL)"); incoming.setVersion(6);
+        }
+        assertThrows(ReaderStateDb.InvalidSnapshotException.class, () -> db.mergeSnapshot(bad, prefs));
+        assertEquals(31, count(sql, "SELECT progress FROM books WHERE file_name='guard.epub'"));
+        assertEquals("before", prefs.getString("sync_seen", "")); assertEquals(31, prefs.getInt("percent_guard.epub", -1));
+    }
+    @Test public void invalidSnapshotValidationPreservesEveryOriginalByte() throws Exception {
+        byte[][] samples = {new byte[0], "random bytes".getBytes(StandardCharsets.UTF_8), "SQLite format 3\000truncated".getBytes(StandardCharsets.UTF_8)};
+        for (int i = 0; i < samples.length; i++) {
+            File candidate = new File(root, "invalid-" + i + ".db"); Files.write(candidate.toPath(), samples[i]);
+            assertThrows(ReaderStateDb.InvalidSnapshotException.class, () -> ReaderStateDb.validateSnapshot(candidate));
+            assertArrayEquals(samples[i], Files.readAllBytes(candidate.toPath()));
+        }
+    }
+    @Test public void legacySnapshotWithoutOptionalTablesStillMergesCoreBooks() throws Exception {
+        ReaderStateDb source = isolated("optional-source"); SQLiteDatabase incoming = source.getWritableDatabase();
+        fixture(incoming, "optional.epub", HASH, 47);
+        for (String table : new String[]{"shelves", "shelf_books", "reading_day", "book_day", "book_tombstones"}) incoming.execSQL("DROP TABLE " + table);
+        File sourcePath = source.databaseFile(new DbContext(RuntimeEnvironment.getApplication(), new File(root, "optional-source")));
+        source.close(); File snapshot = new File(root, "optional-snapshot.db"); Files.copy(sourcePath.toPath(), snapshot.toPath());
+        db.mergeSnapshot(snapshot, null);
+        assertEquals(1, count(sql, "SELECT COUNT(*) FROM books WHERE content_hash=?", HASH));
+        assertEquals(47, count(sql, "SELECT progress FROM books WHERE file_name='optional.epub'"));
+    }
+    @Test public void reopeningVersion6MissingBooksRepairsSchemaWithoutLosingHistoryOrMarkers() throws Exception {
+        sql.execSQL("INSERT INTO reading_day(day,total_ms,daily_note) VALUES('2026-10-19',9000,'retain note')");
+        sql.execSQL("INSERT INTO book_day(day,file_name,duration_ms,book_note) VALUES('2026-10-19','history.epub',9000,'retain history')");
+        sql.execSQL("INSERT INTO meta(k,v) VALUES('legacy_migrated_v1','1'),('library_metadata_migrated_v2','1'),('home_indexed_v4','1')"); sql.execSQL("DROP TABLE books");
+        db.close(); db = isolated("local"); sql = db.getWritableDatabase();
+        assertEquals(1, count(sql, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='books'"));
+        assertEquals(9000, db.dayTime("2026-10-19")); assertEquals("retain note", db.dailyNote("2026-10-19"));
+        assertEquals("retain history", db.bookDayNote("2026-10-19", "history.epub"));
+        assertEquals(0, count(sql, "SELECT COUNT(*) FROM meta WHERE k IN ('legacy_migrated_v1','library_metadata_migrated_v2','home_indexed_v4')"));
+    }
+    @Test public void partialMissingStatsRepairDoesNotOverwriteExistingStatsWhenLegacyPrefsReapplied() throws Exception {
+        sql.execSQL("INSERT INTO reading_day(day,total_ms,daily_note) VALUES('2026-10-19',9000,'local note')"); sql.execSQL("DROP TABLE book_day");
+        db.close(); db = isolated("local"); sql = db.getWritableDatabase();
+        SharedPreferences prefs = RuntimeEnvironment.getApplication().getSharedPreferences("legacy-stats-" + root.getName(), 0);
+        prefs.edit().putString("reading_stats_days_json", "{\"2026-10-19\":1000,\"2026-10-20\":2000}").putString("reading_stats_day_books_json", "{}").putString("reading_stats_day_notes_json", "{\"2026-10-19\":\"legacy note\"}").putString("reading_stats_book_day_notes_json", "{}").commit();
+        Method migrate = ReaderStateDb.class.getDeclaredMethod("migrateLegacyAsync", SharedPreferences.class, File.class); migrate.setAccessible(true); migrate.invoke(db, prefs, root);
+        await(() -> "1".equals(metaValue("legacy_migrated_v1")));
+        assertEquals(9000, db.dayTime("2026-10-19")); assertEquals("local note", db.dailyNote("2026-10-19")); assertEquals(2000, db.dayTime("2026-10-20"));
+    }
+    @Test public void lateMergeFailureRollsBackBooksProgressAndPreferences() throws Exception {
+        fixture(sql, "rollback.epub", HASH, 11); sql.execSQL("UPDATE books SET sync_dirty=0,updated_at=1 WHERE file_name='rollback.epub'");
+        SharedPreferences prefs = RuntimeEnvironment.getApplication().getSharedPreferences("rollback-" + root.getName(), 0); prefs.edit().putInt("percent_rollback.epub", 11).putString("merge_marker", "before").commit();
+        ReaderStateDb source = isolated("malformed-source"); SQLiteDatabase incoming = source.getWritableDatabase(); fixture(incoming, "rollback.epub", HASH, 88); incoming.execSQL("UPDATE books SET sync_dirty=0,updated_at=99 WHERE file_name='rollback.epub'");
+        incoming.execSQL("INSERT INTO shelves(name,updated_at) VALUES('Remote shelf',99)");
+        sql.execSQL("CREATE TRIGGER ignore_shelf BEFORE INSERT ON shelves BEGIN SELECT RAISE(IGNORE); END");
+        File sourcePath = source.databaseFile(new DbContext(RuntimeEnvironment.getApplication(), new File(root, "malformed-source"))); source.close(); File snapshot = new File(root, "malformed-snapshot.db"); Files.copy(sourcePath.toPath(), snapshot.toPath());
+        assertThrows(RuntimeException.class, () -> db.mergeSnapshot(snapshot, prefs));
+        assertEquals(11, count(sql, "SELECT progress FROM books WHERE file_name='rollback.epub'")); assertEquals("before", prefs.getString("merge_marker", "")); assertEquals(11, prefs.getInt("percent_rollback.epub", -1));
+    }
+    @Test public void walSnapshotIncludesQueuedWritesAndRestoresWalMode() throws Exception {
+        fixture(sql, "wal.epub", HASH, 12); db.updateProgress("wal.epub", 88, 0);
+        File snapshot = db.createSnapshot(new DbContext(RuntimeEnvironment.getApplication(), new File(root, "local")));
+        try (SQLiteDatabase frozen = SQLiteDatabase.openDatabase(snapshot.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY)) { assertEquals("ok", scalar(frozen, "PRAGMA integrity_check")); assertEquals(88, count(frozen, "SELECT progress FROM books WHERE file_name='wal.epub'")); }
+        snapshot.delete(); assertTrue("WAL must be restored after snapshot", sql.isWriteAheadLoggingEnabled());
+    }
     @Test public void additiveSchemaUpgradePreservesProgressAndResetsExpiredUploadSessions() throws Exception {
         fixture(sql, "upgrade.epub", HASH, 88);
         sql.setVersion(5);
@@ -232,6 +300,9 @@ public class ReaderStateDbTest {
     }
     private static String scalar(SQLiteDatabase target, String query, String...args) {
         try (Cursor c = target.rawQuery(query, args)) { assertTrue(c.moveToFirst()); return c.getString(0); }
+    }
+    private String metaValue(String key) {
+        try { return scalar(sql, "SELECT v FROM meta WHERE k=?", key); } catch (AssertionError e) { return ""; }
     }
     private interface Condition { boolean ready() throws Exception; }
     private static void await(Condition c) throws Exception {

@@ -1,4 +1,47 @@
-# WoW Reader — v70 owner-accepted / v64 last confirmed live
+# WoW Reader — v72 owner-accepted / v64 last confirmed live
+
+## Latest owner authorization — v72 release preparation and source publication
+
+The owner confirmed that v72 / 2.21.6 works and authorized Play update preparation and GitHub source publication. The owner uploads to Google Play personally: **do not upload there**. v64 / 2.20.0 remains the last owner-confirmed published version. Earlier v71/v72 test-only and no-push/no-AAB instructions below are historical and superseded by this authorization; earlier test limitations remain evidence limits, not a claim that all devices or accounts were tested.
+
+The signed `WoW-Reader-v2.21.6-v72-PlayStore-production.aab` was built from unchanged accepted source. Rebuilding reproduced the accepted v72 APK byte-for-byte (SHA-256 `3a69f17969e001ea20713affe30c1a8e582bee3431d6761cd3a2e5be96688061`). The final AAB was reordered with `META-INF/MANIFEST.MF` first, preserving every entry's contents. Its JAR signature, production certificate, package/version, minSdk23/targetSdk36, non-debuggable flag, bundletool validation and matching APK DEX/assets/libraries all passed **after reordering**. This archive order is the owner's file-type-display preference, not a guarantee of every file manager's label.
+
+AAB: `/workspace/wow-reader-v72-update/WoW-Reader-v2.21.6-v72-PlayStore-production.aab` (15,656,110 bytes); SHA-256 `1629d1e6ac972cdb1e52ab81f8aeca4765c8445480dbede0a6bad65755160b4f`. Evidence: `AAB-VERIFICATION.json`, `AAB-SIGNATURE-VERIFICATION.txt`, `AAB-MANIFEST.xml` and `SHA256SUMS.txt` in that folder. The existing v72 automated record reports 379 host tests, zero failures/errors/skips, and lint zero fatal/errors with 175 warnings; it is not an all-device/live-account test. Private build helper/log are outside Git under `/workspace/release-private/`.
+
+Play release notes are in `docs/WHATS_NEW_v72.txt` and cover cumulative v64-to-v72 changes. Before uploading, the owner must confirm versionCode 72 is unused across all Play tracks. No Play Console access/upload occurred. Source and documentation only belong in Git; APK/AAB, signing material, build environment and private helper scripts remain outside Git.
+
+
+## နောက်ဆုံး စမ်းသပ် update — v72 / 2.21.6 ghost entries နှင့် hash titles
+
+ပိုင်ရှင်က v70 uninstall → Play v64 install → v71 update ပြီး Restore ရသွားကြောင်း အတည်ပြုသည်။ သို့သော် blank W-cover entries ဖွင့်/ဖျက်မရ၊ အချို့ခေါင်းစဉ်များ SHA256 hash ဖြစ်နေသည်။ Screenshots `/home/ubuntu/upload/1000017490.jpg`, `/home/ubuntu/upload/1000017491.jpg`။ W cover တစ်ခုတည်းဖြင့် စာအုပ်ကို deleted/corrupt ဟု မသတ်မှတ်ရ။
+
+အကြောင်းရင်း: snapshot merge က remote-only rows ကို `file_path=''` ဖြင့် သိမ်းပြီး library queries က local book အဖြစ် ပြခဲ့သည်။ `new File("")` ကြောင့် file identity ပျောက်ပြီး Remove သည် `file.delete()` အောင်မှသာ DB cleanup လုပ်သဖြင့် missing-file row မဖျက်နိုင်ပါ။ Title အတွက် indexed rows အားလုံးကို custom ဟု သတ်မှတ်ထား၍ hash fallback ကို embedded EPUB title ဖြင့် မပြင်ခဲ့ပါ။
+
+- DB local-library page/count/search/home/notes/authors/shelf နှင့် upload queue များက unbound rows ကို မပြတော့ပါ။ Cloud metadata နှင့် history ကို မဖျက်ဘဲ ထိန်းသည်။ One-time background v72 reconciliation နှင့် post-restore reconciliation သည် private library path များကို ပြန်စစ်၍ stale/missing binding ကို ရှင်းသည်။ Missing file ကို deletion ဟု မယူဆဘဲ tombstone မဖန်တီးပါ။
+- RestoredBookMetadata သည် hash/blank fallback titles ကို EPUB/PDF embedded metadata ဖြင့် off-main-thread ပြန်ဖတ်သည်။ လက်ရှိ v71 စာအုပ်များကို card ဖွင့်ချိန် lazy repair လုပ်သည်။ Explicit custom rename နှင့် healthy titles/authors မကျော်ရေးပါ။ Compare-and-set သည် concurrent user rename ကို ထိန်းသည်။ Valid file တွင် title metadata မရှိလျှင် `Untitled book`; unreadable file ကို မဖျက်ပါ။
+- Remove သည် worker thread တွင် local bytes ကို `.pending` သို့ ယာယီရွှေ့၊ transactional DB/tombstone removal အောင်မှ ရှင်းသည်။ DB failure တွင် bytes ကို ပြန်ထားသည်။ Missing file ပါ row cleanup လုပ်နိုင်သည်။ Actual file ၏ hash မရှိသေးလျှင် MainActivity က staging မတိုင်မီ hash တွက်၍ delete intent ထိန်းသည်။ Hashless metadata-only row တွင် identity မတီထွင်ပါ။ Original imported source နှင့် reading calendar history မဖျက်ပါ။
+- Same-hash snapshot aliases ကြောင့် live local binding မပျောက်စေရန် merge ပြင်သည်။ Restore rebinding တွင် shelves/history/progress/custom flag/annotation aliases ကို ထိန်းသည်။ Filename collisions သည် မတူသော local bytes ကို မကျော်ရေးဘဲ safe content filename အသစ်သုံးသည်။ Historical deletion markers မရှိခဲ့သော legacy backup မှ စာအုပ်တိုင်း၏ deletion history ကို ပြန်မသိနိုင်ပါ။
+
+Validation: **379 host tests၊ failures/errors/skips 0**; v71 ထက် 72 checks အသစ် (DB/metadata API23/28/35/36 matrix + filesystem tests16)။ Contract suites၊ Chromium reader regression suites နှစ်ခု၊ assembleRelease/lintRelease/instrumentation compile အောင်သည်။ Lint175 warnings၊ fatal/error0။ Physical phone၊ live Drive account နှင့် actual failing archive မစမ်းရသေးပါ။
+
+Signed APK `/workspace/wow-reader-v72-update/WoW-Reader-v2.21.6-v72-test-update.apk` (16,012,986 bytes)။ SHA256 `3a69f17969e001ea20713affe30c1a8e582bee3431d6761cd3a2e5be96688061`။ Production/v71 certificate match၊ package/version72/non-debuggable/16-KiB alignment verified။ Evidence `/workspace/wow-reader-v72-update/VERIFICATION.json`; private build script/log `/workspace/release-private/build_v72_apk.py`, `/workspace/release-private/build-v72-apk.log`။
+
+**v71 အပေါ် in-place update သာတင်ရန်; uninstall/clear data မလုပ်ရန်။ Restore ထပ်မလုပ်မီ လက်ရှိ Library ကို အရင်စစ်ရန်။** Blank ghost cards ပျောက်/မပျောက်၊ hash title card ပြန်ဖွင့်ချိန် မူလ title ပြန်ရ/မရ၊ renamed title မပြောင်းခြင်း၊ အမှန်တကယ် corrupt local copy ကို Remove ရ/မရ၊ progress/notes/history/shelves ကို စစ်ရန်။ မူလ cloud backup ကို လက်ဖြင့်မဖျက်ရန်။ Git commit/push၊ Play upload နှင့် AAB အသစ် လုံးဝမလုပ်ပါ။ v71/v72 သည် test candidates သာဖြစ်သည်။
+
+## နောက်ဆုံး စမ်းသပ် update — v71 / 2.21.5 Drive restore recovery
+
+ပိုင်ရှင်၏ `no such table: books` screenshot ရှိ SELECT သည် `ReaderStateDb.mergeSnapshot` ၏ remote database query နှင့် တူသည်။ အခြားအကောင့် login ရသည်ဟုလည်း ပိုင်ရှင်ပြောထားသည်။ ထို့ကြောင့် Google login failure ဟု မသတ်မှတ်ရ။ မူရင်း failing Drive archive မရသေး၍ backup ပျက်သည့်အကြောင်းရင်းအတိအကျကို အတည်မပြုရသေးပါ။
+
+- Snapshot ကို read-only integrity/schema စစ်ပြီးမှ merge လုပ်သည်။ Invalid DB ကို automatic sync က reject လုပ်ပြီး preferences/seen-state မပြောင်းပါ။ Corruption handler သည် မူရင်း local/backup database ဖိုင်ကို မဖျက်ပါ။
+- Explicit Restore တွင် invalid SQLite metadata ကို ကျော်ပြီး သီးခြား prefs/annotations နှင့် integrity-verified legacy/incremental စာအုပ်များကို ဆက်ယူနိုင်သည်။ Reading data မပြည့်လျှင် partial recovery ဟု သတိပေးသည်။ ထို account ၏ backup/sync ကို ယာယီပိတ်၍ မူရင်း cloud recovery source ကို မရေးမိစေပါ။ အခြား account သည် မပိတ်ပါ။ Healthy current state archive ရပါက invalid legacy DB ကို အစားထိုး authoritative အဖြစ် သုံးသည်။
+- Local version6 DB တွင် missing tables ကို additive repair လုပ်ပြီး သက်ဆိုင်ရာ migration markers ပြန်ဖွင့်သည်။ ရှိပြီးသား books/progress၊ ပိုများသည့် reading duration နှင့် nonempty notes ကို ထိန်းသည်။ No destructive migration/clear data။
+- Snapshot export သည် queued writes စောင့်၊ WAL ပိတ်၊ exclusive transaction အောက် main DB copy ယူ၊ frozen file စစ်ပြီး WAL ပြန်ဖွင့်သည်။ Snapshot lock သည် SQLiteOpenHelper monitor မဟုတ်သဖြင့် queued writer နှင့် deadlock မဖြစ်စေပါ။ Merge preferences ကို SQLite commit ပြီးမှ apply လုပ်ပြီး failed metadata insert ကို rollback လုပ်သည်။
+
+စစ်ဆေးပြီး — **307 host/Robolectric tests၊ failures/errors/skips 0**; အသစ် 56 checks သည် API23/28/35/36 တွင် restore/database recovery ကို စစ်သည်။ Contract suites၊ reader JavaScript Chromium suites နှစ်ခု၊ assembleRelease/lintRelease/instrumentation compile အောင်သည်။ Lint warnings175၊ fatal/error0။ Physical device၊ live Google account restore နှင့် မူရင်း failing archive မစမ်းထားပါ။
+
+Signed APK: `/workspace/wow-reader-v71-update/WoW-Reader-v2.21.5-v71-test-update.apk` (15,996,604 bytes)။ SHA256 `7ddd07b4cdda3caa3dda979bed121daa642d40509d4ee638a2f75e19daa2f500`။ Package `com.whisper.wowreader`၊ versionCode71၊ target36၊ non-debuggable၊ production/v70 certificate match နှင့် 16-KiB alignment verified။ Evidence `/workspace/wow-reader-v71-update/VERIFICATION.json`။ Private build helper/log `/workspace/release-private/build_v71_apk.py`, `/workspace/release-private/build-v71-apk.log`။
+
+ပိုင်ရှင်ကို **uninstall/clear data မလုပ်ဘဲ v70 အပေါ် update တင်၍ မူလ failing account တွင် Restore ပြန်စမ်းရန်** ပို့ပါ။ Books ဖွင့်ရခြင်း၊ progress၊ notes၊ shelves၊ history ကို စစ်ရန်။ Partial recovery ပြလျှင် မူလ Drive backup နှင့် healthy old-device library ကို ထိန်းထားရန်; မရှိသည့် metadata ကို ပြန်ဖန်တီးပေးနိုင်ကြောင်း မအာမခံရ။ Git commit/push၊ Play upload၊ AAB အသစ် မလုပ်ပါ။ Play track versionCode availability မစစ်ထားပါ။ ယခင် device/security/scale gates မပြောင်းပါ။
 
 ## Latest owner authorization — v70 source publication
 

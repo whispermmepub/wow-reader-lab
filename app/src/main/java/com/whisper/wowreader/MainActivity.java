@@ -3024,6 +3024,9 @@ public class MainActivity extends Activity {
     private void loadBookVisual(File file, ImageView cover, TextView titleView, TextView metaView, boolean libraryCardContext) {
         bookVisualExecutor.execute(() -> {
             boolean customMetadata = (stateDb != null && stateDb.isLibraryIndexReady()) || prefs.getBoolean(customMetadataFlag(file), false);
+            if (stateDb != null && stateDb.isLibraryIndexReady()) {
+                RestoredBookMetadata.repairStored(stateDb, file, coverCacheDir, prefs);
+            }
             String title = cachedLibraryTitle(file);
             String author = cachedLibraryAuthor(file);
             Bitmap bitmap = null;
@@ -3169,7 +3172,13 @@ public class MainActivity extends Activity {
 
     private String queryDisplayName(Uri uri){ if("file".equalsIgnoreCase(uri.getScheme()))return new File(uri.getPath()).getName(); Cursor c=null; try{c=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null);if(c!=null&&c.moveToFirst())return c.getString(0);}catch(Exception ignored){}finally{if(c!=null)c.close();}return null; }
     private File uniqueFile(String originalName){ String safe=originalName.replaceAll("[\\\\/:*?\"<>|]","_"); File f=new File(libraryDir,safe);if(!f.exists())return f;int dot=safe.lastIndexOf('.');String base=dot>0?safe.substring(0,dot):safe,ext=dot>0?safe.substring(dot):"";return new File(libraryDir,base+"_"+System.currentTimeMillis()+ext); }
-    private void openBook(File file){GoogleAutoSync.cancelPending();long now=System.currentTimeMillis();prefs.edit().putLong("last_opened_"+file.getName(),now).apply();ReaderStateDb db=ReaderStateDb.peek();if(db!=null)db.updateLastOpened(file.getName(),now);readerUiRefreshPending=true;Intent i=new Intent(this,BookReaderActivity.class);i.putExtra("path",file.getAbsolutePath());startActivity(i);overridePendingTransition(android.R.anim.fade_in,android.R.anim.fade_out);}
+    private void openBook(File file){
+        if(file==null||!file.isFile()){
+            Toast.makeText(this,"This entry has no saved local book. Restore again or remove it from Library.",Toast.LENGTH_LONG).show();
+            return;
+        }
+        GoogleAutoSync.cancelPending();long now=System.currentTimeMillis();prefs.edit().putLong("last_opened_"+file.getName(),now).apply();ReaderStateDb db=ReaderStateDb.peek();if(db!=null)db.updateLastOpened(file.getName(),now);readerUiRefreshPending=true;Intent i=new Intent(this,BookReaderActivity.class);i.putExtra("path",file.getAbsolutePath());startActivity(i);overridePendingTransition(android.R.anim.fade_in,android.R.anim.fade_out);
+    }
     private void confirmDelete(File file) {
         android.app.Dialog dialog = new android.app.Dialog(this);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
@@ -3194,18 +3203,31 @@ public class MainActivity extends Activity {
         remove.setBackground(roundRect(Color.rgb(205, 63, 63), dp(17), 0, 0));
         remove.setOnClickListener(v -> {
             dialog.dismiss();
-            if (file.delete()) {
-                LibraryShelfStore.removeBookFromAll(prefs, file.getName());
-                ReadingProgressStore.remove(prefs, file.getName());
-                prefs.edit().remove("library_title_" + file.getName())
+            GoogleAutoSync.cancelPending();
+            new Thread(() -> {
+                try {
+                    ReaderStateDb db = stateDb;
+                    if (db == null) throw new IllegalStateException("Library database is not ready");
+                    // Retain delete intent even when the local copy is missing or corrupt.
+                    if (file.isFile() && db.contentHash(file.getName()).isEmpty()) db.ensureHash(file, prefs);
+                    boolean removed = LocalBookRemoval.remove(file, libraryDir, () -> db.removeBookNow(file.getName()));
+                    if (!removed) throw new IllegalStateException("This library entry could not be removed");
+                    prefs.edit().remove("percent_" + file.getName()).remove("finished_at_" + file.getName())
+                        .remove("library_title_" + file.getName())
                         .remove("library_author_" + file.getName()).remove(customMetadataFlag(file)).remove("library_owned_" + file.getName())
                         .remove("added_at_" + file.getName()).remove("last_opened_" + file.getName())
                         .remove("content_hash_" + file.getName()).remove("content_hash_sig_" + file.getName())
                         .putLong("library_files_updated_ms", System.currentTimeMillis())
                         .putLong("sync_updated_ms", System.currentTimeMillis()).apply();
-                refreshLibrary();
-                maybeAutoGoogleSync();
-            }
+                    runOnUiThread(() -> { refreshAfterBookEdit(); maybeAutoGoogleSync(); });
+                } catch (Exception error) {
+                    runOnUiThread(() -> {
+                        refreshAfterBookEdit();
+                        String detail = error.getMessage();
+                        Toast.makeText(this, detail == null ? "Unable to remove this library entry" : detail, Toast.LENGTH_LONG).show();
+                    });
+                }
+            }, "wow-remove-book").start();
         });
         LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(96), dp(40)); cancelLp.rightMargin = dp(8);
         actions.addView(cancel, cancelLp);

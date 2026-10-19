@@ -1,0 +1,1 @@
+Smoother chapter switching and original EPUB formatting with global font settings. Larger previews, improved reminders and Home, and more reliable Drive restore with ghost-card, hash-title, and deletion fixes. Better recovery, performance, and stability across reading, sync, and large libraries.

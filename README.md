@@ -2,10 +2,10 @@
 
 Official Android source repository for **WoW Reader**.
 
-## Owner-accepted update (not uploaded to Play)
+## Owner-accepted update (prepared; not uploaded to Play)
 
-- **Version:** `2.21.4`
-- **versionCode:** `70` (must be checked against all Play tracks before upload)
+- **Version:** `2.21.6`
+- **versionCode:** `72` (owner must check availability across all Play tracks before upload)
 - **Package:** `com.whisper.wowreader`
 - **Minimum Android:** 6.0 / API 23
 - **Target SDK:** 36
@@ -14,7 +14,7 @@ Official Android source repository for **WoW Reader**.
 
 v64 is the 100k-scale library/sync foundation release. It preserves the v63 update/data/signing contract while moving normal library and cloud-sync work away from whole-library operations.
 
-v64 / 2.20.0 is the last owner-confirmed published release. The owner accepted v70 / 2.21.4 and authorized publishing its source to this repository. v70 includes the v65 deletion safeguards, reader typography and pagination fixes, chapter-transition improvements, and larger adaptive seek previews. Its production-signed AAB passed signature/certificate and bundletool validation, and its source build reproduced the accepted APK byte-for-byte. The owner handles Play Console upload; this source publication does not upload or publish the app there. See `NEXT_CHAT_HANDOFF.md` for verification and remaining device QA, and `docs/V65_DELETION_FIX.md` for deletion behavior.
+v64 / 2.20.0 is the last owner-confirmed published release. The owner accepted v72 / 2.21.6 and authorized preparing its source for publication; it has not been uploaded to Play. v72 carries forward smoother chapter switching, original EPUB formatting with global Original EPUB/Reader typography settings, larger adaptive previews, reminder/home improvements, and Drive restore recovery including ghost-entry, hash-title, and deletion fixes. The owner handles Play Console upload; this documentation does not upload or publish the app there. Check `NEXT_CHAT_HANDOFF.md` for verification and remaining device QA; there is no production guarantee.
 
 ## Start here
 
@@ -66,7 +66,7 @@ One-time migration/restore may be O(N), but it must be bounded, restart-safe and
 - Reading Statistics, streaks, Reading Calendar and Reading Memory
 - Notes/highlights
 - Smart Library and custom shelves
-- Per-book typography and custom fonts
+- Global typography profile with Original EPUB and Reader settings, plus custom fonts
 - Myanmar/English dictionary support
 - EPUB footnote/endnote handling
 - PDF continuous reading/import handling

@@ -185,6 +185,7 @@ final class GoogleDriveSync {
         new Thread(() -> {
             File archive = null;
             try {
+                requireCompleteRestore(prefs);
                 archive = buildBackup(activity, libraryDir, fontsDir, prefs);
                 String fileId = findBackupId(token);
                 if (fileId == null) createBackup(token, archive);
@@ -209,6 +210,7 @@ final class GoogleDriveSync {
             File stateArchive = null;
             try {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                requireCompleteRestore(prefs);
                 GoogleAutoSync.requireHomeVisible();
                 ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
                 if (!db.isLibraryIndexReady()) {
@@ -227,9 +229,8 @@ final class GoogleDriveSync {
                         downloadFileBounded(token, remoteState.id, pulled, MAX_STATE_ZIP_BYTES);
                         if (!unpacked.mkdirs()) throw new Exception("Unable to prepare state merge folder");
                         unzipSafelyBounded(pulled, unpacked, MAX_STATE_UNCOMPRESSED_BYTES);
-                        CloudMergePolicy.mergePreferences(readPreferenceValues(new File(unpacked, "state.json")), prefs);
                         File remoteDb = new File(unpacked, "state/reader.db");
-                        if (remoteDb.isFile()) db.mergeSnapshot(remoteDb, prefs, true);
+                        mergeCloudMetadata(db, remoteDb, new File(unpacked, "state.json"), prefs, true);
                         prefs.edit().putString("google_last_seen_state_modified", remoteState.modifiedTime).apply();
                     } finally { pulled.delete(); deleteRecursively(unpacked); }
                 }
@@ -532,6 +533,7 @@ final class GoogleDriveSync {
             File remoteArchive = null, remoteStateArchive = null, temp = null, stateTemp = null;
             File mergedArchive = null, stateArchive = null;
             try {
+                requireCompleteRestore(prefs);
                 ReaderStateDb db=ReaderStateDb.initialize(activity,prefs,libraryDir);
                 for(ReaderStateDb.TombstoneRow row:db.pendingTombstones(SyncBatchPolicy.DELETE_BATCH))deleteOneBook(token,db,row);
                 if(db.pendingTombstoneCount()>0)throw new Exception("Cloud deletions are queued; sync again before legacy backup");
@@ -550,10 +552,10 @@ final class GoogleDriveSync {
                     temp = new File(activity.getCacheDir(), "wow_smart_merge_" + System.currentTimeMillis());
                     if (!temp.mkdirs()) throw new Exception("Unable to prepare cloud merge folder");
                     unzipSafely(remoteArchive, temp);
-                    mergeMissingFiles(new File(temp, "fonts"), fontsDir);
-                    CloudMergePolicy.mergePreferences(readPreferenceValues(new File(temp, "state.json")), prefs);
                     File remoteDb = new File(temp, "state/reader.db");
-                    if (remoteDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(remoteDb, prefs);
+                    if (remoteDb.isFile()) mergeCloudMetadata(db, remoteDb, new File(temp, "state.json"), prefs, false);
+                    else CloudMergePolicy.mergePreferences(readPreferenceValues(new File(temp, "state.json")), prefs);
+                    mergeMissingFiles(new File(temp, "fonts"), fontsDir);
                     prefs.edit().putLong("library_files_updated_ms", System.currentTimeMillis()).apply();
                 }
 
@@ -563,9 +565,8 @@ final class GoogleDriveSync {
                     stateTemp = new File(activity.getCacheDir(), "wow_state_merge_" + System.currentTimeMillis());
                     if (!stateTemp.mkdirs()) throw new Exception("Unable to prepare state merge folder");
                     unzipSafelyBounded(remoteStateArchive, stateTemp, MAX_STATE_UNCOMPRESSED_BYTES);
-                    CloudMergePolicy.mergePreferences(readPreferenceValues(new File(stateTemp, "state.json")), prefs);
                     File remoteDb = new File(stateTemp, "state/reader.db");
-                    if (remoteDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(remoteDb, prefs);
+                    mergeCloudMetadata(db, remoteDb, new File(stateTemp, "state.json"), prefs, false);
                 }
 
                 if(temp!=null)restoreLegacyBooks(token,db,prefs,new File(temp,"books"),libraryDir,true);
@@ -618,6 +619,7 @@ final class GoogleDriveSync {
             File archive = null;
             File temp = null;
             boolean foundAny = false;
+            boolean metadataIncomplete = false;
             int restoredBooks = 0, restoredCovers = 0;
             try {
                 if (!libraryDir.exists() && !libraryDir.mkdirs()) throw new Exception("Unable to prepare library folder");
@@ -635,22 +637,24 @@ final class GoogleDriveSync {
                     if (!temp.mkdirs()) throw new Exception("Unable to prepare restore folder");
                     unzipSafely(archive, temp);
                     restoreFiles(new File(temp, "fonts"), fontsDir);
-                    restorePreferences(new File(temp, "state.json"), prefs);
                     File fullDb = new File(temp, "state/reader.db");
-                    if (fullDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(fullDb, prefs);
+                    // Pre-database legacy ZIPs legitimately contain only preferences and books.
+                    if (fullDb.isFile()) metadataIncomplete = !restoreMetadata(db, fullDb, new File(temp, "state.json"), prefs);
+                    else restorePreferences(new File(temp, "state.json"), prefs);
                 }
 
                 // The state ZIP is authoritative for the current incremental format.
                 BackupInfo stateInfo = findFileInfo(token, STATE_BACKUP_NAME);
                 if (stateInfo != null) {
                     foundAny = true;
-                    restoreStateArchive(activity, token, stateInfo, libraryDir, fontsDir, prefs);
+                    // A healthy current archive supersedes a broken old full-ZIP database.
+                    metadataIncomplete = !restoreStateArchive(activity, token, stateInfo, libraryDir, fontsDir, prefs);
                 }
 
                 // Merge both snapshots' delete intent before installing any legacy book bytes.
-                if(temp!=null)restoreLegacyBooks(token,db,prefs,new File(temp,"books"),libraryDir,false);
+                if(temp!=null) restoredBooks = restoreLegacyBooks(token,db,prefs,new File(temp,"books"),libraryDir,false);
                 // One-time restore may be O(N); normal startup/sync remains paged and incremental.
-                restoredBooks = restoreIncrementalBooks(token, activity, db, prefs, libraryDir);
+                restoredBooks += restoreIncrementalBooks(token, activity, db, prefs, libraryDir);
                 restoredCovers = restoreIncrementalCovers(token, activity, db);
                 if (restoredBooks > 0 || restoredCovers > 0) foundAny = true;
 
@@ -661,20 +665,20 @@ final class GoogleDriveSync {
                     String lower = book.getName().toLowerCase(java.util.Locale.ROOT);
                     if (!lower.endsWith(".epub") && !lower.endsWith(".pdf")) continue;
                     String hash = db.contentHash(book.getName());
-                    if (hash != null && !hash.isEmpty()) db.recordRestoredBook(book, hash, "", prefs);
+                    if (hash != null && !hash.isEmpty()) bindRestoredBook(db,book, hash, "", prefs);
                 }
 
+                db.reconcileLocalLibrary(libraryDir, prefs);
                 if (!foundAny) throw new Exception("No WoW Reader backup was found in this Google Drive");
                 prefs.edit()
                         .putLong("library_files_updated_ms", System.currentTimeMillis())
                         .putLong("google_last_backup_ms", System.currentTimeMillis())
                         .putLong("sync_updated_ms", System.currentTimeMillis())
                         .apply();
+                rememberIncompleteRestore(prefs, metadataIncomplete);
                 final int books = restoredBooks, covers = restoredCovers;
-                activity.runOnUiThread(() -> callback.onSuccess(
-                        books > 0 || covers > 0
-                                ? "Restored " + books + " cloud books · " + covers + " custom covers · reading data"
-                                : "Books, notes and reading data restored"));
+                final boolean incomplete = metadataIncomplete;
+                activity.runOnUiThread(() -> callback.onSuccess(restoreMessage(books, covers, incomplete)));
             } catch (Exception e) {
                 String message = friendly(e);
                 activity.runOnUiThread(() -> callback.onError(message));
@@ -685,7 +689,7 @@ final class GoogleDriveSync {
         }, "wow-google-restore").start();
     }
 
-    private static void restoreStateArchive(Activity activity, String token, BackupInfo stateInfo,
+    private static boolean restoreStateArchive(Activity activity, String token, BackupInfo stateInfo,
                                             File libraryDir, File fontsDir, SharedPreferences prefs) throws Exception {
         File stateZip = File.createTempFile("wow-state-restore-", ".zip", activity.getCacheDir());
         File stateDir = new File(activity.getCacheDir(), "wow_state_restore_" + System.currentTimeMillis());
@@ -693,14 +697,62 @@ final class GoogleDriveSync {
             downloadFileBounded(token, stateInfo.id, stateZip, MAX_STATE_ZIP_BYTES);
             if (!stateDir.mkdirs()) throw new Exception("Unable to prepare state restore folder");
             unzipSafelyBounded(stateZip, stateDir, MAX_STATE_UNCOMPRESSED_BYTES);
-            restorePreferences(new File(stateDir, "state.json"), prefs);
             restoreFiles(new File(stateDir, "fonts"), fontsDir);
             File stateDb = new File(stateDir, "state/reader.db");
-            if (stateDb.isFile()) ReaderStateDb.initialize(activity, prefs, libraryDir).mergeSnapshot(stateDb, prefs);
+            return restoreMetadata(ReaderStateDb.initialize(activity, prefs, libraryDir),
+                    stateDb, new File(stateDir, "state.json"), prefs);
         } finally {
             stateZip.delete();
             deleteRecursively(stateDir);
         }
+    }
+
+    // Only explicit Restore may recover verified book bytes without usable SQLite metadata.
+    // Automatic sync never catches this exception and must not overwrite the recovery source.
+    static void mergeCloudMetadata(ReaderStateDb db, File snapshot, File stateFile,
+                                   SharedPreferences prefs, boolean existingBooksOnly) throws Exception {
+        ReaderStateDb.validateSnapshot(snapshot);
+        db.mergeSnapshot(snapshot, prefs, existingBooksOnly);
+        CloudMergePolicy.mergePreferences(readPreferenceValues(stateFile), prefs);
+    }
+
+    static boolean restoreMetadata(ReaderStateDb db, File snapshot, File stateFile,
+                                   SharedPreferences prefs) throws Exception {
+        boolean usable = true;
+        try { ReaderStateDb.validateSnapshot(snapshot); }
+        catch (ReaderStateDb.InvalidSnapshotException invalid) {
+            usable = false;
+            rememberIncompleteRestore(prefs, true);
+        }
+        // Legacy preference data (including annotations) can still be recovered independently.
+        restorePreferences(stateFile, prefs);
+        if (usable) db.mergeSnapshot(snapshot, prefs);
+        return usable;
+    }
+
+    static String restoreMessage(int books, int covers, boolean incomplete) {
+        if (incomplete) return "Recovered " + books + " cloud books · " + covers
+                + " custom covers. Backup reading database is incomplete; some progress, shelves or history may be missing. Cloud backup is paused to protect the original.";
+        return books > 0 || covers > 0
+                ? "Restored " + books + " cloud books · " + covers + " custom covers · reading data"
+                : "Books, notes and reading data restored";
+    }
+
+    private static String restoreAccount(SharedPreferences prefs) {
+        String uid = prefs.getString("google_account_uid", "");
+        return uid.isEmpty() ? prefs.getString("google_account_email", "") : uid;
+    }
+
+    static void rememberIncompleteRestore(SharedPreferences prefs, boolean incomplete) {
+        Set<String> accounts = new java.util.HashSet<>(prefs.getStringSet("google_restore_incomplete_accounts", java.util.Collections.emptySet()));
+        if (incomplete) accounts.add(restoreAccount(prefs));
+        else accounts.remove(restoreAccount(prefs));
+        prefs.edit().putStringSet("google_restore_incomplete_accounts", accounts).apply();
+    }
+
+    static void requireCompleteRestore(SharedPreferences prefs) {
+        if (prefs.getStringSet("google_restore_incomplete_accounts", java.util.Collections.emptySet()).contains(restoreAccount(prefs)))
+            throw new IllegalStateException("Cloud backup paused: this account's restored reading database is incomplete. Local books are safe; retry Restore from a healthy backup before syncing.");
     }
 
     private static void restoreDeletionMarkers(String token,ReaderStateDb db)throws Exception {
@@ -717,21 +769,25 @@ final class GoogleDriveSync {
         } while(!pageToken.isEmpty());
     }
 
-    private static void restoreLegacyBooks(String token,ReaderStateDb db,SharedPreferences prefs,
+    private static int restoreLegacyBooks(String token,ReaderStateDb db,SharedPreferences prefs,
                                            File source,File destination,boolean missingOnly)throws Exception {
-        File[] files=source.listFiles();if(files==null)return;
+        int restored = 0;
+        File[] files=source.listFiles();if(files==null)return 0;
         for(File book:files) {
             if(!book.isFile())continue;
             String name=book.getName().toLowerCase(java.util.Locale.ROOT);
             if(!name.endsWith(".epub")&&!name.endsWith(".pdf"))continue;
-            File target=new File(destination,book.getName());
-            if(missingOnly&&target.isFile())continue;
+            File named=new File(destination,book.getName());
+            if(missingOnly&&named.isFile())continue;
             String hash=FileIdentityUtil.sha256(book);
-            DriveDeletionGuard.restoreIfLive(hash,deletionRemote(token),deletionLocal(db),() -> {
-                installRestoredFile(book,target);
-                db.recordRestoredBook(target,hash,"",prefs);
-            });
+            String extension=name.endsWith(".pdf")?"pdf":"epub";
+            File target=BookRestoreFiles.destination(destination,book.getName(),hash,extension);
+            if (DriveDeletionGuard.restoreIfLive(hash,deletionRemote(token),deletionLocal(db),() -> {
+                BookRestoreFiles.install(book,target,hash);
+                bindRestoredBook(db,target,hash,"",prefs);
+            })) restored++;
         }
+        return restored;
     }
 
     private static int restoreIncrementalBooks(String token, Activity activity, ReaderStateDb db,
@@ -754,12 +810,12 @@ final class GoogleDriveSync {
 
                 String preferred = db.fileNameForHash(object.hash);
                 String localName = DriveRestorePlanner.safeLocalName(preferred, object);
-                File destination = chooseRestoreDestination(libraryDir, localName, object);
+                File destination = BookRestoreFiles.destination(libraryDir, localName, object.hash, object.extension);
                 if (destination.isFile()) {
                     try {
                         String existingHash = FileIdentityUtil.sha256(destination);
                         if (object.hash.equalsIgnoreCase(existingHash)) {
-                            db.recordRestoredBook(destination, object.hash, id, prefs);
+                            bindRestoredBook(db,destination, object.hash, id, prefs);
                             continue;
                         }
                     } catch (Exception ignored) {}
@@ -774,8 +830,8 @@ final class GoogleDriveSync {
                         throw new Exception("Cloud book integrity check failed: " + remoteName);
                     final File target=destination;
                     if(DriveDeletionGuard.restoreIfLive(object.hash,deletionRemote(token),deletionLocal(db),() -> {
-                        installRestoredFile(scratch,target);
-                        db.recordRestoredBook(target,object.hash,id,prefs);
+                        BookRestoreFiles.install(scratch,target,object.hash);
+                        bindRestoredBook(db,target,object.hash,id,prefs);
                     }))restored++;
                 } finally {
                     scratch.delete();
@@ -831,16 +887,11 @@ final class GoogleDriveSync {
         return authorizedJson(url, token);
     }
 
-    private static File chooseRestoreDestination(File libraryDir, String localName, DriveRestorePlanner.BookObject object) {
-        File candidate = new File(libraryDir, localName);
-        try {
-            String root = libraryDir.getCanonicalPath() + File.separator;
-            if (!candidate.getCanonicalPath().startsWith(root))
-                return new File(libraryDir, object.hash + "." + object.extension);
-        } catch (Exception ignored) {
-            return new File(libraryDir, object.hash + "." + object.extension);
-        }
-        return candidate;
+    private static void bindRestoredBook(ReaderStateDb db, File book, String hash, String remoteId, SharedPreferences prefs) {
+        db.recordRestoredBook(book, hash, remoteId, prefs);
+        File library = book.getParentFile();
+        File files = library == null ? null : library.getParentFile();
+        if (files != null) RestoredBookMetadata.repairStored(db, book, new File(files, "cover_cache"), prefs);
     }
 
     private static void installRestoredFile(File source, File destination) throws Exception {

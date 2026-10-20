@@ -1,14 +1,14 @@
-# Current handoff — v77 / 2.21.11 accepted by Play Console, publication unconfirmed
+# Current handoff — v77 / 2.21.11 live / published on Google Play
 
 - **Source of truth:** GitHub `main`, package `com.whisper.wowreader`, versionCode `77`, versionName `2.21.11`, minSdk `24` (Android 7.0+), targetSdk `36`.
-- Previous `main` was commit `a44c97db3cc07fe24e078d53c6e074b40c314d4d`, the owner-tested v76 / 2.21.10 Drive restore recovery and initialization fixes, with minSdk `23`. This source alignment changes only the three release configuration values and documentation; it adds no runtime behavior changes.
+- **v77 source commit:** `bfaefb102f9a385a588320bb20264d367b0a2e9e`. That source-alignment commit followed `a44c97db3cc07fe24e078d53c6e074b40c314d4d`, the owner-tested v76 / 2.21.10 Drive restore recovery and initialization fixes, with minSdk `23`. It changed only the three release configuration values and documentation, with no runtime behavior changes. This follow-up changes documentation only; app code/version values stay unchanged.
 - Play Console required: **“Play automatic protection requires minimum SDK version 24 or higher”**. v77 intentionally drops Android 6.0 / API 23 support. Do not lower minSdk back to 23 for this release.
 - The existing v77 AAB has versionCode `77`, versionName `2.21.11`, minSdk `24` and the same production upload signing certificate as the v64 Play Store AAB. The owner reports that Play Console accepted it after adding the `.aab` filename extension.
-- **Accepted/uploaded is not published.** No Play track or rollout was inspected; v77 publication is unconfirmed. v64 / 2.20.0 remains the last owner-confirmed published release in this record.
+- **Published / publicly available:** on **2026-10-20**, the owner confirmed v77 is now live at [WoW Reader on Google Play](https://play.google.com/store/apps/details?id=com.whisper.wowreader). v77 / 2.21.11 is the latest owner-confirmed published release, superseding the earlier accepted-only / unconfirmed status and v64 published baseline. No Play Console track, rollout percentage or regional availability was independently inspected.
 - **The next app release must use versionCode `78` or higher**, and the owner must check availability across all Play tracks. Do not reuse `77` for a new release.
-- Current authorization is source/documentation commit and push to GitHub `main` only. No new AAB, Play upload or publication is authorized or performed in this alignment task. Do not commit APK/AAB, build outputs or signing material. Existing historical validation below is not a new v77 test run or byte-for-byte source/artifact reproduction claim.
+- Current authorization is documentation-only commit and push to GitHub `main`. Do not change app code/version, build APK/AAB, or upload to Google Play. The owner has already published v77; this task only records that confirmation. Do not commit APK/AAB, build outputs or signing material. Existing historical validation below is not a new v77 test run or byte-for-byte source/artifact reproduction claim.
 
-The sections below are historical context, not current release metadata or fresh build/upload authorization. See [store publication status](docs/STORE_PUBLICATION_STATUS.md) for the concise current state.
+The sections below are historical context, not current release metadata or fresh build/upload authorization. Their older references to v64 as the last published release describe the record at that time and are superseded by the v77 publication confirmation above. See [store publication status](docs/STORE_PUBLICATION_STATUS.md) for the concise current state.
 
 ---
 

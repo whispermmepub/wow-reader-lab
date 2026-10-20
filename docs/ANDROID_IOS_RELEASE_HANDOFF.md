@@ -2,7 +2,7 @@
 
 This document complements `NEXT_CHAT_HANDOFF.md` and records the minimum release/update contract for both platforms.
 
-**Current Android source is v77 / 2.21.11, minSdk 24 (Android 7.0+).** The owner reports Play Console accepted the v77 AAB; publication is unconfirmed. Android 6.0 / API 23 is no longer supported, and the next app release must use versionCode 78 or higher. See [current handoff](../NEXT_CHAT_HANDOFF.md) and [store status](STORE_PUBLICATION_STATUS.md). The v63 artifact details below are historical, not the current release or fresh build/upload authorization.
+**Current Android release is v77 / 2.21.11, live / published on Google Play, with minSdk 24 (Android 7.0+).** On **2026-10-20**, the owner confirmed public availability at [WoW Reader on Google Play](https://play.google.com/store/apps/details?id=com.whisper.wowreader), superseding the earlier accepted-only / unconfirmed status. Matching source is already on `main` at `bfaefb102f9a385a588320bb20264d367b0a2e9e`; this follow-up changes documentation only, with no app code/version changes, APK/AAB builds, or Play upload. Android 6.0 / API 23 is no longer supported, and the next app release must use versionCode 78 or higher. No Play Console track or rollout percentage was independently inspected. See [current handoff](../NEXT_CHAT_HANDOFF.md) and [store status](STORE_PUBLICATION_STATUS.md). The v63 artifact details below are historical, not the current release or fresh build/upload authorization.
 
 ## Historical Android v63 candidate
 

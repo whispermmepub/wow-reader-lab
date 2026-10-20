@@ -2,9 +2,9 @@
 
 Official Android source repository for **WoW Reader**.
 
-## Current source: v77 — Play Console accepted, publication unconfirmed
+## Current release: v77 — live / published on Google Play
 
-The owner reports that the existing **v77 / 2.21.11** AAB was accepted in Play Console after adding the `.aab` filename extension. **This does not establish publication or rollout.** `main` now reflects that release's configuration, retaining the v76 app behavior. Play automatic protection requires minSdk 24 or higher, so **Android 6.0 / API 23 is intentionally no longer supported**. The next app release must use **versionCode 78 or higher**. See [NEXT_CHAT_HANDOFF.md](NEXT_CHAT_HANDOFF.md) for release history and authorization boundaries.
+The owner confirmed on **2026-10-20** that **v77 / 2.21.11 is published and publicly available** at [WoW Reader on Google Play](https://play.google.com/store/apps/details?id=com.whisper.wowreader). This supersedes the earlier accepted-only / publication-unconfirmed status. `main` already contains the matching v77 source at commit `bfaefb102f9a385a588320bb20264d367b0a2e9e`, retaining the v76 app behavior. Play automatic protection requires minSdk 24 or higher, so **Android 6.0 / API 23 is intentionally no longer supported**. The next app release must use **versionCode 78 or higher**. See [NEXT_CHAT_HANDOFF.md](NEXT_CHAT_HANDOFF.md) for release history and authorization boundaries.
 
 ## Current Android identity
 
@@ -18,7 +18,7 @@ The owner reports that the existing **v77 / 2.21.11** AAB was accepted in Play C
 
 v64 is the 100k-scale library/sync foundation release. It preserves the v63 update/data/signing contract while moving normal library and cloud-sync work away from whole-library operations.
 
-v64 / 2.20.0 remains the last owner-confirmed published release in this record. The v77 AAB uses the same production upload signing certificate as the v64 Play Store AAB. This repository alignment creates no new AAB and performs no Play upload or publication; only source and documentation are committed. Historical automated checks are not a fresh v77 validation run. Check `NEXT_CHAT_HANDOFF.md` for prior evidence and remaining device QA.
+v77 / 2.21.11 is the latest owner-confirmed published release. The v77 AAB uses the same production upload signing certificate as the v64 Play Store AAB. This status update changes documentation only: no app code/version changes, APK/AAB builds, or Play upload/publication are performed. Publication is recorded from the owner's confirmation, not an independent Play Console track or rollout inspection. Historical automated checks are not a fresh v77 validation run. Check `NEXT_CHAT_HANDOFF.md` for prior evidence and remaining device QA.
 
 ## Start here
 

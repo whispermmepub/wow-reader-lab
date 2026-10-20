@@ -1,12 +1,12 @@
 # WoW Reader — Store Publication Status
 
-## Google Play: v77 accepted, publication unconfirmed
+## Google Play: v77 live / published
 
 - **Current source on `main`:** versionName `2.21.11`, versionCode `77`.
 - **Package:** `com.whisper.wowreader`.
-- **Owner-reported outcome:** Play Console accepted the existing v77 AAB after the owner added the `.aab` filename extension.
-- **Publication:** not confirmed. Acceptance of an uploaded bundle is not evidence of a published release or rollout. No Play track was inspected in this source-alignment task.
-- **Last owner-confirmed published release in this record:** versionName `2.20.0`, versionCode `64`.
+- **Publication:** **live / published**, confirmed by the owner on **2026-10-20**: v77 has been published and is publicly available. This supersedes the earlier accepted-only / publication-unconfirmed status.
+- **Play Store:** [WoW Reader](https://play.google.com/store/apps/details?id=com.whisper.wowreader).
+- **Latest owner-confirmed published release:** versionName `2.21.11`, versionCode `77`. Publication is recorded from the owner's confirmation; no Play Console track, rollout percentage or regional availability was independently inspected.
 - **Next app release:** versionCode **`78` or higher**; check availability across all Play tracks. Do not reuse `77` for a new release.
 
 ## Why the minimum Android version changed
@@ -15,11 +15,11 @@ Play Console required: **“Play automatic protection requires minimum SDK versi
 
 ## Source alignment and signing
 
-Previous `main` was `a44c97db3cc07fe24e078d53c6e074b40c314d4d`, the owner-tested v76 / 2.21.10 Drive restore recovery and initialization fixes, with minSdk `23`. This alignment changes `app/build.gradle` to minSdk `24`, versionCode `77` and versionName `2.21.11`, plus release/handoff documentation. No other app behavior is changed.
+The v77 source is already on `main` at commit `bfaefb102f9a385a588320bb20264d367b0a2e9e`. That source-alignment commit changed `app/build.gradle` from the owner-tested v76 baseline (`a44c97db3cc07fe24e078d53c6e074b40c314d4d`) to minSdk `24`, versionCode `77` and versionName `2.21.11`, plus release/handoff documentation. It introduced no other app behavior changes. This publication-status update changes documentation only; app code and version values remain unchanged.
 
 The existing v77 AAB uses the same production upload signing certificate as the v64 Play Store AAB. Keep the package, signing identity and Firebase/OAuth registration unchanged. Never commit signing material, APK/AAB binaries or build outputs.
 
-This task is authorized only to commit and push source/documentation to GitHub `main`. It creates no AAB and performs no Play upload or publication. It does not independently reproduce or revalidate the existing v77 bundle; historical automated test evidence is not a fresh v77 test run.
+This task is authorized only to commit and push documentation to GitHub `main`. It builds no APK/AAB and performs no Play upload or publication; the owner has already published v77. It does not independently reproduce or revalidate the existing v77 bundle; historical automated test evidence is not a fresh v77 test run.
 
 ## Before any future publication
 

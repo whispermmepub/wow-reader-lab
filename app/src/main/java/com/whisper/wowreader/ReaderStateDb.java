@@ -47,6 +47,9 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     });
     private static final Object MIGRATION_LOCK = new Object();
     private static final Object SNAPSHOT_LOCK = new Object();
+    /** The last initialization chain; restore callers wait for it before binding rows. */
+    private volatile Future<?> initialization;
+    private final Object initializationLock = new Object();
 
     // The platform's default corruption handler deletes files. Preserve recovery data instead.
     private static final DatabaseErrorHandler PRESERVE_DATABASE = ignored -> { };
@@ -57,17 +60,38 @@ final class ReaderStateDb extends SQLiteOpenHelper {
 
     static ReaderStateDb initialize(Context context, SharedPreferences prefs, File libraryDir) {
         ReaderStateDb db = get(context);
-        if (!db.isLegacyMigrated()) db.migrateLegacyAsync(prefs, libraryDir);
-        db.migrateV2Async(prefs);
-        db.migrateHomeIndexAsync(prefs);
-        WRITER.execute(() -> {
-            if (!db.metaIs(META_V72_RECONCILED)) {
-                db.reconcileLocalLibrary(libraryDir, prefs);
-                db.putMeta(META_V72_RECONCILED, "1");
+        // Do not share the legacy worker's long-running migration lock with UI callers.
+        synchronized (db.initializationLock) {
+            // Do not enqueue a second, independent migration/reconciliation chain on
+            // every Activity recreation.  The final barrier is also what immediate
+            // restore callers can await; the individual migrations remain retryable.
+            if (db.initialization == null || db.initialization.isDone()) {
+                if (!db.isLegacyMigrated()) db.migrateLegacyAsync(prefs, libraryDir);
+                db.migrateV2Async(prefs);
+                db.migrateHomeIndexAsync(prefs);
+                db.initialization = WRITER.submit(() -> {
+                    if (!db.isLegacyMigrated() || !db.isLibraryIndexReady())
+                        throw new IllegalStateException("Reader database migration incomplete; local data is preserved");
+                    if (!db.metaIs(META_V72_RECONCILED)) {
+                        db.reconcileLocalLibrary(libraryDir, prefs);
+                        db.putMeta(META_V72_RECONCILED, "1");
+                    }
+                });
             }
-        });
+        }
         return db;
     }
+
+    private void awaitInitialization() {
+        Future<?> pending = initialization;
+        if (pending == null || Thread.currentThread().getName().equals("wow-reader-state-db")) return;
+        try { pending.get(); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException("Reader database initialization interrupted", e); }
+        catch (java.util.concurrent.ExecutionException e) { throw new IllegalStateException("Reader database initialization failed", e.getCause()); }
+    }
+
+    /** Wait for the initialization chain when a background restore/sync needs a ready index. */
+    void awaitReady() { awaitInitialization(); }
 
     static ReaderStateDb get(Context context) {
         if (INSTANCE == null) {
@@ -600,6 +624,10 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     String fileNameForHash(String hash){return hash==null?"":scalarString("SELECT file_name FROM books WHERE content_hash=? LIMIT 1",new String[]{hash});}
     void recordRestoredBook(File file, String hash, String remoteId, SharedPreferences prefs) {
         if (file == null || !file.isFile() || hash == null || hash.isEmpty()) return;
+        // A fresh install can call restore immediately after initialize().  Do not
+        // bind against a partially migrated index; this is a bounded wait for the
+        // already queued chain, not a new migration or a retry loop.
+        awaitInitialization();
         SQLiteDatabase sql = getWritableDatabase();
         SharedPreferences.Editor aliases = null;
         sql.beginTransaction();
@@ -656,9 +684,26 @@ final class ReaderStateDb extends SQLiteOpenHelper {
                 throw new IllegalStateException("Restored book row missing");
             sql.setTransactionSuccessful();
         } catch (Exception e) {
-            throw new IllegalStateException("Unable to bind restored book", e);
+            throw new IllegalStateException("Unable to bind restored book (" + bindingFailureDiagnostic(e) + ")", e);
         } finally { sql.endTransaction(); }
         if (aliases != null) aliases.apply();
+    }
+
+    /** Keep useful SQLite failure classes while excluding paths, IDs, and provider tokens. */
+    static String bindingFailureDiagnostic(Throwable error) {
+        Throwable cause = error;
+        while (cause != null) {
+            String message = cause.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(Locale.ROOT);
+                if (lower.startsWith("conflicting restored book")) return "book identity conflict; original data preserved";
+                if (lower.contains("locked") || lower.contains("busy")) return "database busy";
+                if (lower.contains("constraint") || lower.contains("unique")) return "database constraint";
+                if (lower.contains("no such table") || lower.contains("no such column")) return "database schema";
+            }
+            cause = cause.getCause();
+        }
+        return error == null ? "unknown" : error.getClass().getSimpleName();
     }
 
     private static SharedPreferences.Editor stagedPrefAliases(SharedPreferences prefs, String oldName, String newName) throws Exception {

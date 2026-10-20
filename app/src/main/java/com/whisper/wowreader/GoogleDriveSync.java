@@ -8,6 +8,10 @@ import android.content.SharedPreferences;
 import android.accounts.Account;
 
 import com.google.android.gms.auth.api.identity.AuthorizationClient;
+import com.google.android.gms.auth.api.identity.ClearTokenRequest;
+import com.google.android.gms.tasks.Tasks;
+import java.util.concurrent.TimeUnit;
+import java.util.LinkedHashMap;
 import com.google.android.gms.auth.api.identity.AuthorizationRequest;
 import com.google.android.gms.auth.api.identity.AuthorizationResult;
 import com.google.android.gms.auth.api.identity.Identity;
@@ -130,6 +134,57 @@ final class GoogleDriveSync {
 
     interface BackupCheckCallback {
         void onResult(boolean found);
+    }
+
+    // Only a small in-memory credential registry; no tokens in preferences, logs or backups.
+    private static final Map<String, DriveAuthRetry> driveCredentials = new LinkedHashMap<>();
+    private static synchronized DriveAuthRetry credentials(String originalToken) {
+        return driveCredentials.get(originalToken);
+    }
+    private void rememberCredentials(String token, String email) {
+        final android.content.Context context = activity.getApplicationContext();
+        final String accountEmail = email == null ? "" : email.trim();
+        DriveAuthRetry session = new DriveAuthRetry(token, rejected -> {
+            checkCancelled();
+            String connected = context.getSharedPreferences("wow_reader", Activity.MODE_PRIVATE)
+                    .getString("google_account_email", "").trim();
+            if (accountEmail.isEmpty() || !accountEmail.equals(connected))
+                throw new IllegalStateException("Google Drive account changed; reconnect and retry. Local data is preserved.");
+            AuthorizationClient client = Identity.getAuthorizationClient(context);
+            try {
+                Tasks.await(client.clearToken(ClearTokenRequest.builder().setToken(rejected).build()), 60, TimeUnit.SECONDS);
+                checkCancelled();
+                AuthorizationResult fresh = Tasks.await(client.authorize(AuthorizationRequest.builder()
+                        .setAccount(new Account(accountEmail, "com.google")).setRequestedScopes(SCOPES).build()), 60, TimeUnit.SECONDS);
+                checkCancelled();
+                if (fresh == null || fresh.hasResolution())
+                    throw new IllegalStateException("Google Drive needs reconnect; reconnect Google Drive and retry. Local data is preserved.");
+                return fresh.getAccessToken();
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw e;
+            } catch (SyncCancelledException e) { throw e;
+            } catch (Exception e) {
+                // SDK errors can contain account/token details. Keep this recovery message safe.
+                throw new IllegalStateException("Google Drive authorization could not refresh; reconnect Google Drive and retry. Local data is preserved.");
+            }
+        });
+        synchronized (GoogleDriveSync.class) {
+            driveCredentials.put(token, session);
+            while (driveCredentials.size() > 4) driveCredentials.remove(driveCredentials.keySet().iterator().next());
+        }
+    }
+    private static <T> T withDriveAuth(String token, DriveAuthRetry.Request<T> request) throws Exception {
+        DriveAuthRetry session = credentials(token);
+        return session == null ? request.run() : session.execute(() -> { checkCancelled(); return request.run(); });
+    }
+    private static final Map<HttpURLConnection, String> requestTokens = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+    private static int responseCode(HttpURLConnection connection) throws Exception {
+        int code = connection.getResponseCode();
+        if (code == 401) {
+            String rejected = requestTokens.get(connection);
+            connection.disconnect();
+            throw new DriveAuthRetry.Unauthorized(rejected == null ? "" : rejected);
+        }
+        return code;
     }
 
     private final Activity activity;
@@ -255,6 +310,7 @@ final class GoogleDriveSync {
         profile.name = p.getString("google_account_name", "Google account");
         profile.uid = p.getString("google_account_uid", "");
         profile.picture = p.getString("google_account_picture", "");
+        rememberCredentials(token, profile.email);
         completeAuthReady(profile, callback);
     }
 
@@ -264,6 +320,12 @@ final class GoogleDriveSync {
                 .addOnCompleteListener(task -> {
                     if (onDone != null) onDone.run();
                 });
+    }
+
+    private static ReaderStateDb readyDatabase(Activity activity, SharedPreferences prefs, File libraryDir) {
+        ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+        db.awaitReady();
+        return db;
     }
 
     static void backup(Activity activity, String token, File libraryDir, File fontsDir,
@@ -300,7 +362,7 @@ final class GoogleDriveSync {
                 checkCancelled();
                 progress("metadata", "Checking cloud changes", 0, 0, 0, 0);
                 GoogleAutoSync.requireHomeVisible();
-                ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+                ReaderStateDb db = readyDatabase(activity, prefs, libraryDir);
                 if (!db.isLibraryIndexReady()) {
                     prefs.edit().putLong("sync_updated_ms", System.currentTimeMillis()).apply();
                     deliverSuccess(activity, operation, "Preparing library index for sync");
@@ -436,7 +498,9 @@ final class GoogleDriveSync {
                                                   ReaderStateDb db, String fileName) throws Exception {
         return uploadResumable(token, file, session, start, db, fileName, true);
     }
-    private static void deleteRemoteFile(String token,String id)throws Exception{HttpURLConnection c=open("https://www.googleapis.com/drive/v3/files/"+id,"DELETE",token);int code=c.getResponseCode();c.disconnect();if(code!=404&&code!=204&&!(code>=200&&code<300))throw new Exception("Google Drive delete error "+code);}
+    private static void deleteRemoteFile(String token,String id) throws Exception { withDriveAuth(token, () -> { deleteRemoteFileOnce(token,id); return null; }); }
+
+    private static void deleteRemoteFileOnce(String token,String id)throws Exception{HttpURLConnection c=open("https://www.googleapis.com/drive/v3/files/"+id,"DELETE",token);int code=responseCode(c);c.disconnect();if(code!=404&&code!=204&&!(code>=200&&code<300))throw new Exception("Google Drive delete error "+code);}
     private static String mimeFor(File file){String n=file==null?"":file.getName().toLowerCase(java.util.Locale.ROOT);if(n.endsWith(".pdf"))return "application/pdf";if(n.endsWith(".jpg")||n.endsWith(".jpeg"))return "image/jpeg";if(n.endsWith(".png"))return "image/png";return "application/epub+zip";}
 
     private static void deleteOneBook(String token, ReaderStateDb db, ReaderStateDb.TombstoneRow row) throws Exception {
@@ -463,6 +527,7 @@ final class GoogleDriveSync {
                 String name=DriveDeletionGuard.markerName(hash);
                 if(findFileInfo(token,name)!=null)return;
                 // Metadata-only immutable marker; duplicate creates are harmless (existence is authority).
+                withDriveAuth(token, () -> {
                 HttpURLConnection c=open("https://www.googleapis.com/drive/v3/files?fields=id","POST",token);
                 c.setRequestProperty("Content-Type","application/json; charset=UTF-8");c.setDoOutput(true);
                 JSONObject meta=new JSONObject();meta.put("name",name);meta.put("mimeType","application/octet-stream");
@@ -470,6 +535,8 @@ final class GoogleDriveSync {
                 byte[] body=meta.toString().getBytes(StandardCharsets.UTF_8);c.setFixedLengthStreamingMode(body.length);
                 try {try(OutputStream out=c.getOutputStream()){out.write(body);}ensureSuccess(c);}
                 finally {c.disconnect();}
+                    return null;
+                });
             }
             public void deleteAssets(String hash)throws Exception {deleteBookAssets(token,hash);}
         };
@@ -489,7 +556,9 @@ final class GoogleDriveSync {
         throw new Exception("Cloud deletion cleanup is still pending; retry sync");
     }
 
-    private static String startResumable(String token,String name,File file,String hash,String remoteId) throws Exception {
+    private static String startResumable(String token,String name,File file,String hash,String remoteId) throws Exception { return withDriveAuth(token, () -> startResumableOnce(token,name,file,hash,remoteId)); }
+
+    private static String startResumableOnce(String token,String name,File file,String hash,String remoteId) throws Exception {
         boolean updating=remoteId!=null&&!remoteId.isEmpty();
         String url=updating ? "https://www.googleapis.com/upload/drive/v3/files/"+remoteId+"?uploadType=resumable&fields=id,modifiedTime" :
                 "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,modifiedTime";
@@ -504,7 +573,7 @@ final class GoogleDriveSync {
         byte[] body=meta.toString().getBytes(StandardCharsets.UTF_8); c.setFixedLengthStreamingMode(body.length);
         try(OutputStream out=c.getOutputStream()){out.write(body);}
         try { ensureSuccess(c); }
-        catch (Exception e) { c.disconnect(); throw new Exception("Google Drive resumable-session error: " + e.getMessage()); }
+        catch (Exception e) { c.disconnect(); throw e; }
         String location=c.getHeaderField("Location"); c.disconnect();
         if(location==null||location.trim().isEmpty())throw new Exception("Google Drive resumable session unavailable");
         return location;
@@ -526,7 +595,9 @@ final class GoogleDriveSync {
         return info;
     }
 
-    private static UploadProbe inspectUpload(String token, String session, long total) throws Exception {
+    private static UploadProbe inspectUpload(String token, String session, long total) throws Exception { return withDriveAuth(token, () -> inspectUploadOnce(token,session,total)); }
+
+    private static UploadProbe inspectUploadOnce(String token, String session, long total) throws Exception {
         GoogleAutoSync.requireHomeVisible();
         HttpURLConnection connection = open(session, "PUT", token);
         try {
@@ -534,7 +605,7 @@ final class GoogleDriveSync {
             connection.setRequestProperty("Content-Range", "bytes */" + total);
             connection.setFixedLengthStreamingMode(0);
             try (OutputStream ignored = connection.getOutputStream()) { }
-            int code = connection.getResponseCode();
+            int code = responseCode(connection);
             if (code == 400 || code == 404 || code == 410) throw new ResumableExpiredException();
             UploadProbe probe = new UploadProbe();
             if (code == 308) {
@@ -576,13 +647,29 @@ final class GoogleDriveSync {
                 progress("upload", "Uploading " + fileName, 0, 0, offset, total);
                 int length = (int) Math.min((long) SyncBatchPolicy.CHUNK_BYTES, total - offset);
                 long end = offset + length - 1L;
-                HttpURLConnection connection = open(session, "PUT", token);
+                UploadProbe result = withDriveAuth(token, () -> sendUploadChunk(token, file, session, source, total, end, length));
+                if (result.completed != null) return result.completed;
+                long acknowledged = result.offset;
+                stalled = ResumableUploadPolicy.stalledAcknowledgements(offset, acknowledged, stalled);
+                offset = acknowledged;
+                saveUploadOffset(db, fileName, session, offset, cover);
+                if (stalled >= ResumableUploadPolicy.MAX_STALLED_ACKS)
+                    throw new Exception("Google Drive upload made no progress; queued for retry");
+            }
+        }
+        UploadProbe completed = inspectUpload(token, session, total);
+        if (completed.completed != null) return completed.completed;
+        throw new Exception("Google Drive upload confirmation is pending; queued for retry");
+    }
+    private static UploadProbe sendUploadChunk(String token, File file, String session,
+                                                RandomAccessFile source, long total, long end, int length) throws Exception {
+        HttpURLConnection connection = open(session, "PUT", token);
                 try {
                     connection.setDoOutput(true);
                     connection.setRequestProperty("Content-Type", mimeFor(file));
-                    connection.setRequestProperty("Content-Range", "bytes " + offset + "-" + end + "/" + total);
+                    connection.setRequestProperty("Content-Range", "bytes " + (end - length + 1) + "-" + end + "/" + total);
                     connection.setFixedLengthStreamingMode(length);
-                    source.seek(offset);
+                    source.seek(end - length + 1);
                     byte[] buffer = new byte[64 * 1024];
                     int remaining = length;
                     try (OutputStream out = new BufferedOutputStream(connection.getOutputStream())) {
@@ -593,25 +680,16 @@ final class GoogleDriveSync {
                             remaining -= count;
                         }
                     }
-                    int code = connection.getResponseCode();
+                    int code = responseCode(connection);
                     if (code == 400 || code == 404 || code == 410) throw new ResumableExpiredException();
                     if (code == 308) {
-                        long acknowledged = ResumableUploadPolicy.acknowledgedOffset(connection.getHeaderField("Range"), total);
-                        stalled = ResumableUploadPolicy.stalledAcknowledgements(offset, acknowledged, stalled);
-                        offset = acknowledged;
-                        saveUploadOffset(db, fileName, session, offset, cover);
-                        if (stalled >= ResumableUploadPolicy.MAX_STALLED_ACKS)
-                            throw new Exception("Google Drive upload made no progress; queued for retry");
-                        continue;
+                        UploadProbe result = new UploadProbe();
+                        result.offset = ResumableUploadPolicy.acknowledgedOffset(connection.getHeaderField("Range"), total);
+                        return result;
                     }
-                    if (code >= 200 && code < 300) return readUploadInfo(connection);
+                    if (code >= 200 && code < 300) { UploadProbe result = new UploadProbe(); result.completed = readUploadInfo(connection); return result; }
                     throw new Exception("Google Drive upload error " + code);
                 } finally { connection.disconnect(); }
-            }
-        }
-        UploadProbe completed = inspectUpload(token, session, total);
-        if (completed.completed != null) return completed.completed;
-        throw new Exception("Google Drive upload confirmation is pending; queued for retry");
     }
     private static final class ResumableExpiredException extends Exception {}
 
@@ -625,7 +703,7 @@ final class GoogleDriveSync {
                 requireCompleteRestore(prefs);
                 checkCancelled();
                 progress("preparing", "Preparing legacy backup", 0, 0, 0, 0);
-                ReaderStateDb db=ReaderStateDb.initialize(activity,prefs,libraryDir);
+                ReaderStateDb db=readyDatabase(activity,prefs,libraryDir);
                 for(ReaderStateDb.TombstoneRow row:db.pendingTombstones(SyncBatchPolicy.DELETE_BATCH))deleteOneBook(token,db,row);
                 if(db.pendingTombstoneCount()>0)throw new Exception("Cloud deletions are queued; sync again before legacy backup");
                 // Legacy mode is already O(N); apply markers before merging old ZIP content.
@@ -719,7 +797,7 @@ final class GoogleDriveSync {
                 if (!libraryDir.exists() && !libraryDir.mkdirs()) throw new Exception("Unable to prepare library folder");
                 if (!fontsDir.exists() && !fontsDir.mkdirs()) throw new Exception("Unable to prepare fonts folder");
 
-                ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+                ReaderStateDb db = readyDatabase(activity, prefs, libraryDir);
                 progress("checking", "Checking cloud backup", 0, 0, 0, 0);
                 checkCancelled();
                 restoreDeletionMarkers(token,db);
@@ -815,7 +893,7 @@ final class GoogleDriveSync {
             unzipSafelyBounded(stateZip, stateDir, MAX_STATE_UNCOMPRESSED_BYTES);
             restoreFiles(new File(stateDir, "fonts"), fontsDir);
             File stateDb = new File(stateDir, "state/reader.db");
-            return restoreMetadata(ReaderStateDb.initialize(activity, prefs, libraryDir),
+            return restoreMetadata(readyDatabase(activity, prefs, libraryDir),
                     stateDb, new File(stateDir, "state.json"), prefs);
         } finally {
             stateZip.delete();
@@ -1061,7 +1139,7 @@ final class GoogleDriveSync {
                                     SharedPreferences prefs) throws Exception {
         File out = File.createTempFile("wow-reader-backup-", ".zip", activity.getCacheDir());
         try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(out)))) {
-            ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, libraryDir);
+            ReaderStateDb db = readyDatabase(activity, prefs, libraryDir);
             // Full ZIP is a compatibility path only. Do not put locally known deleted content back in it.
             File[] books=libraryDir.listFiles();
             if(books!=null)for(File book:books) {
@@ -1091,7 +1169,7 @@ final class GoogleDriveSync {
             byte[] state = exportPreferences(prefs).toString().getBytes(StandardCharsets.UTF_8);
             ZipEntry entry = new ZipEntry("state.json");
             zip.putNextEntry(entry); zip.write(state); zip.closeEntry();
-            ReaderStateDb db = ReaderStateDb.initialize(activity, prefs, new File(activity.getFilesDir(), "library"));
+            ReaderStateDb db = readyDatabase(activity, prefs, new File(activity.getFilesDir(), "library"));
             File dbFile = db.createSnapshot(activity);
             try { addFile(zip, dbFile, "state/reader.db"); }
             finally { dbFile.delete(); }
@@ -1280,7 +1358,9 @@ final class GoogleDriveSync {
 
     private static void downloadBackup(String token, String id, File destination) throws Exception { downloadFile(token, id, destination); }
 
-    private static void createNamedZip(String token, String name, File archive) throws Exception {
+    private static void createNamedZip(String token, String name, File archive) throws Exception { withDriveAuth(token, () -> { createNamedZipOnce(token,name,archive); return null; }); }
+
+    private static void createNamedZipOnce(String token, String name, File archive) throws Exception {
         String boundary = "wowreader_" + System.currentTimeMillis();
         HttpURLConnection c = open("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", "POST", token);
         c.setRequestProperty("Content-Type", "multipart/related; boundary=" + boundary); c.setDoOutput(true);
@@ -1293,14 +1373,18 @@ final class GoogleDriveSync {
         ensureSuccess(c); c.disconnect();
     }
 
-    private static void updateNamedFile(String token, String id, String mime, File file) throws Exception {
+    private static void updateNamedFile(String token, String id, String mime, File file) throws Exception { withDriveAuth(token, () -> { updateNamedFileOnce(token,id,mime,file); return null; }); }
+
+    private static void updateNamedFileOnce(String token, String id, String mime, File file) throws Exception {
         HttpURLConnection c = open("https://www.googleapis.com/upload/drive/v3/files/" + id + "?uploadType=media&fields=id", "POST", token);
         c.setRequestProperty("X-HTTP-Method-Override", "PATCH"); c.setRequestProperty("Content-Type", mime); c.setDoOutput(true);
         try (OutputStream out = new BufferedOutputStream(c.getOutputStream())) { copy(new FileInputStream(file), out); }
         ensureSuccess(c); c.disconnect();
     }
 
-    private static void downloadFileBounded(String token, String id, File destination, long maxBytes) throws Exception {
+    private static void downloadFileBounded(String token, String id, File destination, long maxBytes) throws Exception { withDriveAuth(token, () -> { downloadFileBoundedOnce(token,id,destination,maxBytes); return null; }); }
+
+    private static void downloadFileBoundedOnce(String token, String id, File destination, long maxBytes) throws Exception {
         HttpURLConnection c = open("https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", "GET", token);
         try {
             ensureSuccess(c);
@@ -1316,7 +1400,9 @@ final class GoogleDriveSync {
         } finally { c.disconnect(); }
     }
 
-    private static void downloadFile(String token, String id, File destination) throws Exception {
+    private static void downloadFile(String token, String id, File destination) throws Exception { withDriveAuth(token, () -> { downloadFileOnce(token,id,destination); return null; }); }
+
+    private static void downloadFileOnce(String token, String id, File destination) throws Exception {
         HttpURLConnection c = open("https://www.googleapis.com/drive/v3/files/" + id + "?alt=media", "GET", token);
         boolean complete = false;
         try {
@@ -1365,13 +1451,16 @@ final class GoogleDriveSync {
         }
     }
 
-    private static JSONObject authorizedJson(String url, String token) throws Exception {
+    private static JSONObject authorizedJson(String url, String token) throws Exception { return withDriveAuth(token, () -> authorizedJsonOnce(url,token)); }
+
+    private static JSONObject authorizedJsonOnce(String url, String token) throws Exception {
         HttpURLConnection c = open(url, "GET", token);
-        ensureSuccess(c);
-        byte[] data;
-        try (InputStream in = new BufferedInputStream(c.getInputStream())) { data = readAll(in); }
-        c.disconnect();
-        return new JSONObject(new String(data, StandardCharsets.UTF_8));
+        try {
+            ensureSuccess(c);
+            byte[] data;
+            try (InputStream in = new BufferedInputStream(c.getInputStream())) { data = readAll(in); }
+            return new JSONObject(new String(data, StandardCharsets.UTF_8));
+        } finally { c.disconnect(); }
     }
 
     private static HttpURLConnection open(String url, String method, String token) throws Exception {
@@ -1380,13 +1469,17 @@ final class GoogleDriveSync {
         c.setConnectTimeout(20_000);
         c.setReadTimeout(120_000);
         c.setUseCaches(false);
-        c.setRequestProperty("Authorization", "Bearer " + token);
+        DriveAuthRetry session = credentials(token);
+        String bearer = session == null ? token : session.token();
+        c.setInstanceFollowRedirects(false); // Never forward bearer credentials to another origin.
+        c.setRequestProperty("Authorization", "Bearer " + bearer);
+        requestTokens.put(c, bearer);
         c.setRequestProperty("Accept", "application/json");
         return c;
     }
 
     private static void ensureSuccess(HttpURLConnection c) throws Exception {
-        int code = c.getResponseCode();
+        int code = responseCode(c);
         if (code >= 200 && code < 300) return;
         InputStream err = c.getErrorStream();
         String detail = err == null ? "" : new String(readAll(err), StandardCharsets.UTF_8);

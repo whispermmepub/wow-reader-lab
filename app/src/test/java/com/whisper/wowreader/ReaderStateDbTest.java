@@ -280,6 +280,24 @@ public class ReaderStateDbTest {
         assertEquals(88, count(sql, "SELECT progress FROM books WHERE file_name='upgrade.epub'"));
         assertEquals(1, count(sql, "SELECT COUNT(*) FROM books WHERE upload_session_url='' AND cover_upload_session_url=''"));
     }
+    @Test public void restoreBindsAtLeast220BooksWithoutDroppingRows() throws Exception {
+        for (int i = 0; i < 220; i++) {
+            File file = new File(root, "restore-" + i + ".epub");
+            Files.write(file.toPath(), ("restore-content-" + i).getBytes(StandardCharsets.UTF_8));
+            db.recordRestoredBook(file, FileIdentityUtil.sha256(file), "remote-" + i, null);
+        }
+        assertEquals(220, count(sql, "SELECT COUNT(*) FROM books WHERE file_path<>''"));
+        assertEquals(220, count(sql, "SELECT COUNT(*) FROM books WHERE sync_dirty=0"));
+    }
+    @Test public void bindingDiagnosticClassifiesDatabaseFailureWithoutLeakingDetails() {
+        String diagnostic = ReaderStateDb.bindingFailureDiagnostic(
+                new IllegalStateException("database locked at /private/user/token=secret"));
+        assertEquals("database busy", diagnostic);
+        assertFalse(diagnostic.contains("private"));
+        assertFalse(diagnostic.contains("secret"));
+        assertEquals("database constraint", ReaderStateDb.bindingFailureDiagnostic(
+                new IllegalStateException("UNIQUE constraint failed: books.content_hash")));
+    }
     private ReaderStateDb isolated(String name) throws Exception {
         File dir = new File(root, name);
         assertTrue(dir.isDirectory() || dir.mkdirs());

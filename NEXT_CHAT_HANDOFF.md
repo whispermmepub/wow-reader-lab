@@ -1,4 +1,65 @@
-# WoW Reader — v72 owner-accepted / v64 last confirmed live
+# Latest owner authorization — accepted v75 / 2.21.9 release preparation
+
+The owner accepted v75 and authorized GitHub source publication and preparation of the matching signed AAB. **Do not upload to Google Play. The owner uploads personally.** Earlier test-only/no-push/no-AAB restrictions below are historical and superseded only within this authorization. v64 / 2.20.0 remains the last owner-confirmed published release; no Play track was inspected.
+
+## Verified release artifacts
+
+- Signed AAB: `/workspace/wow-reader-v75-update/WoW-Reader-v2.21.9-v75-PlayStore-production.aab` (15,659,918 bytes).
+- AAB SHA-256: `eb19f4bc906fe1d7f0c20623818654851e8f13d58ce8089ecdbe9fcb4fbf2a17`.
+- Rebuilding the final source reproduced the accepted test APK **byte-for-byte**, SHA-256 `fff63002f1549c64bfd95e770e8ebb2a0070facd03987f5771859b7574d55901`.
+- Initial source contained three extra restore stage-progress calls absent from the accepted APK. They were removed (legacy download, pre-book-batch and pre-cover-batch notifications only); existing per-transfer progress/cancellation/retry behavior remains. Final APK byte identity resolves the discrepancy. No unaccepted app behavior was added.
+- AAB production certificate, JAR signature, bundletool validation, package `com.whisper.wowreader`, versionCode75/versionName2.21.9, minSdk23/targetSdk36, non-debuggable flag, and APK/AAB DEX/assets/library payload equality verified. `META-INF/MANIFEST.MF` is first in the final archive; reordering preserved every entry's contents and the signature was checked afterward.
+- Evidence: `AAB-VERIFICATION.json`, `AAB-SIGNATURE-VERIFICATION.txt`, `AAB-MANIFEST.xml`, `SHA256SUMS.txt` alongside the AAB. Private helper/log remain outside Git under `/workspace/release-private/`.
+- Accepted APK evidence records 509 passing host tests, contracts and desktop Chromium reader suites; lint177 warnings/fatal0/errors0. Contracts, host tests and lint were rechecked during release preparation. Existing Firebase Kotlin metadata diagnostics remain. No new physical-phone/live-account/latency/restore guarantee.
+- Play notes: `docs/WHATS_NEW_v75.txt`. Owner must confirm versionCode75 is unused across **all Play tracks**, then upload the AAB personally. No uninstall/clear-data instruction: verify in-place update/data retention.
+
+Only source/tests/docs/tools are published to GitHub. No APK/AAB, keystore, passwords or private signing helpers belong in Git. Historical local paths below are retained as continuation context, not downloadable public assets.
+
+---
+
+## Latest candidate — v75 / 2.21.9 title identity, bounded large previews, Drive operation UI
+
+- FINAL APK: `/workspace/wow-reader-v75-update/WoW-Reader-v2.21.9-v75-test-update.apk` (16,012,989 bytes), SHA256 `fff63002f1549c64bfd95e770e8ebb2a0070facd03987f5771859b7574d55901`. Evidence `/workspace/wow-reader-v75-update/VERIFICATION.json`; final build log `/workspace/release-private/build-v75-apk-verified.log`. All 509 host tests pass with zero failures/errors/skips; contracts, 30 desktop Chromium reader/publisher cases, release build, instrumentation compilation and lint pass (177 warnings, zero fatal/errors; existing Firebase Kotlin metadata diagnostic remains). Production/v74 signer match, package/version, non-debuggable manifest, 16-KiB alignment, checksum and latest-source/release-class timestamps verified. Instrumentation was compiled, not run on a phone.
+- Owner request: v74 works overall; refresh briefly exposes hash titles and Reading Calendar/day/detail has stale names. Video `/home/ubuntu/upload/1000017507.mp4` confirms SHA titles and Unknown author in those views. Current changes remain local: **no commit/push, Play upload or AAB generation**; v72 publication permission does not cover this update.
+- Canonical indexed metadata now backs library cards, shared book visuals, Reading Memory/detail and recap display. Refresh/import upserts cannot replace established names/authors with hash/numeric transport placeholders. Explicit custom rename wins; established numeric titles such as `1984` remain valid. History/alias rebinding and original EPUB/PDF bytes are preserved.
+- Preview supports up to **8 MiB source bytes**, with a separate **10,485,760-character sanitized text bound** (not 10 MiB of UTF-16 memory). Large valid XHTML and interruption/limit cases are tested. Memory remains bounded but this is not an unlimited-chapter solution.
+- First-dispatch coalescing is 16 ms and settled capture grace is 32 ms. One fully ready preview DOM/page map is retained across hide/reopen for the same fingerprint; hidden unfinished maps are discarded, and failed readiness probes reload rather than showing an inaccurate page. **The first genuinely cold chapter still needs full physical pagination**; this bottleneck has not been eliminated. No physical-phone latency/FPS claim.
+- Drive restore/explicit smart sync have stage/item text and indeterminate or determinate progress bars. Counts are explicitly per fetched batch, not invented global library percentages. Upload bytes are shown when known. Restore completion distinguishes offline-ready files from partial metadata recovery. Network failures offer Retry; cancellation stops pending authorization or the active operation cooperatively, does not report success, joins transfer writers before scratch cleanup, and keeps installed local files/checkpoints.
+- Transfer cancellation is injected into the plain-Java bounded-transfer engine rather than coupling it to Android static initializers. Added cancellation/no-install/cleanup, progress callback, operation exactly-once/duplicate ownership, refresh/alias/numeric-title, large-XHTML and preview lifecycle regression coverage.
+- Candidate APK/evidence directory: `/workspace/wow-reader-v75-update/`; build helper `/workspace/release-private/build_v75_apk.py`. Use the final `VERIFICATION.json` and checksum in that directory. Install as an in-place update over v74: **do not uninstall or clear data**. No physical phone/emulator, live Google account or original failing backup has been tested; all earlier device/security/scale gates remain.
+
+## Latest candidate — v74 / 2.21.8 preview performance, adaptive size, fast/slow drag (2026-10-20)
+- FINAL APK supersedes earlier same-version v74 builds: `/workspace/wow-reader-v74-update/WoW-Reader-v2.21.8-v74-test-update.apk`. Evidence `/workspace/wow-reader-v74-update/VERIFICATION.json`. SHA256 `e568bbb10d44b4012c2931c88320ff2fc3d1bc6f1b47bb0a52ae6afc7e252195`.
+- Preserves all v72 restore-integrity and v73 bounded-transfer fixes; no restore-source edits in this task. No commit, GitHub push, Play upload or AAB creation.
+- Preview cap is now 288x408dp (was264x374), uniformly shrinks within padded/system-inset safe bounds above seekbar. Six phone/tablet/landscape cases and existing resize/bounds tests pass without changing the physical pagination viewport.
+- Reuses one EPUB WebView during each drag and one worker-confined PDF renderer. Navigation-specific generation/URL/resource guards, interrupted obsolete IO, single queued worker,32ms input/seek coalescing, single panel update post, and bounded70ms EPUB/35ms PDF dispatch windows prevent stale backlog or endlessly postponed dispatch while moving quickly. Source callbacks are removed on release/pause/destroy.
+- Bounded eight-entry settled rendered-thumbnail cache (120ms quiet capture) avoids repagination on exact cache hits; typography/mode/viewport invalidation and document cleanup remain. Page counting/in-flight preload pause during dragging.
+- Focused host cases:150 rapid alternating chapter requests;1000 same-chapter events;12 slow120ms steps without release;slow chapter crossing;API23/35/36. Slow dragging schedules preview changes before lifting, not only at committed reader seek.
+- Full host suite now 459 tests,0 failures/errors/skips. APK build was453 tests;two slow-drag test methods were then added across3 APIs and full suite rerun with production source unchanged. Contract suites, desktop Chromium reader/publisher suites, lint (175 warnings,0 fatal/errors), instrumentation compile, signature/v73 identity, non-debuggable manifest and16-KiB alignment all pass.
+- Limits: no physical phone/emulator; host scheduling tests are not measured touch latency/FPS. First uncached EPUB chapter still uses full chapter/physical viewport pagination;2MiB preview cap unchanged. Real WebView screenshot pixels, large/image-heavy EPUBs and slow/fast touch gestures require owner device QA. Install as update;do not uninstall/clear data. No60fps/all-phone lag-free claim.
+- Build/log `/workspace/release-private/build_v74_apk.py`, `/workspace/release-private/build-v74-apk.log`; post-build tests `/workspace/release-private/preview-v74-final-slow-drag-tests.log`.
+
+# WoW Reader — v73 local test candidate / v72 owner-accepted baseline
+
+## Latest owner request — faster Drive restore (v73 / 2.21.7, test only)
+
+The owner confirmed v72 no longer shows corrupt/ghost entries and restored titles are correct, but Drive restore is too slow. This new change is **not authorized for GitHub push or Play upload**. No commit/push, Play upload or AAB generation was performed. The earlier v72 publication authorization below applies only to the accepted v72 source, not this v73 change.
+
+- Incremental book and custom-cover downloads now use batches of at most three transfers. Installs, metadata repair and DB binding stay on the restore caller. Failed batches join all writers before deleting temporary files; no unlimited download queue or parallel DB rebinding.
+- Book installation hashes the exact bytes while copying to its fsynced pending file, then verifies the digest before reserving/installing the target. This removes the two extra standalone scratch-file hash reads from the v72 fresh-download path. Existing different local books are never overwritten; existing matching sources/targets remain validated.
+- Already-bound restored files skip the final redundant DB/metadata rebind; pre-existing files still rebind and the v72 full-library reconciliation still runs. Alias-history merge reads target history once instead of two SQL lookups per day. Tombstone check moved inside the binding transaction.
+- SHA-256, before/after delete-wins checks, custom-title CAS, metadata aliases, notes/progress/shelves/history, legacy ZIP fallback and incomplete-state backup pause are retained. Media and bounded state-archive downloads disconnect HTTP connections on failures.
+
+Validation: **405 host/Robolectric tests, zero failures/errors/skips**; contract suites, both desktop Chromium reader suites, assembleRelease, lintRelease and instrumentation compilation pass. Lint fatal/error 0, warnings 175; existing Firebase Kotlin metadata diagnostic remains. Focused new coverage exercises 1,003 transfers, exact max-three concurrency and serial ordering, download/install/interruption cleanup, empty/corrupt media, duplicate/local reuse, name collision, delete-during-transfer, 1,200-day history merging and redundant-rebind avoidance on API23/28/35/36. Instrumentation was compiled, not run on a phone.
+
+Synthetic 120-object latency benchmark (three runs): median serial 1795 ms versus bounded 782 ms, **2.3× for this synthetic transfer workload only**. This is not an end-to-end phone/Drive speed prediction. Legacy full ZIP download/unpack is intentionally preserved and can still dominate. Legacy compressed/expanded/entry-count hardening is not part of this change; do not claim the entire restore is byte/entry bounded.
+
+Signed in-place APK: `/workspace/wow-reader-v73-update/WoW-Reader-v2.21.7-v73-test-update.apk` (16012985 bytes). SHA-256 `63d81e06f860c8230cfc003064431e87a384bf2475a4211d897ee4e49cae0672`. Package `com.whisper.wowreader`, versionCode73/versionName2.21.7, minSdk23/targetSdk36, non-debuggable, production/v72 certificate match and 16-KiB ZIP alignment verified. Evidence `/workspace/wow-reader-v73-update/VERIFICATION.json` and synthetic benchmark `/workspace/wow-reader-v73-update/RESTORE-BENCHMARK.json`. Private helper/log `/workspace/release-private/build_v73_apk.py`, `/workspace/release-private/build-v73-apk.log`.
+
+Ask the owner to update directly over v72 **without uninstalling or clearing data**, then retry the same account/library and check elapsed restore time plus book opening, titles, progress, notes, shelves and history. No physical device, live Google account or original failing archive was tested. All earlier device/security/scale gates remain; this is a test candidate, not a production guarantee.
+
+---
+
 
 ## Latest owner authorization — v72 release preparation and source publication
 

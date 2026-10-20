@@ -84,9 +84,14 @@ public class BookReaderActivity extends Activity {
     private LinearLayout selectionBar;
     private SeekBar readingSeek;
     private boolean readingSeekDragging = false;
+    private boolean readerPreviewUpdateScheduled;
+    private final Runnable readerPreviewUpdate = () -> {
+        readerPreviewUpdateScheduled=false;
+        if(readingSeekDragging&&readingSeek!=null&&!isFinishing()&&!isDestroyed())showReaderPagePreview(readingSeek.getProgress());
+    };
     private ReaderPagePreview readerPagePreview;
     private File epubPublicationRoot;
-    private final ReaderPagePreview.EpubRenderer previewRenderer = view -> applyReaderStyle(view,false,0,-900000);
+    private final ReaderPagePreview.EpubRenderer previewRenderer = (view,generation) -> applyReaderStyle(view,false,0,generation);
     private boolean durableSaveInFlight = false;
     private long lastDurableSaveElapsedMs = 0L;
     private View nightLightOverlay;
@@ -576,16 +581,21 @@ public class BookReaderActivity extends Activity {
                 if (!fromUser || positionView == null) return;
                 int percent = Math.max(0, Math.min(100, Math.round(progress / 10f)));
                 positionView.setText("" + percent + "%");
-                if (readingSeekDragging) showReaderPagePreview(progress);
+                if (readingSeekDragging && !readerPreviewUpdateScheduled) {
+                    readerPreviewUpdateScheduled=true;seekBar.postDelayed(readerPreviewUpdate,32L);
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {
                 readingSeekDragging = true;
+                pauseWholeBookPageScan();
+                if(preloadLoading)cancelChapterPreload();
                 cancelChromeAutoHide();
                 showReaderPagePreview(seekBar.getProgress());
             }
             @Override public void onStopTrackingTouch(SeekBar seekBar) {
                 int target = seekBar.getProgress();
                 readingSeekDragging = false;
+                seekBar.removeCallbacks(readerPreviewUpdate);readerPreviewUpdateScheduled=false;
                 if (readerPagePreview != null) readerPagePreview.hide();
                 seekToOverallProgress(target);
                 scheduleChromeAutoHide();
@@ -2262,6 +2272,8 @@ public class BookReaderActivity extends Activity {
         }
         if (spine.isEmpty() || epubProgressModel == null) return;
         readerPagePreview.configureEpubRenderer(previewRenderer,webView.getWidth(),webView.getHeight(),fontPercent,epubPublicationRoot);
+        readerPagePreview.setEpubStyleKey(fontChoice+":"+fontWeight+":"+lineSpacing+":"+marginPercent+":"+
+                textAlignment+":"+publisherStyles+":"+autoSpacingAdjustment+":"+readingMode+":"+readerTheme);
         EpubProgressModel.Position pos = epubProgressModel.positionForOverall(overallPermille);
         if (pos.spineIndex >= 0 && pos.spineIndex < spine.size()) {
             String title = pos.spineIndex < chapterTitles.size() ? chapterTitles.get(pos.spineIndex) : "";
@@ -5513,7 +5525,7 @@ public class BookReaderActivity extends Activity {
     }
     private void ensureWholeBookPageScan() {
         if (isPdf || !"page".equals(readingMode) || spine.isEmpty() || wholeBookCounterWebView == null || isFinishing()) return;
-        if (isReaderLowRam() || preloadLoading || pageTurnLocked || readerStyleReflowPending) return;
+        if (readingSeekDragging || isReaderLowRam() || preloadLoading || pageTurnLocked || readerStyleReflowPending) return;
         ChapterTransitionPolicy.Decision policy = ChapterTransitionPolicy.decide(
                 new ChapterTransitionPolicy.Inputs("none".equals(pageAnimation), isReaderLowRam(),
                         preloadReady, chapterLoading, false, wholeBookCounterRunning,
@@ -6709,6 +6721,8 @@ public class BookReaderActivity extends Activity {
 
     @Override
     protected void onPause() {
+        readingSeekDragging=false;readerPreviewUpdateScheduled=false;
+        if(readingSeek!=null)readingSeek.removeCallbacks(readerPreviewUpdate);
         ReadingStatsStore.finishSession(prefs, bookFile == null ? null : bookFile.getName(), readingSessionStartedElapsedMs);
         readingSessionStartedElapsedMs = 0L;
         cancelEyeBreakReminder();
@@ -6939,6 +6953,8 @@ public class BookReaderActivity extends Activity {
         pendingChapterCurlDirection = 0;
         if (pageCurlView != null) pageCurlView.release();
         finishChapterFadeImmediate();
+        if(readingSeek!=null)readingSeek.removeCallbacks(readerPreviewUpdate);
+        readerPreviewUpdateScheduled=false;
         if (readerPagePreview != null) { readerPagePreview.destroy(); readerPagePreview = null; }
         if (webView != null) {
             try { webView.removeJavascriptInterface("WoW"); } catch (Exception ignored) {}

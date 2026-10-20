@@ -18,6 +18,8 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -319,6 +321,8 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     private void insertOrUpdateBook(SQLiteDatabase db, File file, String hash, SharedPreferences prefs) {
         if (file == null || !file.isFile()) return;
         String name = file.getName();
+        String existingTitle = scalarString(db, "SELECT title FROM books WHERE file_name=?", new String[]{name});
+        String existingAuthor = scalarString(db, "SELECT author FROM books WHERE file_name=?", new String[]{name});
         ContentValues v = new ContentValues();
         v.put("file_name", name); v.put("file_path", file.getAbsolutePath());
         v.put("format", name.toLowerCase(Locale.ROOT).endsWith(".pdf") ? "pdf" : "epub");
@@ -328,6 +332,8 @@ final class ReaderStateDb extends SQLiteOpenHelper {
             String fallbackTitle = stripExtension(name);
             String title = prefs.getString("library_title_" + name, fallbackTitle);
             String author = prefs.getString("library_author_" + name, "");
+            if (!prefs.getBoolean("library_metadata_custom_" + name, false) && !meaningfulDisplayTitle(title) && establishedStoredTitle(existingTitle)) title = existingTitle;
+            if (author.trim().isEmpty() && !existingAuthor.trim().isEmpty()) author = existingAuthor;
             v.put("title", title == null || title.trim().isEmpty() ? fallbackTitle : title.trim());
             v.put("author", author == null ? "" : author.trim());
             v.put("added_at", prefs.getLong("added_at_" + name, 0L));
@@ -453,6 +459,35 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     }
     String indexedAuthor(String fileName) { return scalarString("SELECT author FROM books WHERE file_name=?", new String[]{fileName}); }
 
+    /** Canonical UI identity. Hashes and numeric import placeholders are never user-facing titles. */
+    static String displayTitle(SharedPreferences prefs, String fileName) {
+        if (fileName == null || fileName.trim().isEmpty()) return "Book";
+        String fallback = stripExtension(fileName);
+        String pref = prefs == null ? "" : prefs.getString("library_title_" + fileName, "");
+        boolean custom = prefs != null && prefs.getBoolean("library_metadata_custom_" + fileName, false);
+        if (custom && !pref.trim().isEmpty()) return pref.trim();
+        ReaderStateDb db = peek();
+        String indexed = db == null ? "" : db.indexedTitle(fileName, "");
+        if (establishedStoredTitle(indexed)) return indexed.trim();
+        if (meaningfulDisplayTitle(pref)) return pref.trim();
+        return meaningfulDisplayTitle(fallback) ? fallback : "Untitled book";
+    }
+
+    static String displayAuthor(SharedPreferences prefs, String fileName) {
+        if (fileName == null) return "";
+        ReaderStateDb db = peek();
+        String value = db == null ? "" : db.indexedAuthor(fileName);
+        if (value == null || value.trim().isEmpty()) value = prefs == null ? "" : prefs.getString("library_author_" + fileName, "");
+        return value == null ? "" : value.trim();
+    }
+
+    static boolean meaningfulDisplayTitle(String value) {
+        if (value == null) return false;
+        String s = value.trim();
+        if (s.isEmpty() || s.matches("[0-9]+")) return false;
+        return !s.matches("(?i)[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}");
+    }
+
     static final class PendingSyncRow {
         final String fileName, filePath, format, hash, remoteId, sessionUrl;
         final long offset;
@@ -565,11 +600,13 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     String fileNameForHash(String hash){return hash==null?"":scalarString("SELECT file_name FROM books WHERE content_hash=? LIMIT 1",new String[]{hash});}
     void recordRestoredBook(File file, String hash, String remoteId, SharedPreferences prefs) {
         if (file == null || !file.isFile() || hash == null || hash.isEmpty()) return;
-        if (hasBookTombstone(hash)) return;
         SQLiteDatabase sql = getWritableDatabase();
         SharedPreferences.Editor aliases = null;
         sql.beginTransaction();
         try {
+            // Keep the deletion guard inside the same write transaction as the bind. A
+            // pre-transaction check can race a remote-deletion import and resurrect a book.
+            if (hasBookTombstone(hash)) return;
             String existing = fileNameForHash(hash), actual = file.getName();
             if (existing.isEmpty()) {
                 // Never replace a different indexed identity just because names happen to match.
@@ -586,11 +623,21 @@ final class ReaderStateDb extends SQLiteOpenHelper {
                     throw new IllegalStateException("Restored book identity is missing");
                 sql.execSQL("INSERT OR IGNORE INTO shelf_books(shelf_name,file_name,added_at) SELECT shelf_name,?,added_at FROM shelf_books WHERE file_name=?", new Object[]{actual, existing});
                 sql.delete("shelf_books", "file_name=?", new String[]{existing});
+                Map<String, Long> targetTimes = new HashMap<>();
+                Map<String, String> targetNotes = new HashMap<>();
+                try (Cursor target = sql.rawQuery("SELECT day,duration_ms,book_note FROM book_day WHERE file_name=?", new String[]{actual})) {
+                    while (target.moveToNext()) {
+                        targetTimes.put(target.getString(0), target.getLong(1));
+                        targetNotes.put(target.getString(0), target.getString(2) == null ? "" : target.getString(2));
+                    }
+                }
                 try (Cursor history = sql.rawQuery("SELECT day,duration_ms,book_note FROM book_day WHERE file_name=?", new String[]{existing})) {
                     while (history.moveToNext()) {
-                        String day = history.getString(0), currentNote = bookDayNote(day, actual);
+                        String day = history.getString(0), currentNote = targetNotes.get(day);
+                        if (currentNote == null) currentNote = "";
                         ContentValues row = new ContentValues(); row.put("day", day); row.put("file_name", actual);
-                        row.put("duration_ms", Math.max(bookTimeForDay(day, actual), history.getLong(1)));
+                        Long targetTime = targetTimes.get(day);
+                        row.put("duration_ms", Math.max(targetTime == null ? 0L : targetTime, history.getLong(1)));
                         row.put("book_note", currentNote.isEmpty() ? history.getString(2) : currentNote);
                         mergeRow(sql, "book_day", row);
                     }
@@ -665,11 +712,24 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     void upsertImportedBook(File file,String hash,String title,String author,long addedAt) {
         if(file==null||!file.isFile())return;
         SQLiteDatabase sql=getWritableDatabase();ContentValues v=new ContentValues();String name=file.getName();
+        String oldTitle=scalarString(sql,"SELECT title FROM books WHERE file_name=?",new String[]{name});
+        String oldAuthor=scalarString(sql,"SELECT author FROM books WHERE file_name=?",new String[]{name});
+        // A refresh may supply a hash/numeric transport placeholder. Never erase
+        // established indexed metadata; numeric titles remain valid deliberate
+        // renames (for example, "1984"), so do not reject them as old values.
+        if(!meaningfulDisplayTitle(title)&&establishedStoredTitle(oldTitle))title=oldTitle;
+        if((author==null||author.trim().isEmpty())&&!oldAuthor.trim().isEmpty())author=oldAuthor;
         v.put("file_name",name);v.put("file_path",file.getAbsolutePath());v.put("format",name.toLowerCase(Locale.ROOT).endsWith(".pdf")?"pdf":"epub");
         v.put("title",title==null||title.trim().isEmpty()?stripExtension(name):title.trim());v.put("author",author==null?"":author.trim());
         if(hash!=null&&!hash.isEmpty())v.put("content_hash",hash);v.put("file_size",file.length());v.put("modified_at",file.lastModified());v.put("added_at",Math.max(0L,addedAt));
         v.put("sync_dirty",1);v.put("updated_at",System.currentTimeMillis());
         sql.insertWithOnConflict("books",null,v,SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    private static boolean establishedStoredTitle(String value) {
+        if (value == null || value.trim().isEmpty()) return false;
+        String s = value.trim();
+        return !s.matches("(?i)[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}");
     }
 
     private void updateBookHash(File file, String hash) {
@@ -1221,6 +1281,10 @@ final class ReaderStateDb extends SQLiteOpenHelper {
     }
     private String scalarString(String sql, String[] args) {
         Cursor c = null; try { c = getReadableDatabase().rawQuery(sql, args); return c.moveToFirst() && c.getString(0) != null ? c.getString(0) : ""; }
+        catch (Exception ignored) { return ""; } finally { if (c != null) c.close(); }
+    }
+    private static String scalarString(SQLiteDatabase db, String sql, String[] args) {
+        Cursor c = null; try { c = db.rawQuery(sql, args); return c.moveToFirst() && c.getString(0) != null ? c.getString(0) : ""; }
         catch (Exception ignored) { return ""; } finally { if (c != null) c.close(); }
     }
 

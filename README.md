@@ -2,10 +2,14 @@
 
 Official Android source repository for **WoW Reader**.
 
+## Owner-accepted v75 — Play upload remains with the owner
+
+The owner accepted **v75 / 2.21.9** and authorized publishing its source to GitHub and preparing the matching signed AAB. It continues the v73 restore and v74 preview improvements, preserves canonical book titles during refresh, uses indexed titles in reading-history views, supports bounded EPUB previews above the old 2 MiB limit, retains a ready preview page map, and adds Drive operation stages, progress, cancellation and retry. A completely cold EPUB preview still needs accurate physical pagination. Automated physical-phone/live-Drive validation remains incomplete. **Do not upload to Google Play: the owner will upload personally.** See `NEXT_CHAT_HANDOFF.md` for artifacts and evidence. Earlier test-only restrictions below are historical.
+
 ## Owner-accepted update (prepared; not uploaded to Play)
 
-- **Version:** `2.21.6`
-- **versionCode:** `72` (owner must check availability across all Play tracks before upload)
+- **Version:** `2.21.9`
+- **versionCode:** `75` (owner must check availability across all Play tracks before upload)
 - **Package:** `com.whisper.wowreader`
 - **Minimum Android:** 6.0 / API 23
 - **Target SDK:** 36
@@ -14,7 +18,7 @@ Official Android source repository for **WoW Reader**.
 
 v64 is the 100k-scale library/sync foundation release. It preserves the v63 update/data/signing contract while moving normal library and cloud-sync work away from whole-library operations.
 
-v64 / 2.20.0 is the last owner-confirmed published release. The owner accepted v72 / 2.21.6 and authorized preparing its source for publication; it has not been uploaded to Play. v72 carries forward smoother chapter switching, original EPUB formatting with global Original EPUB/Reader typography settings, larger adaptive previews, reminder/home improvements, and Drive restore recovery including ghost-entry, hash-title, and deletion fixes. The owner handles Play Console upload; this documentation does not upload or publish the app there. Check `NEXT_CHAT_HANDOFF.md` for verification and remaining device QA; there is no production guarantee.
+v64 / 2.20.0 is the last owner-confirmed published release. The owner accepted v75 / 2.21.9; it has not been uploaded to Play by this workflow. v75 carries forward smoother chapter switching, original EPUB formatting with global Original EPUB/Reader typography settings, larger adaptive previews, reminder/home improvements, Drive restore recovery including ghost-entry, hash-title and deletion fixes, bounded concurrent restore transfers, improved title identity and visible cancellable Drive operations. The owner handles Play Console upload. Check `NEXT_CHAT_HANDOFF.md` for verification and remaining device QA; there is no production guarantee.
 
 ## Start here
 
@@ -114,3 +118,6 @@ Private keystores/passwords must never be committed.
 - Discussion group: https://t.me/+oKgpGSA_lKc4YTU1
 - Website: https://saroatsin.com
 - Reviews: https://whispermmepub.github.io/Review/
+
+### v75 validation and delivery
+Accepted signed APK and matching AAB are under `/workspace/wow-reader-v75-update/`. The existing validation records 509 passing host tests, zero failures/errors/skips, passing contracts and desktop Chromium reader suites, and lint with 177 warnings but no fatal/errors. Physical Android touch/FPS and live-account restore are not established by those tests; first uncached chapters still need full engine pagination. See `docs/STORE_PUBLICATION_STATUS.md` and `docs/WHATS_NEW_v75.txt`. No Google Play upload is authorized for this workflow.

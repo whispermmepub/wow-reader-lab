@@ -95,11 +95,9 @@ final class ReadingRecapData {
             for (ReaderStateDb.FinishedRow row : db.finishedBetween(startMs, endMs)) {
                 File file = new File(library, row.fileName);
                 if (!file.isFile()) continue;
-                String title = prefs.getString("library_title_" + row.fileName, "");
-                if (title == null || title.trim().isEmpty()) title = stripExtension(row.fileName);
-                String author = prefs.getString("library_author_" + row.fileName, "");
-                if (author == null) author = "";
-                out.add(new FinishedBook(file, title.trim(), author.trim(), row.finishedAt));
+                String title = ReaderStateDb.displayTitle(prefs, row.fileName);
+                String author = ReaderStateDb.displayAuthor(prefs, row.fileName);
+                out.add(new FinishedBook(file, title, author, row.finishedAt));
             }
             return out;
         }
@@ -116,11 +114,9 @@ final class ReadingRecapData {
                 if (finishedAt > 0L) ReadingProgressStore.backfillFinishedAt(prefs, file.getName(), finishedAt);
             }
             if (finishedAt < startMs || finishedAt > endMs) continue;
-            String title = prefs.getString("library_title_" + file.getName(), "");
-            if (title == null || title.trim().isEmpty()) title = stripExtension(file.getName());
-            String author = prefs.getString("library_author_" + file.getName(), "");
-            if (author == null) author = "";
-            out.add(new FinishedBook(file, title.trim(), author.trim(), finishedAt));
+            String title = ReaderStateDb.displayTitle(prefs, file.getName());
+            String author = ReaderStateDb.displayAuthor(prefs, file.getName());
+            out.add(new FinishedBook(file, title, author, finishedAt));
         }
         Collections.sort(out, new Comparator<FinishedBook>() {
             @Override public int compare(FinishedBook a, FinishedBook b) { return Long.compare(b.finishedAt, a.finishedAt); }

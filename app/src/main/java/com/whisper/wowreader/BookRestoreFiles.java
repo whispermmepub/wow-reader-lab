@@ -31,9 +31,12 @@ final class BookRestoreFiles {
 
     static void install(File source, File target, String hash) throws Exception {
         synchronized (INSTALL_LOCK) {
-            if (!source.isFile() || !hash.equalsIgnoreCase(FileIdentityUtil.sha256(source)))
+            if (!source.isFile())
                 throw new IOException("Cloud book integrity check failed");
             if (target.exists()) {
+                // Repeated/legacy restores need validation, not an extra full pending-file write.
+                if (!hash.equalsIgnoreCase(FileIdentityUtil.sha256(source)))
+                    throw new IOException("Cloud book integrity check failed");
                 if (target.isFile() && hash.equalsIgnoreCase(FileIdentityUtil.sha256(target))) return;
                 throw new IOException("A different local book occupies the restore destination; it was not changed");
             }
@@ -43,9 +46,19 @@ final class BookRestoreFiles {
                 try (InputStream in = new BufferedInputStream(new FileInputStream(source));
                      FileOutputStream fileOut = new FileOutputStream(part);
                      OutputStream out = new BufferedOutputStream(fileOut)) {
-                    byte[] buffer = new byte[64 * 1024]; int size;
-                    while ((size = in.read(buffer)) != -1) out.write(buffer, 0, size);
-                    out.flush(); fileOut.getFD().sync();
+                    // The bytes copied to the pending file are the bytes validated. This avoids
+                    // reading a large Drive file once to hash it and again to install it.
+                    String copiedHash = FileIdentityUtil.copyAndSha256(in, out);
+                    out.flush();
+                    fileOut.getFD().sync();
+                    if (!hash.equalsIgnoreCase(copiedHash))
+                        throw new IOException("Cloud book integrity check failed");
+                }
+                // Source validation must precede this check: a valid existing target does not
+                // make an unvalidated or changed source acceptable.
+                if (target.exists()) {
+                    if (target.isFile() && hash.equalsIgnoreCase(FileIdentityUtil.sha256(target))) return;
+                    throw new IOException("A different local book occupies the restore destination; it was not changed");
                 }
                 // Atomically reserve a previously absent name. Imports also respect existing names.
                 if (!target.createNewFile()) throw new IOException("Restore destination changed; no local book was replaced");

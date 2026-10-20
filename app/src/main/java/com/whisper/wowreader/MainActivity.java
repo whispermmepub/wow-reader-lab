@@ -101,6 +101,9 @@ public class MainActivity extends Activity {
     private GoogleAccountAuth googleAccount;
     private GoogleDriveSync.Profile googleProfile;
     private boolean googleSyncBusy = false;
+    private AlertDialog googleProgressDialog;
+    private TextView googleProgressText;
+    private android.widget.ProgressBar googleProgressBar;
     private long lastAutoSyncAttemptMs = 0L;
     private Runnable googleSyncRetryRunnable;
     private volatile boolean metadataWarmupRunning = false;
@@ -599,16 +602,11 @@ public class MainActivity extends Activity {
     }
 
     private String cachedLibraryTitle(File file) {
-        String fallback = stripExtension(file.getName());
-        if (stateDb != null && stateDb.isLibraryIndexReady()) return stateDb.indexedTitle(file.getName(), fallback);
-        String value = prefs.getString("library_title_" + file.getName(), fallback);
-        return value == null || value.trim().isEmpty() ? fallback : value.trim();
+        return ReaderStateDb.displayTitle(prefs, file == null ? "" : file.getName());
     }
 
     private String cachedLibraryAuthor(File file) {
-        if (stateDb != null && stateDb.isLibraryIndexReady()) return stateDb.indexedAuthor(file.getName());
-        String value = prefs.getString("library_author_" + file.getName(), "");
-        return value == null ? "" : value.trim();
+        return ReaderStateDb.displayAuthor(prefs, file == null ? "" : file.getName());
     }
 
     private int compareBookTitles(File a, File b) {
@@ -3605,22 +3603,69 @@ public class MainActivity extends Activity {
 
     private File readerFontsDir(){File d=new File(getFilesDir(),"reader_fonts");if(!d.exists())d.mkdirs();return d;}
 
+    private void showGoogleProgress(String title) {
+        if (googleProgressDialog != null && googleProgressDialog.isShowing()) return;
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(24), dp(18), dp(24), dp(12));
+        googleProgressText = new TextView(this);
+        googleProgressText.setText("Connecting to Google Drive…");
+        googleProgressText.setPadding(0, 0, 0, dp(8));
+        googleProgressText.setTextSize(15);
+        content.addView(googleProgressText);
+        googleProgressBar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        googleProgressBar.setMax(1000);
+        googleProgressBar.setIndeterminate(true);
+        content.addView(googleProgressBar, new LinearLayout.LayoutParams(-1, dp(12)));
+        googleProgressDialog = new AlertDialog.Builder(this).setTitle(title)
+                .setView(content).setNegativeButton("Cancel", (d,w) -> GoogleDriveSync.cancelActive()).create();
+        googleProgressDialog.setOnDismissListener(d -> { if (googleSyncBusy) GoogleDriveSync.cancelActive(); });
+        googleProgressDialog.show();
+    }
+    private void updateGoogleProgress(String stage, String item, int completed, int total, long bytes, long totalBytes) {
+        runOnUiThread(() -> {
+            if (googleProgressText == null) return;
+            String text = item == null || item.isEmpty() ? "Google Drive sync" : item;
+            if (total > 0) text += "  " + completed + "/" + total;
+            if (totalBytes > 0) text += String.format(Locale.US, "  %.1f/%.1f MiB", bytes / 1048576.0, totalBytes / 1048576.0);
+            googleProgressText.setText(text);
+            if (googleProgressBar != null) {
+                boolean known = totalBytes > 0 || total > 0;
+                googleProgressBar.setIndeterminate(!known);
+                if (known) googleProgressBar.setProgress((int)Math.max(0, Math.min(1000,
+                        totalBytes > 0 ? bytes * 1000.0 / totalBytes : completed * 1000.0 / total)));
+            }
+        });
+    }
+    private void hideGoogleProgress() {
+        if (googleProgressDialog != null) { googleProgressDialog.setOnDismissListener(null); googleProgressDialog.dismiss(); }
+        googleProgressDialog = null; googleProgressText = null; googleProgressBar = null;
+    }
+    private void showGoogleRetry(String message, boolean restore) {
+        new AlertDialog.Builder(this).setTitle("Google Drive sync interrupted")
+                .setMessage(message).setNegativeButton("Close", null)
+                .setPositiveButton("Retry", (d,w) -> { if (restore) performGoogleRestore(); else performGoogleBackup(true); }).show();
+    }
+
     private void performGoogleBackup(boolean showToast){
         if(GoogleAutoSync.isBusy()){if(showToast)Toast.makeText(this,"Auto sync is already running",Toast.LENGTH_SHORT).show();return;}
         GoogleAutoSync.cancelPending();
         if(googleSyncBusy){scheduleGoogleSyncRetry(12000L);return;}
         googleSyncBusy=true;
+        if (showToast) showGoogleProgress("Syncing with Google Drive");
         final long requestedChangeMs=prefs.getLong("sync_updated_ms",0L);
         googleDrive.authorizeSilently(new GoogleDriveSync.AuthCallback(){
             @Override public void onReady(GoogleDriveSync.Profile driveProfile){
                 GoogleDriveSync.Profile profile=resolvedProfile(driveProfile);
                 rememberGoogleProfile(profile,true);
                 GoogleDriveSync.smartBackup(MainActivity.this,driveProfile.accessToken,libraryDir,readerFontsDir(),prefs,new GoogleDriveSync.SyncCallback(){
-                    @Override public void onSuccess(String message){prefs.edit().putLong("google_last_synced_change_ms",requestedChangeMs).apply();googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();maybeAutoGoogleSync();}
-                    @Override public void onError(String message){googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
+                    @Override public void onSuccess(String message){hideGoogleProgress();prefs.edit().putLong("google_last_synced_change_ms",requestedChangeMs).apply();googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();maybeAutoGoogleSync();}
+                    @Override public void onError(String message){hideGoogleProgress();googleSyncBusy=false;if(showToast)showGoogleRetry(message,false);}
+                    @Override public void onCancelled(){hideGoogleProgress();googleSyncBusy=false;Toast.makeText(MainActivity.this,"Sync cancelled; local books are unchanged.",Toast.LENGTH_LONG).show();}
+                    @Override public void onProgress(String stage,String item,int completed,int total,long bytes,long totalBytes){updateGoogleProgress(stage,item,completed,total,bytes,totalBytes);}
                 });
             }
-            @Override public void onError(String message){googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
+            @Override public void onError(String message){hideGoogleProgress();googleSyncBusy=false;if(showToast)Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
         });
     }
 
@@ -3633,16 +3678,19 @@ public class MainActivity extends Activity {
     private void performGoogleRestore(){
         if(googleSyncBusy)return;
         googleSyncBusy=true;
+        showGoogleProgress("Restoring from Google Drive");
         googleDrive.authorize(false,new GoogleDriveSync.AuthCallback(){
             @Override public void onReady(GoogleDriveSync.Profile driveProfile){
                 GoogleDriveSync.Profile profile=resolvedProfile(driveProfile);
                 rememberGoogleProfile(profile,true);
                 GoogleDriveSync.restore(MainActivity.this,driveProfile.accessToken,libraryDir,readerFontsDir(),prefs,new GoogleDriveSync.SyncCallback(){
-                    @Override public void onSuccess(String message){googleSyncBusy=false;authorFilter="";refreshLibrary();Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
-                    @Override public void onError(String message){googleSyncBusy=false;Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
+                    @Override public void onSuccess(String message){hideGoogleProgress();googleSyncBusy=false;authorFilter="";refreshLibrary();Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
+                    @Override public void onError(String message){hideGoogleProgress();googleSyncBusy=false;showGoogleRetry(message,true);}
+                    @Override public void onCancelled(){hideGoogleProgress();googleSyncBusy=false;Toast.makeText(MainActivity.this,"Restore cancelled; installed books and metadata are safe.",Toast.LENGTH_LONG).show();}
+                    @Override public void onProgress(String stage,String item,int completed,int total,long bytes,long totalBytes){updateGoogleProgress(stage,item,completed,total,bytes,totalBytes);}
                 });
             }
-            @Override public void onError(String message){googleSyncBusy=false;Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
+            @Override public void onError(String message){hideGoogleProgress();googleSyncBusy=false;Toast.makeText(MainActivity.this,message,Toast.LENGTH_LONG).show();}
         });
     }
 

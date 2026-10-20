@@ -66,6 +66,8 @@ public class BookRestoreFilesTest {
         } catch (IOException expected) { }
         assertTrue(source.isFile());
         assertFalse(target.exists());
+        File[] pending = root.listFiles((dir, name) -> name.startsWith(".wow-restore-") && name.endsWith(".pending"));
+        assertEquals(0, pending == null ? 0 : pending.length);
     }
 
     @Test public void installNeverOverwritesDifferentExistingTarget() throws Exception {

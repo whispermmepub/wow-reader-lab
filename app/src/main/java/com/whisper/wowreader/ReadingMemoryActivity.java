@@ -51,8 +51,8 @@ public class ReadingMemoryActivity extends Activity {
         LinearLayout bookCard = card(); bookCard.setOrientation(LinearLayout.HORIZONTAL); bookCard.setGravity(Gravity.CENTER_VERTICAL); bookCard.setPadding(ui.dp(12), ui.dp(12), ui.dp(12), ui.dp(12));
         ImageView cover = new ImageView(this); cover.setScaleType(ImageView.ScaleType.CENTER_CROP); cover.setClipToOutline(true); cover.setBackground(ui.rounded(ui.control, 10, 0, 0)); bookCard.addView(cover, new LinearLayout.LayoutParams(ui.dp(92), ui.dp(134))); BookVisualUtil.loadCover(this, bookFile, cover, ui.dp(230), ui.dp(340));
         LinearLayout copy = new LinearLayout(this); copy.setOrientation(LinearLayout.VERTICAL); copy.setPadding(ui.dp(14), 0, 0, 0); copy.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(BookVisualUtil.title(prefs, bookName), 17, ui.primary, true); title.setMaxLines(3); copy.addView(title);
-        String author = BookVisualUtil.author(prefs, bookName); TextView a = text(author.isEmpty() ? "Unknown author" : author, 11, ui.secondary, false); a.setPadding(0, ui.dp(5), 0, 0); copy.addView(a);
+        TextView title = text(ReaderStateDb.displayTitle(prefs, bookName), 17, ui.primary, true); title.setMaxLines(3); copy.addView(title);
+        String author = ReaderStateDb.displayAuthor(prefs, bookName); TextView a = text(author.isEmpty() ? "Unknown author" : author, 11, ui.secondary, false); a.setPadding(0, ui.dp(5), 0, 0); copy.addView(a);
         int progress = prefs.getInt("percent_" + bookName, 0); TextView p = text(progress >= 100 ? "✓ Finished · 100%" : progress + "% read", 11.5f, ui.accent, true); p.setPadding(0, ui.dp(11), 0, 0); copy.addView(p);
         bookCard.addView(copy, new LinearLayout.LayoutParams(0, ui.dp(134), 1f)); content.addView(bookCard, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(158)));
 

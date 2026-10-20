@@ -1,0 +1,5 @@
+Improved EPUB reading, chapter transitions and original book formatting.
+Larger, smoother page previews with support for larger chapters.
+Improved Google Drive restore and sync, with progress, cancellation and retry controls.
+Fixed missing-book entries and incorrect titles in the library and reading history.
+Improvements to reading settings, reminders and overall stability.

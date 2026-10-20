@@ -23,4 +23,15 @@ public class GoogleAutoSyncTest {
         try {GoogleAutoSync.requireHomeVisible();fail("Must pause again when reader opens");}
         catch(Exception expected){assertTrue(expected.getMessage().contains("Return to Home"));}
     }
+    @Test public void noActiveDriveOperationMakesCancelAStableNoOp() {
+        assertFalse(GoogleDriveSync.cancelActive());
+    }
+
+    @Test public void restoreMessagesDoNotClaimOfflineReadinessOnIncompleteMetadata() {
+        String message = GoogleDriveSync.restoreMessage(2, 1, true);
+        assertTrue(message.contains("Recovered 2 cloud books"));
+        assertTrue(message.contains("incomplete"));
+        assertFalse(message.contains("Ready offline"));
+    }
+
 }

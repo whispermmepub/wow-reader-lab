@@ -22,16 +22,11 @@ final class BookVisualUtil {
     private BookVisualUtil() {}
 
     static String title(SharedPreferences prefs, String fileName) {
-        if (fileName == null) return "Book";
-        String fallback = stripExtension(fileName);
-        String value = prefs == null ? fallback : prefs.getString("library_title_" + fileName, fallback);
-        return value == null || value.trim().isEmpty() ? fallback : value.trim();
+        return ReaderStateDb.displayTitle(prefs, fileName);
     }
 
     static String author(SharedPreferences prefs, String fileName) {
-        if (prefs == null || fileName == null) return "";
-        String value = prefs.getString("library_author_" + fileName, "");
-        return value == null ? "" : value.trim();
+        return ReaderStateDb.displayAuthor(prefs, fileName);
     }
 
     static void loadCover(Activity activity, File file, ImageView target, int widthPx, int heightPx) {

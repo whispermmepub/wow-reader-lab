@@ -9,7 +9,11 @@ public final class PagePreviewPolicy {
     public static final int MIN_PERMILLE = 0;
     public static final int MAX_PERMILLE = 1000;
     public static final int MAX_CACHE_ENTRIES = 4;
-    public static final int MAX_CHAPTER_BYTES = 2 * 1024 * 1024;
+    /** Bounded source-file limit; large chapters are supported without retaining a book. */
+    public static final int MAX_CHAPTER_BYTES = 8 * 1024 * 1024;
+    /** Separate conservative bound for UTF-16 sanitising/staging overhead. */
+    public static final int MAX_SANITIZED_CHARS = 10 * 1024 * 1024;
+    public static final long FIRST_PREVIEW_DISPATCH_MS = 16L;
 
     /** Uniformly shrink the preferred panel to the usable area; never overflow it. */
     public static int[] fitPanel(int availableWidth, int availableHeight, int preferredWidth, int preferredHeight) {
@@ -42,6 +46,14 @@ public final class PagePreviewPolicy {
     public static int chapterPermilleForFraction(float fraction) {
         if (Float.isNaN(fraction) || Float.isInfinite(fraction)) return 0;
         return clampPermille(Math.round(Math.max(0f, Math.min(1f, fraction)) * 1000f));
+    }
+
+    public static boolean safeChapterByteLength(long length) {
+        return length >= 0L && length <= MAX_CHAPTER_BYTES;
+    }
+
+    public static boolean safeSanitizedLength(int length) {
+        return length >= 0 && length <= MAX_SANITIZED_CHARS;
     }
 
     public static boolean validPdfTarget(int pageZeroBased, int pageCount) {

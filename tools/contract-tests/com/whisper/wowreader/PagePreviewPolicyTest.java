@@ -20,18 +20,22 @@ public final class PagePreviewPolicyTest {
         assertTrue(PagePreviewPolicy.isNewer(8, 7), "new request wins");
         assertTrue(!PagePreviewPolicy.isNewer(7, 7), "same request coalesces");
         assertTrue(!PagePreviewPolicy.isNewer(6, 7), "stale request discarded");
+        assertTrue(PagePreviewPolicy.safeChapterByteLength(2L * 1024 * 1024 + 1), "legacy 2 MiB cap is removed");
+        assertTrue(!PagePreviewPolicy.safeChapterByteLength((long) PagePreviewPolicy.MAX_CHAPTER_BYTES + 1), "hard chapter bound remains");
+        assertTrue(PagePreviewPolicy.safeSanitizedLength(PagePreviewPolicy.MAX_SANITIZED_CHARS), "sanitized bound inclusive");
+        assertTrue(PagePreviewPolicy.FIRST_PREVIEW_DISPATCH_MS < 70L, "first uncached request is not needlessly delayed");
         assertEquals(208, PagePreviewPolicy.bottomMarginAboveAnchor(1000, 800, 8), "preview sits above anchor");
         assertEquals(0, PagePreviewPolicy.bottomMarginAboveAnchor(0, 800, 8), "unlaid root is safe");
-        int[] large = PagePreviewPolicy.fitPanel(336, 480, 264, 374);
-        assertEquals(264, large[0], "larger preferred width");
-        assertEquals(374, large[1], "larger preferred height");
-        assertEquals(0, PagePreviewPolicy.fitPanel(0, 300, 264, 374)[0], "no space is safe");
+        int[] large = PagePreviewPolicy.fitPanel(336, 480, 288, 408);
+        assertEquals(288, large[0], "larger preferred width");
+        assertEquals(408, large[1], "larger preferred height");
+        assertEquals(0, PagePreviewPolicy.fitPanel(0, 300, 288, 408)[0], "no space is safe");
         for (int density=1; density<=4; density++) {
             for (int width=1; width<=1000; width+=13) for (int height=1; height<=1000; height+=17) {
-                int[] size=PagePreviewPolicy.fitPanel(width*density,height*density,264*density,374*density);
-                assertTrue(size[0]>0 && size[0]<=width*density && size[0]<=264*density, "width always fits");
-                assertTrue(size[1]>0 && size[1]<=height*density && size[1]<=374*density, "height always fits");
-                assertTrue(Math.abs(size[0]*374d/264-size[1])<2.5, "page aspect ratio within pixel rounding");
+                int[] size=PagePreviewPolicy.fitPanel(width*density,height*density,288*density,408*density);
+                assertTrue(size[0]>0 && size[0]<=width*density && size[0]<=288*density, "width always fits");
+                assertTrue(size[1]>0 && size[1]<=height*density && size[1]<=408*density, "height always fits");
+                assertTrue(Math.abs(size[0]*408d/288-size[1])<2.5, "page aspect ratio within pixel rounding");
             }
         }
         System.out.println("PAGE_PREVIEW_POLICY_TEST_PASS");

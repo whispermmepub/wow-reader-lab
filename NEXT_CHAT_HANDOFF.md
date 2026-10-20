@@ -1,4 +1,18 @@
-# Latest owner authorization — accepted v75 / 2.21.9 release preparation
+# Current handoff — v77 / 2.21.11 accepted by Play Console, publication unconfirmed
+
+- **Source of truth:** GitHub `main`, package `com.whisper.wowreader`, versionCode `77`, versionName `2.21.11`, minSdk `24` (Android 7.0+), targetSdk `36`.
+- Previous `main` was commit `a44c97db3cc07fe24e078d53c6e074b40c314d4d`, the owner-tested v76 / 2.21.10 Drive restore recovery and initialization fixes, with minSdk `23`. This source alignment changes only the three release configuration values and documentation; it adds no runtime behavior changes.
+- Play Console required: **“Play automatic protection requires minimum SDK version 24 or higher”**. v77 intentionally drops Android 6.0 / API 23 support. Do not lower minSdk back to 23 for this release.
+- The existing v77 AAB has versionCode `77`, versionName `2.21.11`, minSdk `24` and the same production upload signing certificate as the v64 Play Store AAB. The owner reports that Play Console accepted it after adding the `.aab` filename extension.
+- **Accepted/uploaded is not published.** No Play track or rollout was inspected; v77 publication is unconfirmed. v64 / 2.20.0 remains the last owner-confirmed published release in this record.
+- **The next app release must use versionCode `78` or higher**, and the owner must check availability across all Play tracks. Do not reuse `77` for a new release.
+- Current authorization is source/documentation commit and push to GitHub `main` only. No new AAB, Play upload or publication is authorized or performed in this alignment task. Do not commit APK/AAB, build outputs or signing material. Existing historical validation below is not a new v77 test run or byte-for-byte source/artifact reproduction claim.
+
+The sections below are historical context, not current release metadata or fresh build/upload authorization. See [store publication status](docs/STORE_PUBLICATION_STATUS.md) for the concise current state.
+
+---
+
+## Historical owner authorization — accepted v75 / 2.21.9 release preparation
 
 The owner accepted v75 and authorized GitHub source publication and preparation of the matching signed AAB. **Do not upload to Google Play. The owner uploads personally.** Earlier test-only/no-push/no-AAB restrictions below are historical and superseded only within this authorization. v64 / 2.20.0 remains the last owner-confirmed published release; no Play track was inspected.
 

@@ -1,40 +1,28 @@
 # WoW Reader — Store Publication Status
 
-## Google Play
+## Google Play: v77 accepted, publication unconfirmed
 
-- **Last owner-confirmed live release:** versionName `2.20.0`, versionCode `64`
-- **Owner-accepted update:** versionName `2.21.9`, versionCode `75`
-- **Package:** `com.whisper.wowreader`
-- **Authorization:** publish the accepted v75 source to GitHub and prepare a matching production-signed AAB. **Do not upload to Google Play. The owner will upload personally.**
+- **Current source on `main`:** versionName `2.21.11`, versionCode `77`.
+- **Package:** `com.whisper.wowreader`.
+- **Owner-reported outcome:** Play Console accepted the existing v77 AAB after the owner added the `.aab` filename extension.
+- **Publication:** not confirmed. Acceptance of an uploaded bundle is not evidence of a published release or rollout. No Play track was inspected in this source-alignment task.
+- **Last owner-confirmed published release in this record:** versionName `2.20.0`, versionCode `64`.
+- **Next app release:** versionCode **`78` or higher**; check availability across all Play tracks. Do not reuse `77` for a new release.
 
-The owner must confirm that versionCode `75` is unused across **all Play tracks** before uploading. Track availability has not been checked. Source publication and build validation do not establish Play acceptance or a live release.
+## Why the minimum Android version changed
 
-## What changed
+Play Console required: **“Play automatic protection requires minimum SDK version 24 or higher”**. The accepted v77 AAB uses minSdk `24` (Android 7.0+). **Android 6.0 / API 23 support is intentionally dropped in v77.** Do not revert to minSdk 23 for this release.
 
-This is the cumulative update from the last owner-confirmed live v64 through v75. It includes smoother chapter transitions, preserved original EPUB formatting with global Original EPUB/Reader typography settings, larger adaptive previews, reminder/home improvements, and Drive restore recovery for ghost entries, hash titles and deletion handling. Later improvements add at-most-three concurrent restore transfers, canonical titles across refresh and reading-history screens, bounded larger EPUB previews, retained ready preview page maps, and Drive stage/progress/cancel/retry controls.
+## Source alignment and signing
 
-Do not describe this as recovery of unrecoverable metadata, unlimited EPUB preview support, instant cold chapter pagination, or measured all-phone performance.
+Previous `main` was `a44c97db3cc07fe24e078d53c6e074b40c314d4d`, the owner-tested v76 / 2.21.10 Drive restore recovery and initialization fixes, with minSdk `23`. This alignment changes `app/build.gradle` to minSdk `24`, versionCode `77` and versionName `2.21.11`, plus release/handoff documentation. No other app behavior is changed.
 
-## Validation and owner checks
+The existing v77 AAB uses the same production upload signing certificate as the v64 Play Store AAB. Keep the package, signing identity and Firebase/OAuth registration unchanged. Never commit signing material, APK/AAB binaries or build outputs.
 
-The accepted APK evidence records 509 passing host tests with zero failures/errors/skips, passing contracts and desktop Chromium reader suites, release build and instrumentation compilation, and lint with 177 warnings and zero fatal/errors. Instrumentation compilation is not a device test. The owner accepted the test update; physical-device latency, live Google-account restore and the original failing backup were not independently validated in the build environment.
+This task is authorized only to commit and push source/documentation to GitHub `main`. It creates no AAB and performs no Play upload or publication. It does not independently reproduce or revalidate the existing v77 bundle; historical automated test evidence is not a fresh v77 test run.
 
-Before release, the owner should:
+## Before any future publication
 
-1. Confirm versionCode `75` availability across every Play track.
-2. Upload the matching signed `WoW-Reader-v2.21.9-v75-PlayStore-production.aab` personally. Artifacts and verification are outside Git in `/workspace/wow-reader-v75-update/`.
-3. Verify an in-place update from the live install without uninstalling or clearing data.
-4. Check Google sign-in, Drive restore/cancellation/retry, books and titles, progress, notes, shelves, history, reminders, chapter transitions, previews and global typography on representative devices.
-5. Review Play Console validation and rollout settings before publishing.
+The owner handles Play Console. Confirm the actual track/review/rollout status there rather than inferring it from bundle acceptance. Verify an in-place update without uninstalling or clearing data, including Google sign-in, Drive restore/cancellation/retry, books/titles, progress, notes, shelves, history and reader behavior on supported devices.
 
-Suggested release notes: `docs/WHATS_NEW_v75.txt`.
-
-## Identity
-
-- **Package:** `com.whisper.wowreader`
-- **Category:** Books & Reference
-- **Minimum Android:** 6.0 / API 23
-- **Target SDK:** 36
-- **Production SHA-1:** `21:17:D3:1E:01:EB:24:EA:E3:FE:4A:26:88:C8:C7:12:CD:76:71:F1`
-
-Keep the original production signing identity and Firebase/OAuth registration unchanged. Upload-key acceptance must be checked separately if Play rejects the signature. Do not commit signing material or APK/AAB binaries.
+See [NEXT_CHAT_HANDOFF.md](../NEXT_CHAT_HANDOFF.md) for historical changes, validation limits and continuation context.

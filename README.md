@@ -2,23 +2,23 @@
 
 Official Android source repository for **WoW Reader**.
 
-## Owner-accepted v75 — Play upload remains with the owner
+## Current source: v77 — Play Console accepted, publication unconfirmed
 
-The owner accepted **v75 / 2.21.9** and authorized publishing its source to GitHub and preparing the matching signed AAB. It continues the v73 restore and v74 preview improvements, preserves canonical book titles during refresh, uses indexed titles in reading-history views, supports bounded EPUB previews above the old 2 MiB limit, retains a ready preview page map, and adds Drive operation stages, progress, cancellation and retry. A completely cold EPUB preview still needs accurate physical pagination. Automated physical-phone/live-Drive validation remains incomplete. **Do not upload to Google Play: the owner will upload personally.** See `NEXT_CHAT_HANDOFF.md` for artifacts and evidence. Earlier test-only restrictions below are historical.
+The owner reports that the existing **v77 / 2.21.11** AAB was accepted in Play Console after adding the `.aab` filename extension. **This does not establish publication or rollout.** `main` now reflects that release's configuration, retaining the v76 app behavior. Play automatic protection requires minSdk 24 or higher, so **Android 6.0 / API 23 is intentionally no longer supported**. The next app release must use **versionCode 78 or higher**. See [NEXT_CHAT_HANDOFF.md](NEXT_CHAT_HANDOFF.md) for release history and authorization boundaries.
 
-## Owner-accepted update (prepared; not uploaded to Play)
+## Current Android identity
 
-- **Version:** `2.21.9`
-- **versionCode:** `75` (owner must check availability across all Play tracks before upload)
+- **Version:** `2.21.11`
+- **versionCode:** `77` (next release: `78` or higher; check all Play tracks)
 - **Package:** `com.whisper.wowreader`
-- **Minimum Android:** 6.0 / API 23
+- **Minimum Android:** 7.0 / API 24
 - **Target SDK:** 36
 - **Java:** 17
 - **Source of truth:** `main`
 
 v64 is the 100k-scale library/sync foundation release. It preserves the v63 update/data/signing contract while moving normal library and cloud-sync work away from whole-library operations.
 
-v64 / 2.20.0 is the last owner-confirmed published release. The owner accepted v75 / 2.21.9; it has not been uploaded to Play by this workflow. v75 carries forward smoother chapter switching, original EPUB formatting with global Original EPUB/Reader typography settings, larger adaptive previews, reminder/home improvements, Drive restore recovery including ghost-entry, hash-title and deletion fixes, bounded concurrent restore transfers, improved title identity and visible cancellable Drive operations. The owner handles Play Console upload. Check `NEXT_CHAT_HANDOFF.md` for verification and remaining device QA; there is no production guarantee.
+v64 / 2.20.0 remains the last owner-confirmed published release in this record. The v77 AAB uses the same production upload signing certificate as the v64 Play Store AAB. This repository alignment creates no new AAB and performs no Play upload or publication; only source and documentation are committed. Historical automated checks are not a fresh v77 validation run. Check `NEXT_CHAT_HANDOFF.md` for prior evidence and remaining device QA.
 
 ## Start here
 

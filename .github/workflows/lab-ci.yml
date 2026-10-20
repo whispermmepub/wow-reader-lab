@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
-          grep -q "minSdk 23" app/build.gradle
+          grep -q "minSdk 24" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
           test -s app/src/main/java/com/whisper/wowreader/MainActivity.java
           test -s app/src/main/java/com/whisper/wowreader/BookReaderActivity.java

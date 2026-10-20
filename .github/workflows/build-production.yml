@@ -48,7 +48,7 @@ jobs:
           grep -q "applicationId 'com.whisper.wowreader'" app/build.gradle
           grep -q "compileSdk 36" app/build.gradle
           grep -q "targetSdk 36" app/build.gradle
-          grep -q "minSdk 23" app/build.gradle
+          grep -q "minSdk 24" app/build.gradle
           test -s app/google-services.json
           grep -q '"package_name": "com.whisper.wowreader"' app/google-services.json
           grep -qi '2117d31e01eb24eae3fe4a2688c8c712cd7671f1' app/google-services.json
@@ -81,7 +81,7 @@ jobs:
           grep -q "package: name='com.whisper.wowreader'" /tmp/badging.txt
           grep -q "versionCode='$VERSION_CODE'" /tmp/badging.txt
           grep -q "versionName='$VERSION_NAME'" /tmp/badging.txt
-          grep -q "sdkVersion:'23'" /tmp/badging.txt
+          grep -q "sdkVersion:'24'" /tmp/badging.txt
           grep -q "targetSdkVersion:'36'" /tmp/badging.txt
 
       - name: Collect release artifacts and reports

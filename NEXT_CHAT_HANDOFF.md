@@ -1,3 +1,56 @@
+# Current handoff — v81 / 2.21.15 prepared; owner uploads to Play
+
+This section supersedes every historical authorization/version statement below. Work only in **`/workspace/wow-reader-lab`**, GitHub **`whispermmepub/wow-reader-lab`**, branch **`main`**. Do not switch to or modify `wow-reader-plus`. The owner accepted the v80 / 2.21.14 test APK and authorized publishing the approved original-app work to GitHub and producing the next production-signed AAB. **No Play upload, submission or publication is authorized/performed by this workflow; the owner handles it.** Latest owner-confirmed live release remains **v77 / 2.21.11** (2026-10-20); no Play tracks/rollout were inspected.
+
+## Exact release/source state
+
+- Pre-v78 local/remote baseline: `3e06e9f1fcd82be9d9e6c213c46c566bb98b117d`.
+- App/source release commit: [`fe720ce159d4f8661ac2e4bf4d8a0357b3eb0af7`](https://github.com/whispermmepub/wow-reader-lab/commit/fe720ce159d4f8661ac2e4bf4d8a0357b3eb0af7).
+- Host-harness-only follow-up: [`32cb58462fdd6706b4a43fa272302bf6c467a820`](https://github.com/whispermmepub/wow-reader-lab/commit/32cb58462fdd6706b4a43fa272302bf6c467a820). It waits for `paginationComplete` before legacy final-map/end-promotion assertions; it does not change app behavior or remove assertions. `onPageReady` can represent an early usable prefix since v79.
+- The following documentation commit contains this section, README and store status; obtain its own hash with `git log -3`. It contains no app changes.
+- VersionCode **81**, versionName **2.21.15**, package **`com.whisper.wowreader`**, minSdk **24**, target/compileSdk **36**, non-debuggable. Do not revert minSdk to 23: Play automatic protection required 24 for v77.
+- v81 differs from accepted v80 runtime source only by version metadata. **All release DEX and 124 reader content assets match the accepted v80 APK byte-for-byte** (generated ART optimization profiles excluded). Entire APK bytes differ, as expected for new version/signature metadata.
+- Approved v78–v80 work: memory-pressure-aware renderer serialization/recovery, sampled cover decode, progressive pagination/readiness, bounded cancellable local disk resource warmup, privacy-safe chapter stage traces and related regression tests.
+- **Keep no-hard-cap behavior.** No book/archive/file-size rejection cap was added. Memory thresholds choose a single-renderer fallback; warmup's bounded discovery/read budgets limit optional speculative I/O, not import/reading eligibility. Existing preview limits and whole-chapter parse costs are not eliminated.
+
+## Deliverables and validation
+
+Final Play file (keep the `.aab` extension):
+`/workspace/wow-reader-lab/build/v81-production/WoW-Reader-v2.21.15-v81-PlayStore-production.aab`
+
+- AAB: **15,492,311 bytes**; SHA-256 **`81529f862c87466c43c301213cff5121df52bb190cd0663d305911da555a6688`**.
+- Optional signed APK: `/workspace/wow-reader-lab/build/v81-production/WoW-Reader-v2.21.15-v81-production.apk`; SHA-256 `233b181b9410f9f108bc01d880f54250c8849fac481187f49b9daf1fb17383f0`.
+- Production certificate SHA-256: `29:FC:A2:9F:8D:B1:84:AA:F5:13:35:EF:BE:A8:C5:0D:51:76:9D:77:48:AE:53:56:17:C2:47:9E:39:89:AC:A5`; verified against accepted v80 and documented production identity. Keep existing Firebase/OAuth/signing identity; never commit signing secrets.
+- Fresh clean Gradle build: **695 debug + 695 release unit tests**, each **0 failures/errors/skips**; release lint **0 fatal/errors, 181 warnings**; assembleRelease, bundleRelease and Android instrumentation compilation passed. Instrumentation was **compiled only**, not run.
+- **16 contract groups** passed. Chromium reader **15**, publisher layout **15**, progressive readiness **13**, resource readiness **8**, large-chapter stress **6** cases passed. Chapter-stage comparison: **6 cases**, **3 samples/candidate**, zero failures and identical final maps/image geometry; not a universal performance claim. Synthetic restore: **120 objects**, 3 runs, concurrency 3, correct installed count/cleanup; not live Drive. Separate synthetic ZIP fixtures 12/32 MiB were checked on host, not opened on Android.
+- bundletool **1.18.3** validation, AAB manifest identity, JAR signature, ZIP CRC, APK/AAB DEX/assets/library parity, accepted-v80 DEX/assets parity and APK production signature/16-KiB alignment passed.
+- AAB was reordered with signature metadata first without changing any uncompressed entry hash, then all integrity/signature checks reran. Standard self-signed certificate/no-timestamp/POSIX-attribute JAR warnings remain, not unsigned/streaming-order warnings. Existing Firebase Kotlin metadata diagnostic remains; build/lint succeeded.
+- First legacy reader run exposed a readiness timing race; fixed in the test-only follow-up and all cases reran successfully. Local aapt2 verification was corrected to use `minSdkVersion` spelling; actual SDK values were correct throughout.
+- Detailed current evidence: [docs/STORE_PUBLICATION_STATUS.md](docs/STORE_PUBLICATION_STATUS.md). Final local JSON: `build/v81-production/VERIFICATION.json`; manifest/signature/validation/checksum and host JSON reports are beside it. Logs: `build/v81-production-build.log`, `build/v81-production-harnesses.log`, `build/v81-artifact-verification.log`.
+
+## Reproduction / release boundaries
+
+Use Java 17-compatible source (the local verified build ran JDK 21), Android SDK 36 and Gradle 8.11.1. Supply signing variables securely as described in `SIGNING.md`; never print their values. The ignored local helper `build/prepare_v81_release.py` loads the existing protected signing environment and runs contracts, a clean build, desktop harnesses and final validation. It is not a portable public signing script. The main Gradle task list was:
+
+```sh
+gradle --no-daemon --max-workers=4 :app:clean :app:testDebugUnitTest :app:testReleaseUnitTest :app:lintRelease :app:assembleRelease :app:bundleRelease :app:compileDebugAndroidTestJavaWithJavac
+bash tools/run-contract-tests.sh
+```
+
+Host tools consume fresh fixtures exported by host tests into `app/build/reader-engine-fixtures`. Stage comparison additionally needs historical v79 fixtures in ignored `build/v80-baseline-fixtures`; do not invent a historical baseline if missing. Do not commit APK/AAB, build/cache outputs, signing helpers, keystores/passwords, or recovery material. Python caches are now ignored. Only approved source, tests, host tools and release docs are included in release commits.
+
+## Remaining owner QA — update and first installation
+
+Package/signature continuity and versionCode 81 support **v77/v80 → v81 updates in principle**, and the existing fresh-install path is retained; neither is a tested phone-install guarantee. **Physical Vivo Y30, the original failing EPUB (unavailable), actual fresh-install/in-place phone installation and live Google sign-in/Drive restore were not tested.** No emulator/device instrumentation was run. Do not claim otherwise or promise all devices/files work.
+
+Owner should confirm **81 is unused on every Play track**, upload the AAB personally, and verify v77 → v81 (and relevant v80 → v81) **without uninstalling or clearing data**. Check books/files, titles, reading progress, notes/highlights, shelves, calendar/history, settings and Google account/sync; separately check fresh install + Drive restore/cancel/retry. Play may still apply its own policy/signing/track checks; local validation is not Play acceptance/publication.
+
+WebView still parses/styles full spine chapters and native raster decode/memory is not capped. Progressive first-page readiness is not bounded initial DOM/layout cost. Previous-end and nonzero resume wait for the authoritative map. Reaching a scanned frontier can return pending; tap again after more pages are available. Disk warmup is not a decoded-image cache. Search/footnote full-chapter parsing and preview-only limits remain. Host benchmarks do not establish Android renderer PSS, jank, Vivo latency or complete APK chapter-transition speed.
+
+---
+
+# Archived v77 handoff and older history (superseded above)
+
 # Current handoff — v77 / 2.21.11 live / published on Google Play
 
 - **Source of truth:** GitHub `main`, package `com.whisper.wowreader`, versionCode `77`, versionName `2.21.11`, minSdk `24` (Android 7.0+), targetSdk `36`.

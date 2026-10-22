@@ -2,14 +2,14 @@
 
 Official Android source repository for **WoW Reader**.
 
-## Current release: v77 — live / published on Google Play
+## Current source: v81 / 2.21.15 — production bundle prepared, not published
 
-The owner confirmed on **2026-10-20** that **v77 / 2.21.11 is published and publicly available** at [WoW Reader on Google Play](https://play.google.com/store/apps/details?id=com.whisper.wowreader). This supersedes the earlier accepted-only / publication-unconfirmed status. `main` already contains the matching v77 source at commit `bfaefb102f9a385a588320bb20264d367b0a2e9e`, retaining the v76 app behavior. Play automatic protection requires minSdk 24 or higher, so **Android 6.0 / API 23 is intentionally no longer supported**. The next app release must use **versionCode 78 or higher**. See [NEXT_CHAT_HANDOFF.md](NEXT_CHAT_HANDOFF.md) for release history and authorization boundaries.
+The owner accepted the **v80 / 2.21.14 test APK** and authorized publishing its approved source to this repository and preparing a **v81 / 2.21.15 production-signed Google Play AAB**. v81 changes only the release version relative to the approved v80 runtime source. **No Google Play upload or publication is performed; the owner uploads the `.aab` personally.** The latest owner-confirmed live release remains **v77 / 2.21.11**, confirmed on 2026-10-20 at [Google Play](https://play.google.com/store/apps/details?id=com.whisper.wowreader). Play tracks and versionCode 81 availability were not independently inspected. See [store status](docs/STORE_PUBLICATION_STATUS.md) for exact build evidence and [handoff](NEXT_CHAT_HANDOFF.md) for continuation details.
 
 ## Current Android identity
 
-- **Version:** `2.21.11`
-- **versionCode:** `77` (next release: `78` or higher; check all Play tracks)
+- **Version:** `2.21.15`
+- **versionCode:** `81` (owner must confirm it is unused across all Play tracks)
 - **Package:** `com.whisper.wowreader`
 - **Minimum Android:** 7.0 / API 24
 - **Target SDK:** 36
@@ -18,7 +18,11 @@ The owner confirmed on **2026-10-20** that **v77 / 2.21.11 is published and publ
 
 v64 is the 100k-scale library/sync foundation release. It preserves the v63 update/data/signing contract while moving normal library and cloud-sync work away from whole-library operations.
 
-v77 / 2.21.11 is the latest owner-confirmed published release. The v77 AAB uses the same production upload signing certificate as the v64 Play Store AAB. This status update changes documentation only: no app code/version changes, APK/AAB builds, or Play upload/publication are performed. Publication is recorded from the owner's confirmation, not an independent Play Console track or rollout inspection. Historical automated checks are not a fresh v77 validation run. Check `NEXT_CHAT_HANDOFF.md` for prior evidence and remaining device QA.
+### v78–v81 changes
+
+The approved reader work adds memory-pressure-aware single-renderer fallback and one-shot renderer recovery, sampled cover decoding, progressive first-page pagination, resource-aware readiness, cancellable adjacent-resource disk warmup, and privacy-safe chapter-stage traces. Publisher typography and original reader assets remain preserved. **No book/file-size rejection hard cap was added**: renderer thresholds and bounded warmup budgets control speculative work, not whether a book may be imported/read. Existing preview-only limits and full-chapter parsing costs remain.
+
+The package, higher versionCode and unchanged production signer support update compatibility in principle and retain the normal fresh-install path. They are **not proof of actual phone installation or data retention**: physical Vivo Y30, the owner's original failing EPUB, actual fresh installation, in-place phone upgrade, and live Google sign-in/Drive restore were not tested in this release preparation. Do not uninstall or clear data to test an update. Android 6.0 / API 23 remains intentionally unsupported.
 
 ## Start here
 
@@ -109,7 +113,7 @@ Private keystores/passwords must never be committed.
 3. Check every Play track before choosing the next versionCode.
 4. Never use a destructive migration to simplify an update.
 5. Build, lint, test and verify APK/AAB before release.
-6. Test v63 → v64 in-place update, fresh install + Drive restore, and the experimental-v64 → v64 update path.
+6. Test the live v77 → v81 in-place update without uninstall/clear-data, v80 → v81 where relevant, and fresh install + Drive restore; verify books, titles, progress, notes, shelves, calendar/history and settings.
 7. Test Google sign-in/sync and large-library behavior on real devices before Production.
 
 ## Community

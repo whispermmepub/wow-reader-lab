@@ -28,6 +28,11 @@ h1{{font-size:32px;}}pre{{font-size:12px;}}svg{{display:block;}}
 def wait_ready(page, mode, timeout=5000):
     name = "onPageReady" if mode == "page" else "onScrollReady"
     page.wait_for_function("name=>readerEvents.some(e=>e.name===name)", arg=name, timeout=timeout)
+    # Since v79, onPageReady can announce a usable prefix before the final map.
+    # This legacy suite checks final counts/end promotion, not first-page latency.
+    # Progressive-first-page behavior is covered by its dedicated harness.
+    if mode == "page":
+        page.wait_for_function("window.__wowPageEngine && __wowPageEngine.paginationComplete === true", timeout=timeout)
     errors = page.evaluate("readerEvents.filter(e=>e.name==='pageEngineFailed')")
     assert not errors, errors
 

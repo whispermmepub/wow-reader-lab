@@ -1,10 +1,10 @@
 # WoW Reader — Store Publication Status
 
-## v81 / 2.21.15: production bundle prepared; not uploaded or published
+## v81 / 2.21.15: Play upload succeeded (owner-reported)
 
-The owner accepted the v80 / 2.21.14 test APK and authorized pushing the approved original-app changes to `whispermmepub/wow-reader-lab` `main` and preparing the next production-signed Google Play bundle. **The owner handles Play Console upload and publication. No Play upload, review submission or rollout was performed.** `wow-reader-plus` is outside this task and was not changed.
+The owner accepted the v80 / 2.21.14 test APK and authorized pushing the approved original-app changes to `whispermmepub/wow-reader-lab` `main` and preparing the next production-signed Google Play bundle. **The owner subsequently confirmed that the v81 / 2.21.15 AAB upload to Play Store succeeded.** This is the owner's report, not an independently inspected Play Console result. No Play upload, review submission or rollout was performed by this workflow. This follow-up updates release documentation only; no app code/version or release artifact was changed. `wow-reader-plus` is outside this task and was not changed.
 
-The latest owner-confirmed live release remains **v77 / 2.21.11**, confirmed on 2026-10-20. [Google Play listing](https://play.google.com/store/apps/details?id=com.whisper.wowreader). No Play Console tracks, versionCode availability, review status or rollout percentage were independently inspected. The owner must confirm **81 is unused across every Play track** before uploading; do not reuse it if it has already been consumed.
+Upload success does **not** establish review approval, publication, rollout completion or live availability for v81. The latest explicitly owner-confirmed live release remains **v77 / 2.21.11**, confirmed on 2026-10-20. [Google Play listing](https://play.google.com/store/apps/details?id=com.whisper.wowreader). No Play Console tracks, review status, rollout percentage or regional availability were independently inspected. Treat versionCode **81** as consumed; the next release must use **82 or higher**, after checking all Play tracks. Do not repeat the successful upload as part of this documentation task.
 
 ## Exact source state
 

@@ -2,14 +2,14 @@
 
 Official Android source repository for **WoW Reader**.
 
-## Current source: v81 / 2.21.15 — production bundle prepared, not published
+## Current source: v81 / 2.21.15 — Play upload succeeded (owner-reported)
 
-The owner accepted the **v80 / 2.21.14 test APK** and authorized publishing its approved source to this repository and preparing a **v81 / 2.21.15 production-signed Google Play AAB**. v81 changes only the release version relative to the approved v80 runtime source. **No Google Play upload or publication is performed; the owner uploads the `.aab` personally.** The latest owner-confirmed live release remains **v77 / 2.21.11**, confirmed on 2026-10-20 at [Google Play](https://play.google.com/store/apps/details?id=com.whisper.wowreader). Play tracks and versionCode 81 availability were not independently inspected. See [store status](docs/STORE_PUBLICATION_STATUS.md) for exact build evidence and [handoff](NEXT_CHAT_HANDOFF.md) for continuation details.
+The owner accepted the **v80 / 2.21.14 test APK** and authorized publishing its approved source to this repository and preparing a **v81 / 2.21.15 production-signed Google Play AAB**. v81 changes only the release version relative to the approved v80 runtime source. **The owner subsequently confirmed that the v81 / 2.21.15 AAB upload to Play Store succeeded.** This records the owner's report, not independently verified review approval, publication, rollout or live availability. The latest explicitly owner-confirmed live release remains **v77 / 2.21.11**, confirmed on 2026-10-20 at [Google Play](https://play.google.com/store/apps/details?id=com.whisper.wowreader). No Play Console operation was performed by this workflow. See [store status](docs/STORE_PUBLICATION_STATUS.md) for exact build evidence and [handoff](NEXT_CHAT_HANDOFF.md) for continuation details.
 
 ## Current Android identity
 
 - **Version:** `2.21.15`
-- **versionCode:** `81` (owner must confirm it is unused across all Play tracks)
+- **versionCode:** `81` (upload succeeded per owner; use `82` or higher for the next release and check all Play tracks)
 - **Package:** `com.whisper.wowreader`
 - **Minimum Android:** 7.0 / API 24
 - **Target SDK:** 36

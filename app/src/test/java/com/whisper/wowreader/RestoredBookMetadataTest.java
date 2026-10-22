@@ -19,7 +19,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {23, 28, 35, 36})
+@Config(sdk = {24, 28, 35, 36})
 public class RestoredBookMetadataTest {
     private static final String HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 

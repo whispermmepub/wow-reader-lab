@@ -3037,7 +3037,7 @@ public class MainActivity extends Activity {
                         if (summary.author != null && !summary.author.trim().isEmpty()) author = summary.author.trim();
                     }
                     if (summary.cover != null && summary.cover.isFile())
-                        bitmap = BitmapFactory.decodeFile(summary.cover.getAbsolutePath());
+                        bitmap = CustomCoverStore.decodeSampled(summary.cover, 360, 520);
                 } else if (bitmap == null) {
                     bitmap = renderPdfCover(file);
                 }

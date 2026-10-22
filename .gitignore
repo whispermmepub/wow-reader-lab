@@ -21,3 +21,6 @@ SIGNING-RECOVERY.txt
 *.apk
 *.aab
 *.apks
+# Generated Python host-test caches
+__pycache__/
+*.py[cod]

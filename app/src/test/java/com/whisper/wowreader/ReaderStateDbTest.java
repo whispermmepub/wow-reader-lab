@@ -26,7 +26,7 @@ import static org.junit.Assert.*;
 
 /** Host Android/SQLite regression tests; these do not replace physical-device tests. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {23, 28, 35, 36}, manifest = Config.NONE)
+@Config(sdk = {24, 28, 35, 36}, manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class ReaderStateDbTest {
     private static final String HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

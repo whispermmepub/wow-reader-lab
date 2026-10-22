@@ -189,8 +189,9 @@ public final class ReaderPagePreview {
                 // rebuilding pagination. The generation guard rejects stale bridges.
                 final WebView warm=epubWebView;
                 final long warmGeneration=++generation;
-                warm.evaluateJavascript("(function(){var e=window.__wowPageEngine;return !!(e&&e.mode==='page'&&e.pageMap&&e.count>0);})()", value -> {
+                warm.evaluateJavascript("(function(){var e=window.__wowPageEngine;if(e&&e.paginationComplete===false)return 'pending';return !!(e&&e.mode==='page'&&e.pageMap&&e.count>0);})()", value -> {
                     if (destroyed || warm != epubWebView || warmGeneration != generation || !key.equals(requestedEpubKey)) return;
+                    if ("\"pending\"".equals(value)) return; // Original ready callback will finish this scan.
                     if (!"true".equals(value)) {
                         discardWarmEpub();
                         showEpub(chapter, chapterIndex, chapterCount, chapterPermille, chapterTitle, textColor, backgroundColor);
@@ -266,6 +267,12 @@ public final class ReaderPagePreview {
             @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) { return resource(v, r == null ? null : r.getUrl(), allowedRoot, document, request); }
             @Override public WebResourceResponse shouldInterceptRequest(WebView v, String u) { return resource(v, u == null ? null : Uri.parse(u), allowedRoot, document, request); }
             @Override public void onReceivedError(WebView v, WebResourceRequest r, android.webkit.WebResourceError e) { if (ownsView(v)&&request==loadedGeneration&&(r == null || r.isForMainFrame()))main.post(()->{if(ownsView(v)&&request==loadedGeneration)unavailable();}); }
+            @Override public boolean onRenderProcessGone(WebView v, android.webkit.RenderProcessGoneDetail detail) {
+                if (ownsView(v)) releaseMemory();
+                // This view may already have been disposed by the active reader's
+                // callback when both WebViews shared the terminated process.
+                return true;
+            }
         });
     }
 
@@ -330,6 +337,8 @@ public final class ReaderPagePreview {
         private void ready(int gen){main.post(()->{if(valid(gen)){engineReady=true;if(pendingEpubKey.isEmpty()&&epubCurrentKey.equals(requestedEpubKey)&&pdfImage.getVisibility()!=View.VISIBLE){epubLoading.setVisibility(View.GONE);owner.setVisibility(View.VISIBLE);seekLatest();}}});}
         @JavascriptInterface public void onPage(int a,int b,int c,int d) { }
         @JavascriptInterface public void onScroll(int a,int b) { }
+        // Seeking previews require the complete map, never a provisional prefix.
+        @JavascriptInterface public void onPageUsable(int gen,int page,int count,int p) { }
         @JavascriptInterface public void onPageReady(int gen,int page,int count,int p) { ready(gen); }
         @JavascriptInterface public void onScrollReady(int gen) { ready(gen); }
         @JavascriptInterface public void pageEngineFailed(int gen,String reason) {main.post(()->{if(valid(gen))unavailable();});}
@@ -425,6 +434,17 @@ public final class ReaderPagePreview {
         engineReady=false;
         pdfImage.setImageDrawable(null);
     }
+    /** Discard disposable DOM/thumbnail caches, without touching reading/library state. */
+    public void releaseMemory() {
+        if (destroyed) return;
+        hide();
+        discardWarmEpub();
+        synchronized (epubCache) { epubCache.clear(); }
+        synchronized (pdfCache) { pdfCache.clear(); }
+        // Do not recycle bitmaps: render-thread/ImageView references can outlive us.
+        renderedCache.clear();
+    }
+
     public void destroy() {
         if(destroyed)return;
         destroyed=true;++generation;cancelPending();executor.execute(pdfPreviewRenderer::close);executor.shutdown();main.removeCallbacksAndMessages(null);

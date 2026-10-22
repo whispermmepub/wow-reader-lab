@@ -21,7 +21,7 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk={23,28,35,36}, manifest=Config.NONE)
+@Config(sdk={24,28,35,36}, manifest=Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class ChapterTransitionIntegrationTest {
     private BookReaderActivity activity;
@@ -31,6 +31,12 @@ public class ChapterTransitionIntegrationTest {
 
     @Before public void setup() throws Exception {
         activity = Robolectric.buildActivity(BookReaderActivity.class).get();
+        // These tests exercise the warm two-view path. Constrained/large-book
+        // serialization is covered separately by EpubMemoryIntegrationTest.
+        android.app.ActivityManager am = (android.app.ActivityManager)
+                activity.getSystemService(android.content.Context.ACTIVITY_SERVICE);
+        Shadows.shadowOf(am).setMemoryClass(256);
+        Shadows.shadowOf(am).setIsLowRamDevice(false);
         prefs = activity.getSharedPreferences("chapter-transition-test",0);
         prefs.edit().clear().commit();
         put("prefs", prefs);

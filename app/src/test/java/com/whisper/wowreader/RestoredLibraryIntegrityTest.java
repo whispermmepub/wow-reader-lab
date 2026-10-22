@@ -24,7 +24,7 @@ import static org.junit.Assert.*;
 
 /** Focused v72 regressions for local-library binding and restored-state integrity. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {23, 28, 35, 36}, manifest = Config.NONE)
+@Config(sdk = {24, 28, 35, 36}, manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class RestoredLibraryIntegrityTest {
     private File root, library;

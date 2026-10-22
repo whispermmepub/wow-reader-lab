@@ -23,7 +23,7 @@ import java.util.Locale;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {23,28,35,36}, manifest = Config.NONE)
+@Config(sdk = {24,28,35,36}, manifest = Config.NONE)
 public class ReadingReminderIntegrationTest {
     private Application app;
     private SharedPreferences prefs;

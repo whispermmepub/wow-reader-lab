@@ -33,7 +33,11 @@ public final class ReaderTypographyCss {
                 "override(document.body,'font-weight',original?null:String(st.fontWeight));" +
                 "override(document.body,'font-family',!original&&st.fontFamily?st.fontFamily:null);" +
                 "var requestedAlign=align==='publisher'||original?null:align;override(document.body,'text-align',requestedAlign);" +
-                "var prose=flow.querySelectorAll('" + PROSE + "');" +
+                // A pristine publisher chapter has no reader overrides to undo.
+                // Use one native selector probe rather than JavaScript/property work
+                // on every prose node; the sentinel fallback preserves restoration.
+                "var normalizeProse=!original||st.readerTypographyCustomized||flow.querySelector('[data-wow-original-font-family],[data-wow-original-font-weight],[data-wow-original-font-size],[data-wow-original-line-height],[data-wow-original-text-align],[data-wow-style-absent],[data-wow-class-absent],[data-wow-lang-added],.wow-reader-prose,.wow-reader-block,.wow-align-justify,.wow-align-left,.wow-align-right,.wow-smart,.wow-mm-smart,.wow-latin-smart,.wow-rhythm,.wow-rhythm-indent');" +
+                "if(normalizeProse){var prose=flow.querySelectorAll('" + PROSE + "');" +
                 "for(var pi=0;pi<prose.length;pi++){var pn=prose[pi];if(pn.id==='wow-page-viewport'||pn.id==='wow-page-flow'||pn.id==='wow-count-vp'||pn.id==='wow-count-flow'||pn.closest('" + SPECIAL + "'))continue;" +
                 "if(!original&&!pn.hasAttribute('class'))pn.setAttribute('data-wow-class-absent','1');" +
                 "var tag=(pn.localName||pn.tagName||'').toUpperCase();pn.classList.remove('wow-align-justify','wow-align-left','wow-align-right','wow-smart','wow-mm-smart','wow-latin-smart','wow-rhythm','wow-rhythm-indent','wow-reader-block');" +
@@ -41,7 +45,7 @@ public final class ReaderTypographyCss {
                 "override(pn,'font-family',!original&&st.fontFamily?'inherit':null);" +
                 "if(tag!=='B'&&tag!=='STRONG')override(pn,'font-weight',original?null:'inherit');" +
                 "override(pn,'font-size',original?null:'inherit');override(pn,'line-height',original?null:'inherit');" +
-                "if(/^(P|LI|BLOCKQUOTE|DD|DT|FIGCAPTION|DIV|SECTION|ARTICLE|MAIN)$/.test(tag))override(pn,'text-align',requestedAlign);}";
+                "if(/^(P|LI|BLOCKQUOTE|DD|DT|FIGCAPTION|DIV|SECTION|ARTICLE|MAIN)$/.test(tag))override(pn,'text-align',requestedAlign);}}st.readerTypographyCustomized=!original;";
     }
 
     /** Some Android WebViews suspend animation frames while the incoming view is

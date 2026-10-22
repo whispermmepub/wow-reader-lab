@@ -30,7 +30,7 @@ import static org.junit.Assert.*;
 
 /** Regression coverage for the initialize/restore readiness barrier. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {23, 28, 35, 36}, manifest = Config.NONE)
+@Config(sdk = {24, 28, 35, 36}, manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class ReaderInitializationTest {
     private File root;

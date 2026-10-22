@@ -25,7 +25,7 @@ import static org.junit.Assert.*;
 
 /** Exercises the production restore/sync boundary, not Google OAuth or a live Drive account. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {23, 28, 35, 36}, manifest = Config.NONE)
+@Config(sdk = {24, 28, 35, 36}, manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class DriveRestoreRecoveryTest {
     private File root;

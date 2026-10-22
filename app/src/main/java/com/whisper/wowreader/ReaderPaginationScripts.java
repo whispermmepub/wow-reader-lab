@@ -2,48 +2,37 @@ package com.whisper.wowreader;
 
 /** JavaScript snippets used by the reader pagination engine. */
 public final class ReaderPaginationScripts {
-    private ReaderPaginationScripts() {
-    }
+    private ReaderPaginationScripts() {}
 
-    /**
-     * Installs an asynchronous page-map collector on the existing page-engine state.
-     * The returned script intentionally uses only ES5 syntax.
-     */
+    /** ES5, cooperatively cancellable DOM-order scan; partial maps are never final counts. */
     public static String pageMapJs() {
-        return "st.collectPageMap=function(epoch){"
-                + "return new Promise(function(resolve,reject){"
-                + "var used={},done=false,walker,range,media,mediaIndex=0,channel,schedule;"
-                + "try{channel=new MessageChannel();channel.port1.onmessage=function(){var fn=channel._fn;channel._fn=null;if(fn)fn();};schedule=function(fn){channel._fn=fn;channel.port2.postMessage(0);};}catch(e){schedule=function(fn){setTimeout(fn,0);};}"
-                + "var cancelled=function(){return epoch!==st.measureEpoch||st.mode!=='page';};"
-                + "var finish=function(value){if(done)return;done=true;if(channel){try{channel.port1.close();channel.port2.close();}catch(e){}}resolve(value);};"
-                + "var fail=function(error){if(done)return;done=true;if(channel){try{channel.port1.close();channel.port2.close();}catch(e){}}reject(error);};"
+        return "st.collectPageMap=function(epoch,onPartial){"
+                + "if(st.cancelCollect)st.cancelCollect();return new Promise(function(resolve,reject){"
+                + "var used={},done=false,walker,range,channel,schedule,timer,dirty=true,cached=[],partialSerial=0;"
+                + "try{channel=new MessageChannel();channel.port1.onmessage=function(){var fn=channel._fn;channel._fn=null;if(fn&&!done)fn();};schedule=function(fn){var fired=false;var run=function(){if(fired||done)return;fired=true;clearTimeout(timer);fn();};channel._fn=run;timer=setTimeout(run,48);channel.port2.postMessage(0);};}catch(e){schedule=function(fn){timer=setTimeout(fn,0);};}"
+                + "var cancelled=function(){return st.cancelled||epoch!==st.measureEpoch||st.mode!=='page';};"
+                + "var cleanup=function(){clearTimeout(timer);if(channel){channel._fn=null;try{channel.port1.close();channel.port2.close();}catch(e){}}if(st.cancelCollect===cancel)st.cancelCollect=null;};"
+                + "var finish=function(value){if(done)return;done=true;cleanup();resolve(value);};"
+                + "var fail=function(error){if(done)return;done=true;cleanup();reject(error);};"
+                + "var cancel=function(){finish([]);};st.cancelCollect=cancel;"
                 + "var mark=function(r){if(!r||r.width<0.35||r.height<0.35)return;"
-                + "var a=Math.max(0,Math.floor((r.left-st.marginPx+1)/st.step));"
-                + "var b=Math.max(a,Math.floor((r.right-st.marginPx-1)/st.step));"
-                + "for(var k=a;k<=b;k++)used[k]=1;};"
-                + "var result=function(){var keys=Object.keys(used).map(function(x){return parseInt(x,10);});"
-                + "keys=keys.filter(function(x){return isFinite(x)&&x>=0;}).sort(function(a,b){return a-b;});"
-                + "var out=[],last=-1;for(var i=0;i<keys.length;i++){if(keys[i]!==last){out.push(keys[i]);last=keys[i];}}"
-                + "return out;};"
-                + "var scanMedia=function(){if(cancelled()){finish([]);return;}"
-                + "var started=Date.now(),count=0,r;"
-                + "while(mediaIndex<media.length&&count<1024){if(count>0&&Date.now()-started>=12)break;"
-                + "try{r=media[mediaIndex].getBoundingClientRect();mark(r);}catch(e){}"
-                + "mediaIndex++;count++;}"
-                + "if(mediaIndex<media.length){schedule(scanMedia);return;}"
-                + "if(cancelled()){finish([]);return;}finish(result());};"
-                + "var scanText=function(){if(cancelled()){finish([]);return;}"
+                // Reading can move the flow during collection. All marks must stay in
+                // chapter coordinates, not the currently translated viewport coordinates.
+                + "var offset=(st.physical?st.physical():0)*st.step,margin=st.marginPx,step=st.step;"
+                + "var a=Math.max(0,Math.floor((r.left-margin+offset+1)/step));"
+                + "var b=Math.max(a,Math.floor((r.right-margin+offset-1)/step));"
+                + "for(var k=a;k<=b;k++)if(!used[k]){used[k]=1;dirty=true;}};"
+                + "var result=function(){if(!dirty)return cached;var keys=Object.keys(used).map(function(x){return parseInt(x,10);});"
+                + "cached=keys.filter(function(x){return isFinite(x)&&x>=0;}).sort(function(a,b){return a-b;});dirty=false;return cached;};"
+                + "var scan=function(){if(cancelled()){finish([]);return;}"
                 + "var started=Date.now(),count=0,n,rr,j;"
-                + "while(count<1024){if(count>0&&Date.now()-started>=12)break;"
-                + "try{n=walker.nextNode();}catch(e){fail(e);return;}"
-                + "if(!n){try{media=flow.querySelectorAll('img,svg,video,audio,object,embed,table,math,canvas,hr');}"
-                + "catch(e){fail(e);return;}schedule(scanMedia);return;}"
-                + "count++;try{if((n.nodeValue||'').replace(/\\s+/g,'').length){range.selectNodeContents(n);rr=range.getClientRects();"
-                + "for(j=0;j<rr.length;j++)mark(rr[j]);}}catch(e){}}"
-                + "schedule(scanText);};"
-                + "try{walker=document.createTreeWalker(flow,NodeFilter.SHOW_TEXT,null,false);"
-                + "range=document.createRange();}catch(e){fail(e);return;}"
-                + "schedule(scanText);"
+                + "try{while(count<768){if(count>0&&Date.now()-started>=10)break;n=walker.nextNode();"
+                + "if(!n){if(cancelled()){finish([]);return;}finish(result());return;}count++;"
+                + "if(n.nodeType===1){if(/^(IMG|svg|SVG|VIDEO|AUDIO|OBJECT|EMBED|TABLE|math|MATH|CANVAS|HR)$/.test(n.tagName||''))mark(n.getBoundingClientRect());}"
+                + "else if((n.nodeValue||'').replace(/\\s+/g,'').length){range.selectNodeContents(n);rr=range.getClientRects();for(j=0;j<rr.length;j++)mark(rr[j]);}}"
+                + "if(cancelled()){finish([]);return;}partialSerial++;if(onPartial&&(partialSerial===1||partialSerial%3===0))onPartial(dirty?result():cached);schedule(scan);"
+                + "}catch(e){fail(e);}};"
+                + "try{walker=document.createTreeWalker(flow,NodeFilter.SHOW_TEXT|NodeFilter.SHOW_ELEMENT,null,false);range=document.createRange();schedule(scan);}catch(e){fail(e);}"
                 + "});};";
     }
 }

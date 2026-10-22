@@ -10,7 +10,7 @@ import org.robolectric.annotation.Config;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk={23,35,36},manifest=Config.NONE)
+@Config(sdk={24,35,36},manifest=Config.NONE)
 public class CloudMergePolicyTest {
     private static final String GROUP="epub_location_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef_";
     private SharedPreferences prefs;

@@ -34,7 +34,7 @@ import org.robolectric.annotation.Config;
 
 /** Integration-level checks for GoogleDriveSync's private HTTP/auth seam, without Google traffic. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {23, 35, 36}, manifest = Config.NONE)
+@Config(sdk = {24, 35, 36}, manifest = Config.NONE)
 public class GoogleDriveHttpAuthTest {
     private static final String OLD = "old-token";
     private static final String FRESH = "fresh-token";

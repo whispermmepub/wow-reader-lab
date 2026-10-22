@@ -23,7 +23,7 @@ import java.nio.file.Files;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk={23,35,36},manifest=Config.NONE)
+@Config(sdk={24,35,36},manifest=Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class ReaderPagePreviewTest {
     private Activity activity;
@@ -92,6 +92,13 @@ public class ReaderPagePreviewTest {
         ready(bridge(v));String script=Shadows.shadowOf(v).getLastEvaluatedJavascript();
         assertTrue((Boolean)get("engineReady"));assertTrue(script.contains("*800/1000"));assertTrue(script.contains("e.apply(false)"));assertFalse(script.contains("e.report("));
         show(900);Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(40));assertSame(v,get("epubWebView"));assertTrue(Shadows.shadowOf(v).getLastEvaluatedJavascript().contains("*900/1000"));
+    }
+    @Test public void provisionalPageUsabilityDoesNotMarkPreviewEngineReady()throws Exception{
+        show(100);WebView v=awaitView();Object b=bridge(v);
+        Method m=b.getClass().getDeclaredMethod("onPageUsable",int.class,int.class,int.class,int.class);m.setAccessible(true);
+        m.invoke(b,-((Long)get("loadedGeneration")).intValue(),1,3,250);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(40));
+        assertFalse((Boolean)get("engineReady"));
     }
     @Test public void staleBridgeCannotReviveHiddenOrReconfiguredPreview()throws Exception{
         show(100);WebView old=awaitView();Object stale=bridge(old);ready(stale);File oldFile=(File)get("previewDocument");preview.hide();assertTrue(oldFile.exists());ready(stale);assertFalse((Boolean)get("engineReady"));assertTrue(preview.ownsView(old));

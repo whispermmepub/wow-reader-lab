@@ -20,7 +20,7 @@ import java.nio.file.Files;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk={23,35,36},manifest=Config.NONE,shadows={PdfPreviewRendererTest.RendererShadow.class,PdfPreviewRendererTest.PageShadow.class})
+@Config(sdk={24,35,36},manifest=Config.NONE,shadows={PdfPreviewRendererTest.RendererShadow.class,PdfPreviewRendererTest.PageShadow.class})
 public class PdfPreviewRendererTest {
     private PdfPreviewRenderer renderer;
     private File file;

@@ -21,7 +21,7 @@ import static org.junit.Assert.*;
 
 /** Regression coverage for compositor-gated chapter reveal and animation prefs. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = {23, 28, 35, 36}, manifest = Config.NONE)
+@Config(sdk = {24, 28, 35, 36}, manifest = Config.NONE)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class ChapterVisualCommitTest {
     private BookReaderActivity activity;

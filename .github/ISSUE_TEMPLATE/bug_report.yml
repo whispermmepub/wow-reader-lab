@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible problem in WoW Reader Lab.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please search existing issues first and remove private information before posting.
+
+        **Privacy:** Do not attach book or document files, account tokens, signing secrets, keystores, passwords, private recovery material, or unsanitized logs. Redact paths, account identifiers, titles, book content, and any other sensitive data.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Give a short, user-facing summary and what you were trying to do.
+      placeholder: Tell us what you observed.
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: WoW Reader version
+      description: Include the version name and version code when known (for example, from About or the installed package).
+      placeholder: 2.x.x / versionCode
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device or emulator
+      description: Include manufacturer/model and say emulator if applicable. If not relevant, enter N/A.
+      placeholder: Manufacturer and model, or emulator
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version and API level
+      description: Include both when known. If not relevant, enter N/A.
+      placeholder: Android x / API xx
+    validations:
+      required: true
+  - type: input
+    id: webview
+    attributes:
+      label: Android System WebView or browser version
+      description: Relevant for EPUB rendering, pagination, search, notes, or other WebView behavior; otherwise enter N/A.
+      placeholder: WebView/browser version, or N/A
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest reliable sequence. Do not include a book file; describe a sanitized/minimal fixture instead.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include visible errors or a sanitized stack trace if useful.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Optional. Remove book content, titles, paths, account identifiers, tokens, signing data, and other private information. Do not upload book files.
+      render: text
+  - type: textarea
+    id: checks
+    attributes:
+      label: Checks already tried
+      description: Say what you actually tried and where it ran (host, device/emulator, or live service). Do not report unexecuted tests.
+      placeholder: Include relevant versions, reproduction rate, and execution boundary.

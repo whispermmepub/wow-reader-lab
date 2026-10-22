@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest an improvement for WoW Reader Lab.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Please search existing issues first and keep the proposal focused.
+
+        **Privacy:** Do not attach book or document files, account tokens, signing secrets, keystores, passwords, private recovery material, or unsanitized logs. Use a minimal, sanitized example instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Who is affected, and what task or limitation should be improved?
+      placeholder: Describe the user problem, not only the desired implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like to see. Include relevant platform or reader context if helpful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds, existing features, or other approaches did you consider?
+  - type: textarea
+    id: preservation
+    attributes:
+      label: Compatibility and data preservation
+      description: Explain how this should preserve existing books/files, progress, notes/highlights, shelves, calendar/history, settings, offline use, and account/sync data where relevant. Mention migration or update concerns.
+      placeholder: Describe any data, storage, import/export, update, or sync impact.
+    validations:
+      required: true
+  - type: textarea
+    id: scale
+    attributes:
+      label: 100,000+ book scale considerations
+      description: How should this behave for a large library? Avoid designs that scan or load the entire library during normal use, rebuild a whole backup for one change, decode every cover at full resolution, or make active reading wait for cloud work.
+      placeholder: Explain expected pagination, batching, caching, or bounded-work behavior; enter N/A only when clearly unrelated.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Optional. Include sanitized screenshots, links, or relevant device/version context. Do not include book files, private account data, or secrets.
